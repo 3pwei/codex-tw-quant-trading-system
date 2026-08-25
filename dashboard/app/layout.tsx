@@ -3,13 +3,13 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   metadataBase: new URL("https://tw-quant-backtest.popop9987.chatgpt.site"),
-  title: "台股量化交易回測儀表板",
-  description: "清楚檢視台股分鐘策略的進出場、獲利、交易成本與回撤風險。",
+  title: "微型臺指期貨 5 分 K 夜盤回測",
+  description: "檢視微型臺指期貨 8/24 夜盤的 5 分 K 進出場、損益與回撤風險。",
   openGraph: {
-    title: "台股量化交易回測儀表板",
-    description: "進出場、損益與風險一頁掌握。",
+    title: "微型臺指期貨 5 分 K 夜盤回測",
+    description: "8/24 夜盤進出場、損益與風險一頁掌握。",
     url: "https://tw-quant-backtest.popop9987.chatgpt.site",
-    siteName: "台股量化交易回測儀表板",
+    siteName: "微型臺指期貨夜盤回測",
     locale: "zh_TW",
     type: "website",
     images: [
@@ -17,14 +17,14 @@ export const metadata: Metadata = {
         url: "https://tw-quant-backtest.popop9987.chatgpt.site/og.png",
         width: 1200,
         height: 630,
-        alt: "台股量化交易回測儀表板",
+        alt: "微型臺指期貨 5 分 K 夜盤回測",
       },
     ],
   },
   twitter: {
     card: "summary_large_image",
-    title: "台股量化交易回測儀表板",
-    description: "進出場、損益與風險一頁掌握。",
+    title: "微型臺指期貨 5 分 K 夜盤回測",
+    description: "8/24 夜盤進出場、損益與風險一頁掌握。",
     images: ["https://tw-quant-backtest.popop9987.chatgpt.site/og.png"],
   },
   icons: {

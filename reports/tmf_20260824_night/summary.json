@@ -1,0 +1,17 @@
+{
+  "initial_capital": 100000,
+  "ending_equity": 97273.29999999997,
+  "trades": 1,
+  "win_rate_pct": 0.0,
+  "net_profit": -2726.700000000026,
+  "return_pct": -2.7267000000000263,
+  "gross_profit": 0.0,
+  "gross_loss": -2726.700000000026,
+  "profit_factor": null,
+  "avg_trade": -2726.700000000026,
+  "avg_holding_minutes": 220.0,
+  "total_cost": 38,
+  "max_drawdown": 3507.700000000026,
+  "max_drawdown_pct": 3.4805171609728283,
+  "daily_sharpe": null
+}

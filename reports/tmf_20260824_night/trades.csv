@@ -1,0 +1,2 @@
+direction,entry_time,exit_time,quantity,entry_price,exit_price,gross_pnl,commission,tax,total_cost,net_pnl,return_pct,holding_minutes,mfe,mae,exit_reason
+short,2026-08-24 16:00:00+08:00,2026-08-24 19:35:00+08:00,1,44645.0,44913.87,-2688.700000000026,20,18,38,-2726.700000000026,-2.7267000000000263,220.0,1170.0,-3550.0,stop_loss
