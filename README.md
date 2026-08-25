@@ -82,6 +82,22 @@ python -m tw_quant demo
 本次固定參數回測輸出在 `output/tmf_20260824_night/`。單一夜盤結果只能驗證
 資料與撮合流程，不能推論策略的長期績效。
 
+取得期交所逐筆 CSV 後，可用 CLI 重跑任何指定夜盤：
+
+```bash
+python -m tw_quant futures-night \
+  --csv Daily_2026_08_25.csv \
+  --product TMF \
+  --contract-month 202609 \
+  --session-start "2026-08-24 15:00" \
+  --session-end "2026-08-25 05:00" \
+  --last-entry "2026-08-25 04:30" \
+  --interval 5min \
+  --output output/tmf_20260824_night
+```
+
+輸出包含 `bars.csv`、`trades.csv`、`equity.csv` 與 `summary.json`。
+
 ## 使用自己的 1 分 K
 
 CSV 欄位：

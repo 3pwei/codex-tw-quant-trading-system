@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime
+import json
 from pathlib import Path
 
 from .config import BacktestConfig, CostConfig
 from .data import load_bars
 from .demo_data import save_demo_csv
 from .engine import BacktestEngine
+from .futures import FuturesCostConfig, load_taifex_ticks, run_night_orb, ticks_to_bars
 from .report import save_report
 from .strategies import OpeningRangeBreakout, OpeningRangeBreakoutConfig
 
@@ -111,6 +113,51 @@ def run_demo(args: argparse.Namespace) -> None:
     run_backtest(args)
 
 
+def run_futures_night(args: argparse.Namespace) -> None:
+    ticks = load_taifex_ticks(
+        args.csv,
+        product=args.product,
+        contract_month=args.contract_month,
+        session_start=args.session_start,
+        session_end=args.session_end,
+    )
+    bars = ticks_to_bars(
+        ticks,
+        interval=args.interval,
+        session_start=args.session_start,
+        symbol=f"{args.product}{args.contract_month}",
+    )
+    trades, equity, summary = run_night_orb(
+        bars,
+        initial_capital=args.initial_capital,
+        contracts=args.contracts,
+        opening_range_minutes=args.opening_minutes,
+        volume_window=args.volume_window,
+        volume_multiplier=args.volume_multiplier,
+        stop_loss_pct=args.stop_loss,
+        take_profit_pct=args.take_profit,
+        last_entry_time=args.last_entry,
+        costs=FuturesCostConfig(
+            multiplier=args.contract_multiplier,
+            commission_per_side=args.commission_per_side,
+            tax_rate=args.tax_rate,
+            slippage_points=args.slippage_points,
+        ),
+    )
+
+    output = Path(args.output)
+    output.mkdir(parents=True, exist_ok=True)
+    bars.to_csv(output / "bars.csv", index=False)
+    trades.to_csv(output / "trades.csv", index=False)
+    equity.to_csv(output / "equity.csv", index=False)
+    (output / "summary.json").write_text(
+        json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    print(f"已載入 {len(ticks):,} 筆逐筆成交，聚合為 {len(bars):,} 根 {args.interval} K 棒。")
+    print_summary(summary)
+    print(f"\n報告位置：{output.resolve()}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="台股分鐘線當沖回測 MVP")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -124,10 +171,33 @@ def build_parser() -> argparse.ArgumentParser:
     backtest.add_argument("--symbol", help="CSV 無 symbol 欄時使用")
     add_backtest_arguments(backtest)
     backtest.set_defaults(func=run_backtest)
+
+    futures = subparsers.add_parser(
+        "futures-night", help="讀取期交所逐筆 CSV，聚合 K 棒並回測夜盤 ORB"
+    )
+    futures.add_argument("--csv", required=True, help="期交所 Daily_YYYY_MM_DD.csv")
+    futures.add_argument("--product", default="TMF")
+    futures.add_argument("--contract-month", required=True, help="例如 202609")
+    futures.add_argument("--session-start", required=True, help="例如 2026-08-24 15:00")
+    futures.add_argument("--session-end", required=True, help="例如 2026-08-25 05:00")
+    futures.add_argument("--last-entry", required=True, help="最後允許進場時間")
+    futures.add_argument("--interval", default="5min")
+    futures.add_argument("--output", default="output/futures-night")
+    futures.add_argument("--initial-capital", type=float, default=100_000)
+    futures.add_argument("--contracts", type=int, default=1)
+    futures.add_argument("--opening-minutes", type=int, default=15)
+    futures.add_argument("--volume-window", type=int, default=5)
+    futures.add_argument("--volume-multiplier", type=float, default=1.2)
+    futures.add_argument("--stop-loss", type=float, default=0.006)
+    futures.add_argument("--take-profit", type=float, default=0.012)
+    futures.add_argument("--contract-multiplier", type=float, default=10.0)
+    futures.add_argument("--commission-per-side", type=float, default=10.0)
+    futures.add_argument("--tax-rate", type=float, default=0.00002)
+    futures.add_argument("--slippage-points", type=float, default=1.0)
+    futures.set_defaults(func=run_futures_night)
     return parser
 
 
 def main() -> None:
     args = build_parser().parse_args()
     args.func(args)
-

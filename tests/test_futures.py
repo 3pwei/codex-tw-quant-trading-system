@@ -2,10 +2,21 @@ import unittest
 
 import pandas as pd
 
-from tw_quant.futures import ticks_to_bars
+from tw_quant.futures import FuturesCostConfig, ticks_to_bars
 
 
 class FuturesDataTests(unittest.TestCase):
+    def test_micro_taiex_side_cost_uses_multiplier_and_tax(self):
+        costs = FuturesCostConfig(
+            multiplier=10,
+            commission_per_side=10,
+            tax_rate=0.00002,
+            slippage_points=1,
+        )
+        commission, tax = costs.side_cost(45_000, contracts=1)
+        self.assertEqual(commission, 10)
+        self.assertEqual(tax, 9)
+
     def test_ticks_are_aggregated_to_five_minute_bars(self):
         ticks = pd.DataFrame({
             "timestamp": pd.to_datetime([
