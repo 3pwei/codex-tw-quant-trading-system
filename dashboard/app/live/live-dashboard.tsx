@@ -156,7 +156,7 @@ export default function LiveDashboard() {
       };
       socket.onmessage = event => {
         const message = JSON.parse(event.data) as FeedMessage;
-        lastHeartbeat.current = Date.now();
+        if (message.type === "heartbeat") lastHeartbeat.current = Date.now();
         setStatus(message.connection_status);
         if (message.type === "kbar") {
           candleRef.current?.update(candle(message));
