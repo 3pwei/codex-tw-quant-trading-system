@@ -1,0 +1,10 @@
+services:
+  market-api:
+    build: .
+    env_file: .env
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./output:/app/output
+      - ./data:/app/data:ro
+    restart: unless-stopped

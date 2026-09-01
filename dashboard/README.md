@@ -2,6 +2,8 @@
 
 線上儀表板：<https://tw-quant-backtest.popop9987.chatgpt.site>
 
+原有 `/` 仍是 5 分 K 回測頁；新增 `/live/` 為 TMF 即時 1 分 K。即時頁透過 `NEXT_PUBLIC_MARKET_API_URL` 連接獨立 FastAPI，先以 REST 補最近 500 根，再以 WebSocket `series.update()` 增量更新。前端可靜態部署至 GitHub Pages，Shioaji/FastAPI 不可部署到 Pages。
+
 ## 資料與範圍
 
 - 資料來源：臺灣期貨交易所 2026/08/25 逐筆成交 CSV

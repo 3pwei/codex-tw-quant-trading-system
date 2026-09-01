@@ -18,6 +18,7 @@ type DashboardData = {
 };
 
 const money = new Intl.NumberFormat("zh-TW", { maximumFractionDigits: 0 });
+const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
 const decimal = new Intl.NumberFormat("zh-TW", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const signedMoney = (n: number) => `${n >= 0 ? "+" : "−"}NT$ ${money.format(Math.abs(n))}`;
 const signedPct = (n: number) => `${n >= 0 ? "+" : "−"}${decimal.format(Math.abs(n))}%`;
@@ -82,7 +83,7 @@ function EquityChart({ points }: { points: EquityPoint[] }) {
 
 export default function Dashboard() {
   const [data,setData]=useState<DashboardData|null>(null),[error,setError]=useState(""),[selected,setSelected]=useState(0);
-  useEffect(()=>{fetch("/backtest-data.json").then(r=>{if(!r.ok)throw new Error("回測資料載入失敗");return r.json()}).then(setData).catch(e=>setError(e.message));},[]);
+  useEffect(()=>{fetch(`${basePath}/backtest-data.json`).then(r=>{if(!r.ok)throw new Error("回測資料載入失敗");return r.json()}).then(setData).catch(e=>setError(e.message));},[]);
   const risk=useMemo(()=>{if(!data)return null;const wins=data.trades.filter(t=>t.net_pnl>0),losses=data.trades.filter(t=>t.net_pnl<0);const avgWin=wins.reduce((s,t)=>s+t.net_pnl,0)/Math.max(wins.length,1),avgLoss=losses.reduce((s,t)=>s+t.net_pnl,0)/Math.max(losses.length,1);return{best:data.trades.reduce((a,b)=>b.net_pnl>a.net_pnl?b:a),worst:data.trades.reduce((a,b)=>b.net_pnl<a.net_pnl?b:a),payoff:avgWin/Math.max(Math.abs(avgLoss),1),costToNet:Number(data.summary.total_cost)/Math.max(Math.abs(Number(data.summary.net_profit)),1)}} , [data]);
   if(error)return <main className="state"><div><strong>Dashboard 無法載入</strong><p>{error}</p></div></main>;
   if(!data||!risk)return <main className="state"><div className="pulse">正在整理回測結果…</div></main>;
@@ -92,7 +93,7 @@ export default function Dashboard() {
   const valueOrNA=(value:number|null|undefined)=>value==null?"N/A":decimal.format(Number(value));
 
   return <main className="shell">
-    <header className="topbar"><div className="brand"><b>WQ</b><div><span>WADE QUANT LAB · BACKTEST 02</span><h1>微型臺指期貨夜盤儀表板</h1></div></div><div className="headmeta"><em>● 回測完成</em><span>{data.metadata.date_range}</span></div></header>
+    <header className="topbar"><div className="brand"><b>WQ</b><div><span>WADE QUANT LAB · BACKTEST 02</span><h1>微型臺指期貨夜盤儀表板</h1></div></div><div className="headmeta"><a className="live-link" href="live/">即時 1 分 K</a><em>● 回測完成</em><span>{data.metadata.date_range}</span></div></header>
     <section className="instrument"><div><strong>{data.metadata.symbol}</strong><span>{data.metadata.display_name}</span></div><div className="tags"><span>{data.metadata.strategy}</span><span>{data.metadata.interval}</span><span>每筆 {money.format(data.config.quantity)} {data.config.quantity_unit ?? "單位"}</span><span className={data.metadata.is_synthetic?"synthetic":"official"}>{data.metadata.is_synthetic?"合成資料":"期交所逐筆資料"} · 非投資建議</span></div></section>
     <section className="metrics">
       <Metric label="淨利" value={signedMoney(Number(s.net_profit))} note={`交易成本 NT$ ${money.format(Number(s.total_cost))}`} tone={profitable?"positive":"negative"}/>

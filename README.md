@@ -1,6 +1,6 @@
 # 台股分鐘線當沖量化回測 MVP
 
-這是一套可直接執行、可逐步擴充的 Python 回測骨架。第一版聚焦「單一台股、1 分 K、日內平倉」，先把資料驗證、策略訊號、下一根 K 棒撮合、交易成本、風險控制與績效報告做正確，再擴充多標的選股、模擬交易與券商實盤。
+這是一套可直接執行、可逐步擴充的 Python 回測與行情 Dashboard 骨架。既有回測流程保持不變，新增的即時模組聚焦「永豐 Shioaji、微型臺指期貨 TMF、Tick 聚合 1 分 K」。目前只有行情，沒有任何下單端點或下單程式碼。
 
 > 本專案僅供研究與工程驗證，不構成投資建議。合成示範資料不能用來判斷策略獲利能力。
 
@@ -15,6 +15,10 @@
 - 台股手續費、最低手續費、當沖賣出交易稅與滑價
 - 交易明細、權益曲線、JSON 摘要與 PNG 圖表
 - 不依賴 `pytest` 的 `unittest` 測試
+- Shioaji TMF Tick callback → Queue → Worker 的非阻塞行情管線
+- 即時 1 分 K、SQLite、FastAPI REST/WebSocket 與獨立 heartbeat
+- 無憑證可執行的 Mock/Replay 模式
+- Next.js + TradingView Lightweight Charts 即時 K 線頁面
 
 ## 架構
 
@@ -38,6 +42,11 @@ CSV 1 分 K
 | `tw_quant/costs.py` | 台股交易成本與滑價 |
 | `tw_quant/metrics.py` | 勝率、淨利、PF、回撤與日頻 Sharpe |
 | `tw_quant/report.py` | 儲存 CSV、JSON 與權益曲線圖 |
+| `tw_quant/live/feed.py` | Shioaji quote-only adapter 與 Mock Replay feed |
+| `tw_quant/live/aggregator.py` | Tick 去重、亂序政策、缺漏分鐘與即時 1 分 K |
+| `tw_quant/live/storage.py` | SQLite repository；介面可替換 PostgreSQL |
+| `tw_quant/live/api.py` | FastAPI REST、WebSocket 與健康檢查 |
+| `dashboard/app/live/` | 即時 K 線、成交量、狀態與自動重連前端 |
 
 ## 安裝
 
@@ -52,8 +61,125 @@ python -m venv .venv
 # macOS / Linux
 source .venv/bin/activate
 
-python -m pip install -e .
+python -m pip install -e ".[server,test]"
 ```
+
+若要連接 Shioaji 正式行情，再安裝可選套件：
+
+```bash
+python -m pip install -e ".[server,shioaji]"
+```
+
+## TMF 即時 1 分 K
+
+資料流刻意將券商 callback 保持最小：
+
+```text
+Shioaji Tick callback
+  → 驗證、標準化、asyncio.Queue.put_nowait
+  → 獨立 Worker
+  → 去重／亂序處理／1 分 K 聚合
+  → SQLite upsert
+  → REST 歷史查詢 + WebSocket 增量推送
+  → Next.js Lightweight Charts series.update()
+```
+
+K 棒使用 Tick 的交易所時間（`Asia/Taipei`）分桶，不使用瀏覽器時間。TMF 日盤設定為 08:45–13:45、夜盤為 15:00–次日 05:00；15:00 後的夜盤歸到下一交易日，跨午夜後維持同一交易日。週末會自動跳過；交易所特殊休市日仍應由部署端行事曆設定或在上線前驗證。
+
+處理政策：
+
+- 同一分鐘內亂序 Tick 仍會依最早／最晚交易所時間修正 Open／Close。
+- 已關閉分鐘收到遲到 Tick 時不回寫歷史 K 棒，會計入 `late_ticks`。
+- Tick 優先使用券商 sequence 去重；缺少 sequence 時使用契約、微秒時間、價格、單量與累積量雜湊。
+- 無成交分鐘在下一筆 Tick 抵達時補成前收價 OHLC、成交量 0、`no_trade=true`。
+- SQLite 同時保存形成中 K 棒與已處理 Tick ID，重啟後可續接且不重複累加。
+- TMFR1 解析出的實際近月契約會放在訊息 `contract`；Tick 契約變更時視為換月並關閉舊契約 K 棒。
+- 連線狀態取自獨立 heartbeat／Shioaji quote connection event，不會因為一段時間沒有成交就判斷斷線。
+
+### Mock／Replay 本機啟動
+
+複製環境變數範本；範本只有假資料，請勿把真實憑證提交到 GitHub：
+
+```bash
+cp .env.example .env
+```
+
+Windows PowerShell：
+
+```powershell
+Copy-Item .env.example .env
+```
+
+啟動後端：
+
+```bash
+MARKET_MODE=mock uvicorn tw_quant.live.api:app --host 0.0.0.0 --port 8000 --env-file .env
+```
+
+另一個終端啟動 Dashboard：
+
+```bash
+cd dashboard
+npm ci
+NEXT_PUBLIC_MARKET_API_URL=http://localhost:8000 npm run dev
+```
+
+Windows PowerShell 可先執行 `$env:NEXT_PUBLIC_MARKET_API_URL="http://localhost:8000"`，再執行 `npm run dev`。
+
+開啟：
+
+- 回測 Dashboard：<http://localhost:3000/>
+- 即時 1 分 K：<http://localhost:3000/live/>
+- API 文件：<http://localhost:8000/docs>
+
+Mock 會重播 `data/mock_tmf_ticks.csv`。同一分鐘包含多筆 Tick，圖表應以 `series.update()` 反覆更新同一根形成中 K 棒，跨分鐘才新增 K 棒；15:02 沒有成交，會補成零量 K 棒。
+
+### Shioaji 正式行情模式
+
+`.env` 至少設定：
+
+```dotenv
+MARKET_MODE=shioaji
+MARKET_CONTRACT=TMFR1
+SJ_API_KEY=your-real-key
+SJ_SEC_KEY=your-real-secret
+SJ_PRODUCTION=true
+```
+
+再啟動同一個 FastAPI 指令。行情服務只呼叫登入、契約解析、Tick callback 與 quote subscribe；不啟用 CA、不提供下單 API。正式 key 建議只授予 Market/Data 權限並限制來源 IP。
+
+### API
+
+- `GET /api/health`
+- `GET /api/kbars?symbol=TMF&interval=1m&limit=500`
+- `WS /ws/market/TMF`
+
+WebSocket 的 K 棒訊息包含 symbol、實際契約、交易所／接收時間、延遲、OHLCV、forming/closed、日夜盤、交易日與行情連線狀態。獨立 heartbeat 即使無成交也會持續推送。
+
+### Docker 與部署
+
+```bash
+docker compose up --build -d
+curl http://localhost:8000/api/health
+```
+
+FastAPI、Shioaji callback 與 WebSocket 必須部署在可常駐執行 Python 的主機；GitHub Actions 只負責測試與建置，不能作為盤中行情 daemon。部署主機需掛載 `output/` 保存 SQLite，或日後將 `BarRepository` 換成 PostgreSQL。
+
+Dashboard 可由 `.github/workflows/pages.yml` 部署至 GitHub Pages。先部署 HTTPS/WSS 後端，再在 Repository → Settings → Secrets and variables → Actions 建立變數：
+
+```text
+MARKET_API_URL=https://your-market-api.example.com
+```
+
+接著在 Settings → Pages 將 Source 設為 GitHub Actions；合併 `master` 或手動執行 Pages workflow。公開 Dashboard 預期網址為 <https://3pwei.github.io/codex-tw-quant-trading-system/>，即時頁為 `/live/`。HTTPS Pages 不能連接不安全的 `http://`／`ws://` 後端。
+
+### 常見問題
+
+- `歷史 K 棒為空`：新 SQLite 首次啟動還沒有資料；先讓 Replay 或 Shioaji 收到 Tick。
+- `Dashboard 顯示重新連線`：確認後端 URL、CORS 的 `MARKET_ALLOWED_ORIGINS`、TLS 憑證和 `/api/health`。
+- `沒有 Tick 但仍顯示連線`：這是預期行為；無成交不等於斷線，heartbeat 才是連線判斷依據。
+- `重啟後 Mock 不再更新`：既有 SQLite 已記錄相同 replay Tick；測試新一輪可刪除測試用 DB，正式資料庫不要任意刪除。
+- `換月`：訂閱 `TMFR1`，健康檢查與 K 棒訊息的 `contract` 顯示實際契約；換月前應人工核對流動性與切換時間。
 
 ## 立即執行示範
 
