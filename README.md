@@ -156,7 +156,7 @@ SJ_PRODUCTION=true
 
 WebSocket 的 K 棒訊息包含 symbol、實際契約、交易所／接收時間、延遲、OHLCV、forming/closed、日夜盤、交易日與行情連線狀態。獨立 heartbeat 即使無成交也會持續推送。
 
-### Docker 與部署
+### Docker 與本機部署
 
 ```bash
 docker compose up --build -d
@@ -172,6 +172,117 @@ MARKET_API_URL=https://your-market-api.example.com
 ```
 
 接著在 Settings → Pages 將 Source 設為 GitHub Actions；合併 `master` 或手動執行 Pages workflow。公開 Dashboard 預期網址為 <https://3pwei.github.io/codex-tw-quant-trading-system/>，即時頁為 `/live/`。HTTPS Pages 不能連接不安全的 `http://`／`ws://` 後端。
+
+## AWS Lightsail 公開部署
+
+正式部署目標是東京區域的 AWS Lightsail Linux/Ubuntu x86 主機，建議至少
+2 GB RAM。GitHub 保存程式碼並執行測試；Lightsail 只負責常駐執行。公開流量
+透過 Caddy 進入同一個 HTTPS 網址：
+
+```text
+瀏覽器 ─HTTPS/WSS→ Caddy
+                     ├─ /、/live → 靜態 Dashboard
+                     ├─ /api     → FastAPI REST
+                     └─ /ws      → FastAPI WebSocket
+                                      └→ Shioaji Tick → Queue → Worker → SQLite Volume
+```
+
+前端在沒有設定 `NEXT_PUBLIC_MARKET_API_URL` 時會使用目前網頁的 origin，因此
+正式網站不會退回 `localhost`。GitHub Pages 模式仍可透過 Repository Variable
+指定獨立 API 網址，既有 Pages 功能不受影響。
+
+### 1. 建立 Lightsail 主機
+
+1. 建立 AWS 帳號並啟用 MFA、帳單預算警示。
+2. Lightsail 區域選 `Tokyo (ap-northeast-1)`。
+3. Blueprint 選 Ubuntu 24.04 LTS、架構選 x86_64。
+4. 建議方案為 2 GB RAM；不要選 ARM，Shioaji wheel 必須先驗證架構相容性。
+5. 建立並附掛 Static IP；Lightsail 防火牆只開 TCP 80、443，以及初始維護用 TCP 22。
+6. 將自己的 DNS `A` record 指向 Static IP。沒有網域時，可先用指向該 IP 的測試 DNS，但正式使用應購買並控制自己的網域。
+
+HTTPS 是必要條件；不要用裸 IP、HTTP 或自簽憑證傳送網站密碼與行情連線。
+
+### 2. 初始化主機
+
+以 Lightsail SSH 連入 Ubuntu，取得 Repository 後執行：
+
+```bash
+git clone --branch master https://github.com/3pwei/codex-tw-quant-trading-system.git
+cd codex-tw-quant-trading-system
+sudo bash deploy/lightsail/bootstrap.sh
+```
+
+Bootstrap 只安裝 Docker、Git，並建立 `/opt/tw-quant/config/`。真實 Secret 保存在
+Git checkout 外，權限為 `0600`。接著編輯：
+
+```text
+/opt/tw-quant/config/market.env
+/opt/tw-quant/config/gateway.env
+/opt/tw-quant/config/compose.env
+```
+
+先以 `MARKET_MODE=mock` 驗證。`gateway.env` 的密碼雜湊可在主機產生：
+
+```bash
+docker run --rm caddy:2.10-alpine \
+  caddy hash-password --plaintext 'replace-with-a-long-random-password'
+```
+
+將輸出以單引號包住後填入 `DASHBOARD_PASSWORD_HASH`，避免雜湊中的 `$` 被解讀。
+設定完成後啟動：
+
+```bash
+sudo /opt/tw-quant/repo/deploy/lightsail/deploy.sh "$(git -C /opt/tw-quant/repo rev-parse HEAD)"
+curl https://tmf.example.com/healthz
+```
+
+瀏覽器開啟 `https://tmf.example.com/live/`，登入 Caddy Basic Authentication 後，
+應看到 Mock 形成中的 1 分 K。切換 Shioaji 前，將 `market.env` 改成：
+
+```dotenv
+MARKET_MODE=shioaji
+MARKET_CONTRACT=TMFR1
+SJ_API_KEY=replace-on-server
+SJ_SEC_KEY=replace-on-server
+SJ_PRODUCTION=true
+```
+
+第一階段的 API Key 只能授予 Market/Data 權限，不能授予 Trading 權限；本服務也
+不載入 CA。設定永豐允許 IP 時使用 Lightsail Static IP。
+
+### 3. GitHub Actions 部署
+
+`.github/workflows/deploy-lightsail.yml` 是手動觸發的 production deployment。每次
+部署會重新執行 Python 測試、前端 Lint 與 Build，通過後才透過 SSH 執行指定的
+`master` commit。建議在 GitHub Environment `lightsail-production` 啟用 required
+reviewer，避免盤中誤部署。
+
+Environment Variables：
+
+```text
+LIGHTSAIL_HOST=<Static IP 或 DNS>
+LIGHTSAIL_USER=ubuntu
+PUBLIC_DASHBOARD_URL=https://tmf.example.com
+```
+
+Environment Secrets：
+
+```text
+LIGHTSAIL_SSH_PRIVATE_KEY=<僅部署使用的 SSH 私鑰>
+LIGHTSAIL_SSH_HOST_KEY=<事先核對過的 known_hosts 完整一行>
+```
+
+Shioaji API Key、Secret、未來可能使用的 CA 憑證都不能放進 GitHub Actions。
+GitHub workflow 只更新程式碼與容器，不能讀取 `/opt/tw-quant/config/market.env`。
+
+### 4. 備份、更新與故障處理
+
+- SQLite 位於 Docker named volume `tw-quant-lightsail_market-data`，容器更新不會刪除。
+- 部署前應建立 Lightsail snapshot；若有真實下單需求，資料庫應升級 PostgreSQL。
+- 部署會短暫中斷行情，僅在休市時手動執行。
+- 重啟後 Worker 會讀取形成中 K 棒及 Tick 去重資料；恢復 Shioaji 後仍須檢查缺漏行情。
+- `/healthz` 只代表 HTTPS gateway 存活；`/api/health` 才包含 Shioaji 連線、最後 Tick 與延遲。
+- 若未來加入下單，必須先完成模擬交易、固定 IP 白名單、CA 安全保存、訂單冪等、持倉核對、最大虧損與 Kill Switch；目前版本仍完全不能下單。
 
 ### 常見問題
 

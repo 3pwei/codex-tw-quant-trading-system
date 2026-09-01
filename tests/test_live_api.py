@@ -36,6 +36,9 @@ class LiveApiTests(unittest.TestCase):
         temp, client = self.make_client()
         try:
             with client:
+                liveness = client.get("/health/live")
+                self.assertEqual(liveness.status_code, 200)
+                self.assertEqual(liveness.json(), {"status": "ok"})
                 deadline = time.time() + 2
                 bars = []
                 while time.time() < deadline:

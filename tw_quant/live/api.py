@@ -62,6 +62,15 @@ def create_app(
         allow_headers=["*"],
     )
 
+    @app.get("/health/live", include_in_schema=False)
+    async def liveness():
+        """Process liveness for container orchestration.
+
+        Market connectivity remains available from /api/health. A closed market
+        or a broker reconnect must not make the container look dead.
+        """
+        return {"status": "ok"}
+
     @app.get("/api/health")
     async def health():
         return service.status_message()

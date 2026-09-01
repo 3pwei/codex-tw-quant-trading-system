@@ -65,3 +65,21 @@ jobs:
           NEXT_PUBLIC_MARKET_API_URL: http://localhost:8000
           NEXT_PUBLIC_BASE_PATH: ""
         run: npm run build
+
+  lightsail-images:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate Compose configuration
+        env:
+          MARKET_ENV_FILE: ${{ github.workspace }}/deploy/lightsail/market.env.example
+          GATEWAY_ENV_FILE: ${{ github.workspace }}/deploy/lightsail/gateway.env.example
+        run: docker compose -f deploy/lightsail/docker-compose.yml config --quiet
+
+      - name: Build FastAPI and Shioaji image
+        run: docker build --tag tw-quant-market-api:ci .
+
+      - name: Build Dashboard and Caddy image
+        run: docker build --file deploy/lightsail/Dockerfile.gateway --tag tw-quant-gateway:ci .

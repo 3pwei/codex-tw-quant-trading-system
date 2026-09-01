@@ -49,8 +49,10 @@ type StatusMessage = {
 type FeedMessage = KBar | StatusMessage;
 type Ohlc = Pick<KBar, "open" | "high" | "low" | "close"> | null;
 
-const API_BASE = (process.env.NEXT_PUBLIC_MARKET_API_URL || "http://localhost:8000").replace(/\/$/, "");
+const CONFIGURED_API_BASE = process.env.NEXT_PUBLIC_MARKET_API_URL?.replace(/\/$/, "");
 const BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
+const apiBase = () => CONFIGURED_API_BASE
+  || (typeof window === "undefined" ? "http://localhost:8000" : window.location.origin);
 const toTime = (value: string): UTCTimestamp => Math.floor(Date.parse(value) / 1000) as UTCTimestamp;
 const fmt = (value?: number | null) => value == null ? "—" : new Intl.NumberFormat("zh-TW", { maximumFractionDigits: 2 }).format(value);
 const fmtTime = (value?: string | null) => value ? new Date(value).toLocaleString("zh-TW", { hour12: false, timeZone: "Asia/Taipei" }) : "尚未收到";
@@ -89,7 +91,7 @@ export default function LiveDashboard() {
   const [historyCount, setHistoryCount] = useState(0);
 
   const loadHistory = useCallback(async () => {
-    const response = await fetch(`${API_BASE}/api/kbars?symbol=TMF&interval=1m&limit=500`, { cache: "no-store" });
+    const response = await fetch(`${apiBase()}/api/kbars?symbol=TMF&interval=1m&limit=500`, { cache: "no-store" });
     if (!response.ok) throw new Error(`歷史 K 棒載入失敗 (${response.status})`);
     const bars: KBar[] = await response.json();
     candleRef.current?.setData(bars.map(candle));
@@ -145,7 +147,7 @@ export default function LiveDashboard() {
     const connect = async () => {
       setStatus(attempts.current ? "reconnecting" : "connecting");
       try { await loadHistory(); } catch (reason) { setError(reason instanceof Error ? reason.message : "REST 載入失敗"); }
-      const wsUrl = `${API_BASE.replace(/^http/, "ws")}/ws/market/TMF`;
+      const wsUrl = `${apiBase().replace(/^http/, "ws")}/ws/market/TMF`;
       const socket = new WebSocket(wsUrl);
       socketRef.current = socket;
       socket.onopen = async () => {
