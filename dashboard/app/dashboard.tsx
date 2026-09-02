@@ -24,7 +24,7 @@ const signedMoney = (n: number) => `${n >= 0 ? "+" : "−"}NT$ ${money.format(Ma
 const signedPct = (n: number) => `${n >= 0 ? "+" : "−"}${decimal.format(Math.abs(n))}%`;
 const hhmm = (s: string) => s.slice(11, 16);
 const mmdd = (s: string) => s.slice(5, 10).replace("-", "/");
-const reason = (s: string) => ({ stop_loss: "停損", take_profit: "停利", force_exit: "收盤前平倉", end_of_data: "資料結束" }[s] ?? s);
+const reason = (s: string) => ({ stop_loss: "停損", take_profit: "停利", force_exit: "收盤前平倉", end_of_data: "資料結束", mean_reversion: "回歸均線" }[s] ?? s);
 
 function Metric({ label, value, note, tone = "plain" }: { label: string; value: string; note: string; tone?: string }) {
   return <article className={`metric ${tone}`}><span>{label}</span><strong>{value}</strong><small>{note}</small></article>;
