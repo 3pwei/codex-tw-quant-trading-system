@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import csv
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 from pathlib import Path
+from time import monotonic
 from typing import Callable, Protocol
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from .models import ConnectionStatus, TickEvent
+from .sessions import classify_tmf_session
 
 
 TAIPEI = ZoneInfo("Asia/Taipei")
@@ -49,6 +52,20 @@ class ReplayFeed:
         self.contract = rows[0]["contract"]
         return rows
 
+    @staticmethod
+    def _live_anchor(now: datetime) -> datetime:
+        """Return a current, session-valid exchange clock for looping mock data."""
+        local = now.astimezone(TAIPEI)
+        try:
+            classify_tmf_session(local)
+            return local
+        except ValueError:
+            clock = local.time().replace(tzinfo=None)
+            opening = time(8, 45) if time(5, 0) < clock < time(8, 45) else time(15, 0)
+            return local.replace(
+                hour=opening.hour, minute=opening.minute, second=0, microsecond=0
+            )
+
     async def start(self, on_tick: TickCallback, on_status: StatusCallback) -> None:
         rows = self.load()
         self._healthy = True
@@ -56,23 +73,41 @@ class ReplayFeed:
 
         async def replay() -> None:
             sequence = 0
+            replay_id = uuid4().hex
+            live_started_at = monotonic()
+            live_exchange_anchor = self._live_anchor(datetime.now(TAIPEI))
             while self._healthy:
                 previous: datetime | None = None
                 for row in rows:
                     if not self._healthy:
                         return
-                    exchange_time = parse_exchange_time(row["exchange_time"])
+                    source_exchange_time = parse_exchange_time(row["exchange_time"])
                     if previous is not None:
                         source_delay = max(
                             0.02,
-                            min((exchange_time - previous).total_seconds() / self.speed, 0.5),
+                            min(
+                                (source_exchange_time - previous).total_seconds()
+                                / self.speed,
+                                0.5,
+                            ),
                         )
                         await asyncio.sleep(source_delay)
-                    previous = exchange_time
+                    previous = source_exchange_time
                     sequence += 1
-                    # Replay preserves exchange time for bar partitioning. received_time
-                    # is shifted by the source latency so it remains comparable.
                     source_latency = float(row.get("latency_ms") or 12.0)
+                    if self.loop:
+                        # A looping replay behaves like a live feed: its exchange clock
+                        # advances with wall time and every emitted event is unique.
+                        # The original CSV sequence must not trigger persistent dedup
+                        # after the first loop or after a process restart.
+                        exchange_time = live_exchange_anchor + timedelta(
+                            seconds=monotonic() - live_started_at
+                        )
+                        event_sequence = f"replay-{replay_id}-{sequence}"
+                    else:
+                        # One-shot replay remains deterministic for tests/backtests.
+                        exchange_time = source_exchange_time
+                        event_sequence = row.get("sequence") or f"replay-{sequence}"
                     received_time = exchange_time + timedelta(milliseconds=source_latency)
                     on_tick(
                         TickEvent(
@@ -81,7 +116,7 @@ class ReplayFeed:
                             price=float(row["price"]), volume=int(float(row["volume"])),
                             total_volume=int(float(row["total_volume"]))
                             if row.get("total_volume") else None,
-                            sequence=row.get("sequence") or f"replay-{sequence}",
+                            sequence=event_sequence,
                         )
                     )
                 if not self.loop:
