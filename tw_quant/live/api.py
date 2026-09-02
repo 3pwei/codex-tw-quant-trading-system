@@ -16,6 +16,7 @@ from .service import LiveMarketService
 from .settings import LiveSettings
 from .storage import BarRepository, SQLiteBarRepository
 from .sessions import TradingCalendar
+from .strategy_analysis import SUPPORTED_STRATEGIES, analyze_live_strategies
 
 
 def build_feed(settings: LiveSettings):
@@ -119,6 +120,31 @@ def create_app(
             bar.to_message(service.connection_status)
             for bar in repo.latest(config.symbol, limit)
         ]
+
+    @app.get("/api/strategy-signals")
+    async def strategy_signals(
+        symbol: str = "TMF",
+        strategies: str = "orb,bnf",
+        limit: int = Query(500, ge=20, le=5000),
+    ):
+        if symbol.upper() != config.symbol:
+            raise HTTPException(status_code=404, detail="unsupported symbol")
+        selected = [
+            value.strip().lower()
+            for value in strategies.split(",")
+            if value.strip()
+        ]
+        if not selected:
+            return {"strategies": []}
+        unsupported = sorted(set(selected) - set(SUPPORTED_STRATEGIES))
+        if unsupported:
+            raise HTTPException(
+                status_code=400,
+                detail=f"unsupported strategies: {', '.join(unsupported)}",
+            )
+        return analyze_live_strategies(
+            repo.latest(config.symbol, limit), selected
+        )
 
     @app.websocket("/ws/market/{symbol}")
     async def market_socket(websocket: WebSocket, symbol: str):
