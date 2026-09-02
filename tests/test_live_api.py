@@ -7,6 +7,7 @@ import unittest
 from fastapi.testclient import TestClient
 
 from tw_quant.live.api import create_app
+from tw_quant.live.access import AccessIdentity, AccessTokenError
 from tw_quant.live.feed import ReplayFeed
 from tw_quant.live.service import LiveMarketService
 from tw_quant.live.settings import LiveSettings
@@ -75,6 +76,43 @@ class LiveApiTests(unittest.TestCase):
                                 forming_times.append(message["time"])
                     self.assertGreaterEqual(len(forming_times), 2)
                     self.assertEqual(forming_times[0], forming_times[1])
+        finally:
+            temp.cleanup()
+
+    def test_cloudflare_origin_auth_forwards_verified_identity(self):
+        class FakeAccessValidator:
+            def authenticate(self, token):
+                if token != "signed-assertion":
+                    raise AccessTokenError("invalid assertion")
+                return AccessIdentity(subject="user-123", email="owner@example.com")
+
+        temp = tempfile.TemporaryDirectory()
+        repository = SQLiteBarRepository(Path(temp.name) / "auth.sqlite3")
+        settings = LiveSettings(
+            mode="mock", db_path=str(Path(temp.name) / "auth.sqlite3"),
+            replay_csv=str(ROOT / "data/mock_tmf_ticks.csv"), replay_speed=1000,
+            heartbeat_seconds=0.05,
+        )
+        feed = ReplayFeed(settings.replay_csv, speed=1000, loop=False)
+        app = create_app(
+            settings, feed=feed, repository=repository,
+            access_validator=FakeAccessValidator(),
+        )
+        try:
+            with TestClient(app) as client:
+                denied = client.get("/internal/auth/cloudflare")
+                self.assertEqual(denied.status_code, 401)
+                accepted = client.get(
+                    "/internal/auth/cloudflare",
+                    headers={"Cf-Access-Jwt-Assertion": "signed-assertion"},
+                )
+                self.assertEqual(accepted.status_code, 204)
+                self.assertEqual(
+                    accepted.headers["x-authenticated-email"], "owner@example.com"
+                )
+                self.assertEqual(
+                    accepted.headers["x-authenticated-subject"], "user-123"
+                )
         finally:
             temp.cleanup()
 

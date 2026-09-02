@@ -10,8 +10,9 @@
 	respond @health "ok" 200
 
 	@protected not path /healthz
-	basic_auth @protected {
-		{$DASHBOARD_USER} {$DASHBOARD_PASSWORD_HASH}
+	forward_auth @protected market-api:8000 {
+		uri /internal/auth/cloudflare
+		copy_headers X-Authenticated-Subject X-Authenticated-Email
 	}
 
 	@backend path /api/* /ws/* /docs* /openapi.json /health/live

@@ -83,3 +83,11 @@ jobs:
 
       - name: Build Dashboard and Caddy image
         run: docker build --file deploy/lightsail/Dockerfile.gateway --tag tw-quant-gateway:ci .
+
+      - name: Validate Caddy configuration
+        run: >-
+          docker run --rm
+          --env MARKET_DOMAIN=tmf.example.com
+          --env ACME_EMAIL=owner@example.com
+          tw-quant-gateway:ci
+          caddy validate --config /etc/caddy/Caddyfile

@@ -2,9 +2,15 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
+from .access import (
+    AccessTokenError,
+    AccessValidator,
+    CloudflareAccessValidator,
+    DisabledAccessValidator,
+)
 from .feed import ReplayFeed, ShioajiFeed
 from .service import LiveMarketService
 from .settings import LiveSettings
@@ -27,11 +33,21 @@ def create_app(
     settings: LiveSettings | None = None,
     feed=None,
     repository: BarRepository | None = None,
+    access_validator: AccessValidator | None = None,
 ) -> FastAPI:
     config = settings or LiveSettings.from_env()
     config.validate()
     repo = repository or SQLiteBarRepository(config.db_path)
     market_feed = feed or build_feed(config)
+    validator = access_validator
+    if validator is None:
+        if config.access_mode == "cloudflare":
+            validator = CloudflareAccessValidator(
+                config.cloudflare_access_team_domain or "",
+                config.cloudflare_access_audience or "",
+            )
+        else:
+            validator = DisabledAccessValidator()
     service = LiveMarketService(
         market_feed, repo, config.symbol, config.heartbeat_seconds,
         TradingCalendar(config.holidays),
@@ -70,6 +86,19 @@ def create_app(
         or a broker reconnect must not make the container look dead.
         """
         return {"status": "ok"}
+
+    @app.get("/internal/auth/cloudflare", include_in_schema=False)
+    def cloudflare_origin_auth(request: Request):
+        try:
+            identity = validator.authenticate(
+                request.headers.get("cf-access-jwt-assertion")
+            )
+        except AccessTokenError as exc:
+            raise HTTPException(status_code=401, detail=str(exc)) from exc
+        headers = {"X-Authenticated-Subject": identity.subject}
+        if identity.email:
+            headers["X-Authenticated-Email"] = identity.email
+        return Response(status_code=204, headers=headers)
 
     @app.get("/api/health")
     async def health():

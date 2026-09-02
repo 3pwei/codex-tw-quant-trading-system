@@ -23,6 +23,9 @@ class LiveSettings:
     shioaji_secret_key: str | None = None
     shioaji_production: bool = False
     holidays: frozenset[date] = frozenset()
+    access_mode: str = "disabled"
+    cloudflare_access_team_domain: str | None = None
+    cloudflare_access_audience: str | None = None
 
     @classmethod
     def from_env(cls) -> "LiveSettings":
@@ -34,6 +37,9 @@ class LiveSettings:
         mode = os.getenv("MARKET_MODE", "mock").lower().strip()
         if mode not in {"mock", "shioaji"}:
             raise ValueError("MARKET_MODE must be mock or shioaji")
+        access_mode = os.getenv("MARKET_ACCESS_MODE", "disabled").lower().strip()
+        if access_mode not in {"disabled", "cloudflare"}:
+            raise ValueError("MARKET_ACCESS_MODE must be disabled or cloudflare")
         return cls(
             mode=mode,
             symbol=os.getenv("MARKET_SYMBOL", "TMF").upper(),
@@ -54,6 +60,9 @@ class LiveSettings:
                 for item in os.getenv("MARKET_HOLIDAYS", "").split(",")
                 if item.strip()
             ),
+            access_mode=access_mode,
+            cloudflare_access_team_domain=os.getenv("CF_ACCESS_TEAM_DOMAIN"),
+            cloudflare_access_audience=os.getenv("CF_ACCESS_AUD"),
         )
 
     def validate(self) -> None:
@@ -63,3 +72,9 @@ class LiveSettings:
             self.shioaji_api_key and self.shioaji_secret_key
         ):
             raise ValueError("SJ_API_KEY and SJ_SEC_KEY are required in shioaji mode")
+        if self.access_mode == "cloudflare" and not (
+            self.cloudflare_access_team_domain and self.cloudflare_access_audience
+        ):
+            raise ValueError(
+                "CF_ACCESS_TEAM_DOMAIN and CF_ACCESS_AUD are required in cloudflare mode"
+            )

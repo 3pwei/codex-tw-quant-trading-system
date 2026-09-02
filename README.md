@@ -221,23 +221,52 @@ Git checkout 外，權限為 `0600`。接著編輯：
 /opt/tw-quant/config/compose.env
 ```
 
-先以 `MARKET_MODE=mock` 驗證。`gateway.env` 的密碼雜湊可在主機產生：
+先以 `MARKET_MODE=mock` 驗證。正式站不使用共用 Basic Auth 密碼，而是使用
+Cloudflare Access 的核准 Email 與一次性驗證碼。先在 Cloudflare Zero Trust 建立：
 
-```bash
-docker run --rm caddy:2.10-alpine \
-  caddy hash-password --plaintext 'replace-with-a-long-random-password'
+1. `Access controls` → `Applications` → `Create new application`。
+2. 類型選 `Self-hosted and private`，Public hostname 填 `tmf.example.com`。
+3. 建立 `Allow` policy，Selector 選 `Emails`，只加入核准的完整 Email。
+4. 啟用 One-time PIN 登入方式；不要用 `Emails ending in` 開放整個公共信箱網域。
+5. 複製 Team domain（例如 `team.cloudflareaccess.com`）與應用程式的
+   `Application Audience (AUD) Tag`。
+
+將 `/opt/tw-quant/config/gateway.env` 設為：
+
+```dotenv
+MARKET_DOMAIN=tmf.example.com
+ACME_EMAIL=owner@example.com
 ```
 
-將輸出以單引號包住後填入 `DASHBOARD_PASSWORD_HASH`，避免雜湊中的 `$` 被解讀。
-設定完成後啟動：
+並在 `/opt/tw-quant/config/market.env` 設定：
+
+```dotenv
+MARKET_MODE=mock
+MARKET_ALLOWED_ORIGINS=https://tmf.example.com
+MARKET_ACCESS_MODE=cloudflare
+CF_ACCESS_TEAM_DOMAIN=team.cloudflareaccess.com
+CF_ACCESS_AUD=replace-with-application-audience-tag
+```
+
+Access 會在 Cloudflare 邊緣驗證 Email，FastAPI 源站再驗證
+`Cf-Access-Jwt-Assertion` 的簽章、issuer 與 audience。這可防止攻擊者用 Lightsail
+IP 和偽造 Host header 繞過登入。缺少或無效的 assertion 會在源站 fail closed。
+
+先保持 DNS `DNS only`，讓 Caddy 取得源站 HTTPS 憑證，然後啟動：
 
 ```bash
 sudo /opt/tw-quant/repo/deploy/lightsail/deploy.sh "$(git -C /opt/tw-quant/repo rev-parse HEAD)"
 curl https://tmf.example.com/healthz
 ```
 
-瀏覽器開啟 `https://tmf.example.com/live/`，登入 Caddy Basic Authentication 後，
-應看到 Mock 形成中的 1 分 K。切換 Shioaji 前，將 `market.env` 改成：
+`/healthz` 成功後，將 Cloudflare DNS 紀錄切成 Proxied（橘雲），SSL/TLS mode 設為
+`Full (strict)`。為讓 GitHub deployment health check 不需要使用者 Session，可另外建立
+更精確的 Access application `tmf.example.com/healthz`，Policy action 選 `Bypass`、
+Selector 選 `Everyone`；此路徑只回傳固定的 `ok`，不包含行情或系統狀態。
+
+瀏覽器開啟 `https://tmf.example.com/live/`，使用核准 Email 收取一次性驗證碼後，
+應看到 Mock 形成中的 1 分 K。Cloudflare Access Session 同時涵蓋 Dashboard、REST
+與 WebSocket。切換 Shioaji 前，將 `market.env` 改成：
 
 ```dotenv
 MARKET_MODE=shioaji
@@ -274,6 +303,7 @@ LIGHTSAIL_SSH_HOST_KEY=<事先核對過的 known_hosts 完整一行>
 
 Shioaji API Key、Secret、未來可能使用的 CA 憑證都不能放進 GitHub Actions。
 GitHub workflow 只更新程式碼與容器，不能讀取 `/opt/tw-quant/config/market.env`。
+Cloudflare Team domain 與 AUD tag 不是登入密碼，但仍應由伺服器設定管理，不要傳到前端。
 
 ### 4. 備份、更新與故障處理
 
