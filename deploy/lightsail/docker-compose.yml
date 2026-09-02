@@ -1,0 +1,50 @@
+name: tw-quant-lightsail
+
+services:
+  market-api:
+    platform: linux/amd64
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    env_file:
+      - ${MARKET_ENV_FILE:-market.env}
+    expose:
+      - "8000"
+    volumes:
+      - market-data:/data
+      - ../../data:/app/data:ro
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/live', timeout=3)"
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 30s
+
+  gateway:
+    platform: linux/amd64
+    build:
+      context: ../..
+      dockerfile: deploy/lightsail/Dockerfile.gateway
+    env_file:
+      - ${GATEWAY_ENV_FILE:-gateway.env}
+    depends_on:
+      market-api:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - caddy-data:/data
+      - caddy-config:/config
+    restart: unless-stopped
+
+volumes:
+  market-data:
+  caddy-data:
+  caddy-config:

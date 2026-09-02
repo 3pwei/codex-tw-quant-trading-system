@@ -1,0 +1,112 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.12"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install package
+        run: python -m pip install -e ".[server,test]"
+
+      - name: Run tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Run end-to-end demo
+        env:
+          MPLCONFIGDIR: /tmp/matplotlib
+        run: python -m tw_quant demo --output /tmp/tw-quant-demo
+
+      - name: Validate Mock Replay API and WebSocket
+        run: python -m unittest tests.test_live_api -v
+
+  dashboard:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build static dashboard
+        env:
+          NEXT_PUBLIC_MARKET_API_URL: http://localhost:8000
+          NEXT_PUBLIC_BASE_PATH: ""
+        run: npm run build
+
+  lightsail-images:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate Compose configuration
+        env:
+          MARKET_ENV_FILE: ${{ github.workspace }}/deploy/lightsail/market.env.example
+          GATEWAY_ENV_FILE: ${{ github.workspace }}/deploy/lightsail/gateway.env.example
+        run: docker compose -f deploy/lightsail/docker-compose.yml config --quiet
+
+      - name: Build FastAPI and Shioaji image
+        run: docker build --tag tw-quant-market-api:ci .
+
+      - name: Build Dashboard and Caddy image
+        run: docker build --file deploy/lightsail/Dockerfile.gateway --tag tw-quant-gateway:ci .
+
+      - name: Validate Caddy configuration
+        run: >-
+          docker run --rm
+          --env MARKET_DOMAIN=tmf.example.com
+          --env ACME_EMAIL=owner@example.com
+          tw-quant-gateway:ci
+          caddy validate --config /etc/caddy/Caddyfile
+
+      - name: Smoke test public gateway health route
+        run: |
+          docker run --detach --name tw-quant-gateway-health \
+            --env MARKET_DOMAIN=http://:8080 \
+            --env ACME_EMAIL=owner@example.com \
+            --publish 127.0.0.1:8080:8080 \
+            tw-quant-gateway:ci
+          trap 'docker rm --force tw-quant-gateway-health' EXIT
+          for attempt in {1..10}; do
+            if test "$(curl --silent --output /tmp/health \
+              --write-out '%{http_code}' http://127.0.0.1:8080/healthz)" = 200; then
+              test "$(cat /tmp/health)" = ok
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs tw-quant-gateway-health
+          exit 1

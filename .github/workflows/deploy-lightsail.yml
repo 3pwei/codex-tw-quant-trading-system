@@ -1,0 +1,89 @@
+name: Deploy to AWS Lightsail
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: "Full commit SHA from master; leave blank to deploy current master"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lightsail-production
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.revision.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+      - id: revision
+        env:
+          REQUESTED_SHA: ${{ inputs.commit_sha }}
+        run: |
+          sha="${REQUESTED_SHA:-$(git rev-parse HEAD)}"
+          case "$sha" in
+            *[!0-9a-f]*|'') echo "commit_sha must be a full lowercase hexadecimal SHA" >&2; exit 2 ;;
+          esac
+          test "${#sha}" -eq 40
+          git merge-base --is-ancestor "$sha" HEAD
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install -e ".[server,test]"
+      - run: python -m unittest discover -s tests -v
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+      - working-directory: dashboard
+        run: npm ci
+      - working-directory: dashboard
+        run: npm run lint && npm run build
+        env:
+          NEXT_PUBLIC_BASE_PATH: ""
+          NEXT_PUBLIC_MARKET_API_URL: ""
+
+  deploy:
+    needs: verify
+    runs-on: ubuntu-latest
+    environment: lightsail-production
+    steps:
+      - name: Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.LIGHTSAIL_SSH_PRIVATE_KEY }}
+          SSH_HOST_KEY: ${{ secrets.LIGHTSAIL_SSH_HOST_KEY }}
+        run: |
+          install -d -m 700 ~/.ssh
+          install -m 600 /dev/null ~/.ssh/lightsail
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/lightsail
+          printf '%s\n' "$SSH_HOST_KEY" > ~/.ssh/known_hosts
+
+      - name: Deploy approved revision
+        env:
+          LIGHTSAIL_HOST: ${{ vars.LIGHTSAIL_HOST }}
+          LIGHTSAIL_USER: ${{ vars.LIGHTSAIL_USER }}
+          DEPLOY_SHA: ${{ needs.verify.outputs.sha }}
+        run: |
+          ssh -i ~/.ssh/lightsail \
+            -o BatchMode=yes \
+            "${LIGHTSAIL_USER}@${LIGHTSAIL_HOST}" \
+            "sudo /opt/tw-quant/repo/deploy/lightsail/deploy.sh '${DEPLOY_SHA}'"
+
+      - name: Verify public health endpoint
+        env:
+          PUBLIC_DASHBOARD_URL: ${{ vars.PUBLIC_DASHBOARD_URL }}
+        run: curl --fail --show-error --silent --retry 8 --retry-delay 5 "${PUBLIC_DASHBOARD_URL%/}/healthz"
