@@ -26,6 +26,19 @@ class LiveSettingsTests(unittest.TestCase):
         )
         self.assertEqual(settings.cloudflare_access_audience, "audience-tag")
 
+    def test_history_settings_load_and_validate(self):
+        with patch.dict("os.environ", {
+            "MARKET_HISTORY_DAYS": "14",
+            "MARKET_HISTORY_LIMIT": "800",
+        }, clear=True):
+            settings = LiveSettings.from_env()
+        settings.validate()
+        self.assertEqual(settings.history_days, 14)
+        self.assertEqual(settings.history_limit, 800)
+
+        with self.assertRaisesRegex(ValueError, "MARKET_HISTORY_DAYS"):
+            LiveSettings(history_days=31).validate()
+
 
 if __name__ == "__main__":
     unittest.main()

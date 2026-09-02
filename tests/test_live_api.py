@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from tw_quant.live.api import create_app
 from tw_quant.live.access import AccessIdentity, AccessTokenError
-from tw_quant.live.feed import ReplayFeed
+from tw_quant.live.feed import ReplayFeed, ShioajiFeed
 from tw_quant.live.service import LiveMarketService
 from tw_quant.live.settings import LiveSettings
 from tw_quant.live.storage import SQLiteBarRepository
@@ -123,6 +123,39 @@ class LiveApiTests(unittest.TestCase):
 
 
 class ReplayConnectionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_shioaji_history_is_normalized_to_closed_left_edge_bars(self):
+        tz = ZoneInfo("Asia/Taipei")
+        timestamps = [
+            int(datetime(2026, 8, 24, 15, 1, tzinfo=tz).timestamp() * 1e9),
+            int(datetime(2026, 8, 24, 15, 2, tzinfo=tz).timestamp() * 1e9),
+        ]
+
+        class Kbars:
+            def dict(self):
+                return {
+                    "ts": timestamps,
+                    "Open": [100, 103], "High": [105, 106],
+                    "Low": [99, 102], "Close": [103, 104],
+                    "Volume": [12, 8],
+                }
+
+        class Api:
+            def kbars(self, **kwargs):
+                self.kwargs = kwargs
+                return Kbars()
+
+        feed = ShioajiFeed("key", "secret", "TMFR1", True, history_days=7)
+        feed.api = Api()
+        feed._resolved_contract = object()
+        feed.contract = "TMFU6"
+        bars = await feed.load_history(limit=1)
+        self.assertEqual(len(bars), 1)
+        self.assertEqual(bars[0].time, datetime(2026, 8, 24, 15, 1, tzinfo=tz))
+        self.assertEqual(bars[0].contract, "TMFU6")
+        self.assertEqual(bars[0].status, "closed")
+        self.assertEqual(bars[0].volume, 8)
+        self.assertEqual(feed.api.kwargs["contract"], feed._resolved_contract)
+
     async def test_replay_heartbeat_and_stop(self):
         feed = ReplayFeed(ROOT / "data/mock_tmf_ticks.csv", speed=1000, loop=False)
         statuses = []

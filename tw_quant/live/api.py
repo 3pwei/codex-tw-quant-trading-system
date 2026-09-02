@@ -26,6 +26,7 @@ def build_feed(settings: LiveSettings):
         secret_key=settings.shioaji_secret_key or "",
         contract=settings.contract,
         production=settings.shioaji_production,
+        history_days=settings.history_days,
     )
 
 
@@ -50,7 +51,7 @@ def create_app(
             validator = DisabledAccessValidator()
     service = LiveMarketService(
         market_feed, repo, config.symbol, config.heartbeat_seconds,
-        TradingCalendar(config.holidays),
+        TradingCalendar(config.holidays), config.history_limit,
     )
 
     @asynccontextmanager

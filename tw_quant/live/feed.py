@@ -9,8 +9,8 @@ from typing import Callable, Protocol
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
-from .models import ConnectionStatus, TickEvent
-from .sessions import classify_tmf_session
+from .models import ConnectionStatus, KBar, TickEvent
+from .sessions import classify_tmf_session, minute_floor
 
 
 TAIPEI = ZoneInfo("Asia/Taipei")
@@ -23,6 +23,7 @@ class MarketFeed(Protocol):
     async def start(self, on_tick: TickCallback, on_status: StatusCallback) -> None: ...
     async def stop(self) -> None: ...
     async def heartbeat(self) -> bool: ...
+    async def load_history(self, limit: int) -> list[KBar]: ...
 
 
 def parse_exchange_time(value: str) -> datetime:
@@ -134,16 +135,23 @@ class ReplayFeed:
     async def heartbeat(self) -> bool:
         return self._healthy and self._task is not None and not self._task.done()
 
+    async def load_history(self, limit: int) -> list[KBar]:
+        return []
+
 
 class ShioajiFeed:
     """Quote-only Shioaji TMF feed. This class never activates CA or places orders."""
 
-    def __init__(self, api_key: str, secret_key: str, contract: str, production: bool):
+    def __init__(
+        self, api_key: str, secret_key: str, contract: str, production: bool,
+        history_days: int = 7,
+    ):
         self.api_key = api_key
         self.secret_key = secret_key
         self.requested_contract = contract
         self.contract = contract
         self.production = production
+        self.history_days = history_days
         self.api = None
         self._resolved_contract = None
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -170,7 +178,11 @@ class ShioajiFeed:
             raise RuntimeError("install the shioaji optional dependency") from exc
 
         self.api = sj.Shioaji(simulation=not self.production)
-        self.api.login(api_key=self.api_key, secret_key=self.secret_key)
+        self.api.login(
+            api_key=self.api_key,
+            secret_key=self.secret_key,
+            subscribe_trade=False,
+        )
         contracts = self.api.Contracts.Futures.TMF
         contract = getattr(contracts, self.requested_contract, None)
         if contract is None:
@@ -225,6 +237,77 @@ class ShioajiFeed:
             version=sj.constant.QuoteVersion.v1,
         )
         self._emit_status("connected")
+
+    @staticmethod
+    def _historical_time(value) -> datetime:
+        if isinstance(value, datetime):
+            result = value
+            if result.tzinfo is None:
+                result = result.replace(tzinfo=TAIPEI)
+            return result.astimezone(TAIPEI)
+        if isinstance(value, str):
+            return parse_exchange_time(value)
+        raw = float(value)
+        if raw > 1e16:
+            raw /= 1e9
+        elif raw > 1e13:
+            raw /= 1e6
+        elif raw > 1e10:
+            raw /= 1e3
+        return datetime.fromtimestamp(raw, TAIPEI)
+
+    def _load_history_sync(self, limit: int) -> list[KBar]:
+        if self.api is None or self._resolved_contract is None:
+            return []
+        now = datetime.now(TAIPEI)
+        end = now.date()
+        start = end - timedelta(days=self.history_days - 1)
+        payload = self.api.kbars(
+            contract=self._resolved_contract,
+            start=start.isoformat(),
+            end=end.isoformat(),
+        ).dict()
+        rows = zip(
+            payload.get("ts", ()), payload.get("Open", ()),
+            payload.get("High", ()), payload.get("Low", ()),
+            payload.get("Close", ()), payload.get("Volume", ()),
+        )
+        current_minute = minute_floor(now)
+        bars: list[KBar] = []
+        for timestamp, open_, high, low, close, volume in rows:
+            # Shioaji labels a one-minute K bar by its right edge (09:01 is
+            # the 09:00 minute). The live aggregator stores the left edge.
+            bar_time = minute_floor(
+                self._historical_time(timestamp) - timedelta(minutes=1)
+            )
+            if bar_time >= current_minute:
+                continue
+            open_, high, low, close = map(float, (open_, high, low, close))
+            volume = int(volume)
+            if (
+                min(open_, high, low, close) <= 0
+                or high < max(open_, close)
+                or low > min(open_, close)
+                or volume < 0
+            ):
+                continue
+            try:
+                session, trading_date = classify_tmf_session(bar_time)
+            except ValueError:
+                continue
+            last_tick_time = bar_time + timedelta(seconds=59, milliseconds=999)
+            bars.append(KBar(
+                symbol="TMF", contract=self.contract, time=bar_time,
+                open=open_, high=high, low=low, close=close, volume=volume,
+                status="closed", session=session, trading_date=trading_date,
+                first_tick_time=bar_time, last_tick_time=last_tick_time,
+                exchange_time=last_tick_time, received_time=now,
+                latency_ms=0.0,
+            ))
+        return bars[-limit:]
+
+    async def load_history(self, limit: int) -> list[KBar]:
+        return await asyncio.to_thread(self._load_history_sync, limit)
 
     async def stop(self) -> None:
         if self.api is None:

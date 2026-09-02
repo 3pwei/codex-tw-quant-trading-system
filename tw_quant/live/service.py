@@ -23,11 +23,13 @@ class LiveMarketService:
         symbol: str = "TMF",
         heartbeat_seconds: float = 5.0,
         calendar: TradingCalendar = DEFAULT_CALENDAR,
+        history_limit: int = 500,
     ):
         self.feed = feed
         self.repository = repository
         self.symbol = symbol
         self.heartbeat_seconds = heartbeat_seconds
+        self.history_limit = history_limit
         self.queue: asyncio.Queue[TickEvent] = asyncio.Queue(maxsize=20_000)
         self.hub = BroadcastHub()
         self.aggregator = MinuteBarAggregator(symbol, calendar=calendar)
@@ -36,6 +38,8 @@ class LiveMarketService:
         self.last_received_time: datetime | None = None
         self.last_heartbeat_time: datetime | None = None
         self.dropped_ticks = 0
+        self.history_bars_loaded = 0
+        self.history_error: str | None = None
         self._worker: asyncio.Task | None = None
         self._heartbeat: asyncio.Task | None = None
         self._running = False
@@ -58,6 +62,14 @@ class LiveMarketService:
             self._run_heartbeat(), name="tmf-feed-heartbeat"
         )
         await self.feed.start(self.enqueue_tick, self.set_connection_status)
+        try:
+            history = await self.feed.load_history(self.history_limit)
+            for bar in history:
+                self.repository.save(bar)
+            self.history_bars_loaded = len(history)
+        except Exception as exc:
+            # Historical backfill must not interrupt the live Tick stream.
+            self.history_error = str(exc)
 
     async def stop(self) -> None:
         self._running = False
@@ -128,4 +140,6 @@ class LiveMarketService:
             "dropped_ticks": self.dropped_ticks,
             "duplicate_ticks": self.aggregator.duplicate_ticks,
             "late_ticks": self.aggregator.late_ticks,
+            "history_bars_loaded": self.history_bars_loaded,
+            "history_error": self.history_error,
         }

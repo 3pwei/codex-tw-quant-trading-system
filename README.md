@@ -141,12 +141,17 @@ Mock 會重播 `data/mock_tmf_ticks.csv`。同一分鐘包含多筆 Tick，圖�
 ```dotenv
 MARKET_MODE=shioaji
 MARKET_CONTRACT=TMFR1
+MARKET_HISTORY_DAYS=7
+MARKET_HISTORY_LIMIT=500
 SJ_API_KEY=your-real-key
 SJ_SEC_KEY=your-real-secret
 SJ_PRODUCTION=true
 ```
 
-再啟動同一個 FastAPI 指令。行情服務只呼叫登入、契約解析、Tick callback 與 quote subscribe；不啟用 CA、不提供下單 API。正式 key 建議只授予 Market/Data 權限並限制來源 IP。
+再啟動同一個 FastAPI 指令。啟動時會使用 Shioaji `kbars` 一次回補最近 7 日內
+最多 500 根已收盤 1 分 K，之後只依靠 Tick callback 即時更新；不會輪詢歷史 API。
+行情服務登入時停用 trade event subscription，只保留歷史／即時行情；不啟用 CA、
+不提供下單 API。正式 key 建議只授予 Market/Data 權限並限制來源 IP。
 
 ### API
 
@@ -271,6 +276,8 @@ Selector 選 `Everyone`；此路徑只回傳固定的 `ok`，不包含行情或�
 ```dotenv
 MARKET_MODE=shioaji
 MARKET_CONTRACT=TMFR1
+MARKET_HISTORY_DAYS=7
+MARKET_HISTORY_LIMIT=500
 SJ_API_KEY=replace-on-server
 SJ_SEC_KEY=replace-on-server
 SJ_PRODUCTION=true
@@ -316,7 +323,8 @@ Cloudflare Team domain 與 AUD tag 不是登入密碼，但仍應由伺服器設
 
 ### 常見問題
 
-- `歷史 K 棒為空`：新 SQLite 首次啟動還沒有資料；先讓 Replay 或 Shioaji 收到 Tick。
+- `歷史 K 棒為空`：Shioaji 模式會在啟動時一次回補；查看 `/api/health` 的
+  `history_bars_loaded` 與 `history_error`。Mock 模式則從 Replay Tick 累積。
 - `Dashboard 顯示重新連線`：確認後端 URL、CORS 的 `MARKET_ALLOWED_ORIGINS`、TLS 憑證和 `/api/health`。
 - `沒有 Tick 但仍顯示連線`：這是預期行為；無成交不等於斷線，heartbeat 才是連線判斷依據。
 - `重啟後 Mock 不再更新`：既有 SQLite 已記錄相同 replay Tick；測試新一輪可刪除測試用 DB，正式資料庫不要任意刪除。
