@@ -12,8 +12,8 @@ from tw_quant.live.feed import ReplayFeed, ShioajiFeed
 from tw_quant.live.service import LiveMarketService
 from tw_quant.live.settings import LiveSettings
 from tw_quant.live.storage import SQLiteBarRepository
-from tw_quant.live.models import TickEvent
-from datetime import datetime, timedelta
+from tw_quant.live.models import KBar, TickEvent
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 
@@ -123,11 +123,41 @@ class LiveApiTests(unittest.TestCase):
 
 
 class ReplayConnectionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_backfill_cleanup_preserves_tick_aggregated_bars(self):
+        temp = tempfile.TemporaryDirectory()
+        repository = SQLiteBarRepository(Path(temp.name) / "cleanup.sqlite3")
+        tz = ZoneInfo("Asia/Taipei")
+        base = datetime(2026, 8, 24, 15, 0, tzinfo=tz)
+        historical = KBar(
+            symbol="TMF", contract="TMFU6", time=base,
+            open=100, high=103, low=99, close=102, volume=10,
+            status="closed", session="night", trading_date=(base + timedelta(days=1)).date(),
+            first_tick_time=base,
+            last_tick_time=base.replace(second=59, microsecond=999000),
+            exchange_time=base.replace(second=59, microsecond=999000),
+            received_time=base + timedelta(days=1), latency_ms=0,
+        )
+        live_time = base + timedelta(minutes=1)
+        live = historical.copy(
+            time=live_time, first_tick_time=live_time + timedelta(seconds=2),
+            last_tick_time=live_time + timedelta(seconds=48),
+            exchange_time=live_time + timedelta(seconds=48), latency_ms=12,
+        )
+        try:
+            repository.save(historical)
+            repository.save(live)
+            repository.purge_backfill("TMF", "TMFU6")
+            bars = repository.latest("TMF", 10)
+            self.assertEqual([bar.time for bar in bars], [live_time])
+        finally:
+            repository.close()
+            temp.cleanup()
+
     async def test_shioaji_history_is_normalized_to_closed_left_edge_bars(self):
         tz = ZoneInfo("Asia/Taipei")
         timestamps = [
-            int(datetime(2026, 8, 24, 15, 1, tzinfo=tz).timestamp() * 1e9),
-            int(datetime(2026, 8, 24, 15, 2, tzinfo=tz).timestamp() * 1e9),
+            int(datetime(2026, 8, 24, 15, 1, tzinfo=timezone.utc).timestamp() * 1e9),
+            int(datetime(2026, 8, 24, 15, 2, tzinfo=timezone.utc).timestamp() * 1e9),
         ]
 
         class Kbars:
@@ -155,6 +185,14 @@ class ReplayConnectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(bars[0].status, "closed")
         self.assertEqual(bars[0].volume, 8)
         self.assertEqual(feed.api.kwargs["contract"], feed._resolved_contract)
+
+    def test_shioaji_numeric_timestamp_uses_taipei_clock_fields(self):
+        # Official Shioaji docs show this exact value as 2026-05-18 09:01.
+        actual = ShioajiFeed._historical_time(1779094860000000000)
+        self.assertEqual(
+            actual,
+            datetime(2026, 5, 18, 9, 1, tzinfo=ZoneInfo("Asia/Taipei")),
+        )
 
     async def test_replay_heartbeat_and_stop(self):
         feed = ReplayFeed(ROOT / "data/mock_tmf_ticks.csv", speed=1000, loop=False)

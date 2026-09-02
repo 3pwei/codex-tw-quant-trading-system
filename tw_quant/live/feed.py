@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import csv
-from datetime import datetime, time, timedelta
+from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 from time import monotonic
 from typing import Callable, Protocol
@@ -254,7 +254,11 @@ class ShioajiFeed:
             raw /= 1e6
         elif raw > 1e10:
             raw /= 1e3
-        return datetime.fromtimestamp(raw, TAIPEI)
+        # Shioaji's Python Kbars `ts` is an integer nanosecond value whose
+        # clock fields represent Taiwan local time (the official example casts
+        # it directly to a timezone-naive datetime). Treating it as a real UTC
+        # epoch and converting to Taipei would incorrectly add eight hours.
+        return datetime.fromtimestamp(raw, timezone.utc).replace(tzinfo=TAIPEI)
 
     def _load_history_sync(self, limit: int) -> list[KBar]:
         if self.api is None or self._resolved_contract is None:

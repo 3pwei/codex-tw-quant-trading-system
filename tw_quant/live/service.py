@@ -64,6 +64,10 @@ class LiveMarketService:
         await self.feed.start(self.enqueue_tick, self.set_connection_status)
         try:
             history = await self.feed.load_history(self.history_limit)
+            if history:
+                purge = getattr(self.repository, "purge_backfill", None)
+                if purge is not None:
+                    purge(self.symbol, history[-1].contract)
             for bar in history:
                 self.repository.save(bar)
             self.history_bars_loaded = len(history)
