@@ -7,7 +7,8 @@
 ## 已完成
 
 - 讀取與驗證台股 1 分 K CSV，統一使用 `Asia/Taipei`
-- 開盤區間突破（Opening Range Breakout, ORB）示範策略
+- 開盤區間突破（Opening Range Breakout, ORB）策略
+- BNF 均值回歸策略（20 期均線／標準差、Z-score 與 RSI 確認）
 - 訊號於當根收盤產生，下一根開盤成交，避免未來函數
 - 多方，以及可選擇啟用的空方回測
 - 停損、停利、13:20 強制平倉（皆可調整）
@@ -19,6 +20,7 @@
 - 即時 1 分 K、SQLite、FastAPI REST/WebSocket 與獨立 heartbeat
 - 無憑證可執行的 Mock/Replay 模式
 - Next.js + TradingView Lightweight Charts 即時 K 線頁面
+- ORB／BNF Multi-select 策略圖層與即時訊號標記
 
 ## 架構
 
@@ -37,7 +39,7 @@ CSV 1 分 K
 | 檔案 | 功能 |
 |---|---|
 | `tw_quant/data.py` | CSV 載入、時區與 OHLCV 品質檢查 |
-| `tw_quant/strategies.py` | ORB 策略；可換成自己的策略類別 |
+| `tw_quant/strategies.py` | ORB 與 BNF 均值回歸策略 |
 | `tw_quant/engine.py` | 事件式撮合、部位、風控與交易紀錄 |
 | `tw_quant/costs.py` | 台股交易成本與滑價 |
 | `tw_quant/metrics.py` | 勝率、淨利、PF、回撤與日頻 Sharpe |
@@ -46,6 +48,7 @@ CSV 1 分 K
 | `tw_quant/live/aggregator.py` | Tick 去重、亂序政策、缺漏分鐘與即時 1 分 K |
 | `tw_quant/live/storage.py` | SQLite repository；介面可替換 PostgreSQL |
 | `tw_quant/live/api.py` | FastAPI REST、WebSocket 與健康檢查 |
+| `tw_quant/live/strategy_analysis.py` | 依已收盤 TMF 1 分 K 計算 ORB／BNF 訊號 |
 | `dashboard/app/live/` | 即時 K 線、成交量、狀態與自動重連前端 |
 
 ## 安裝
@@ -95,6 +98,20 @@ K 棒使用 Tick 的交易所時間（`Asia/Taipei`）分桶，不使用瀏覽�
 - SQLite 同時保存形成中 K 棒與已處理 Tick ID，重啟後可續接且不重複累加。
 - TMFR1 解析出的實際近月契約會放在訊息 `contract`；Tick 契約變更時視為換月並關閉舊契約 K 棒。
 - 連線狀態取自獨立 heartbeat／Shioaji quote connection event，不會因為一段時間沒有成交就判斷斷線。
+
+### 交易策略圖層
+
+即時頁右上角的 Multi-select Dropdown 可以同時顯示或隱藏：
+
+- `ORB 開盤突破`：每個日／夜盤以前 15 分鐘建立區間，收盤突破區間且
+  當根量達前 5 根均量的 1.2 倍時確認訊號。
+- `BNF 均值回歸`：20 期收盤均線與標準差；Z-score 向下穿越 `-2` 且
+  RSI(14) 不高於 30 時做多，向上穿越 `+2` 且 RSI 不低於 70 時做空；
+  回到 `±0.5Z` 內產生均值回歸出場訊號。
+
+兩套策略只使用已收盤 K 棒確認，並在下一根 K 棒開盤建立訊號標記，
+不使用形成中 K 棒偷看結果。風控預設為停損 0.6%、停利 1.2%；標記
+只供研究與觀察，不會觸發模擬或真實訂單。
 
 ### Mock／Replay 本機啟動
 
@@ -157,6 +174,7 @@ SJ_PRODUCTION=true
 
 - `GET /api/health`
 - `GET /api/kbars?symbol=TMF&interval=1m&limit=500`
+- `GET /api/strategy-signals?symbol=TMF&strategies=orb,bnf&limit=500`
 - `WS /ws/market/TMF`
 
 WebSocket 的 K 棒訊息包含 symbol、實際契約、交易所／接收時間、延遲、OHLCV、forming/closed、日夜盤、交易日與行情連線狀態。獨立 heartbeat 即使無成交也會持續推送。
@@ -335,6 +353,23 @@ Cloudflare Team domain 與 AUD tag 不是登入密碼，但仍應由伺服器設
 ```bash
 python -m tw_quant demo
 ```
+
+使用 BNF 均值回歸回測自己的台股 1 分 K：
+
+```bash
+python -m tw_quant backtest \
+  --csv data/2330_1m.csv \
+  --strategy bnf \
+  --direction both \
+  --bnf-window 20 \
+  --bnf-entry-z 2.0 \
+  --bnf-exit-z 0.5 \
+  --bnf-rsi-period 14 \
+  --output output/2330_bnf
+```
+
+均值回歸訊號在 K 棒收盤確認，下一根開盤成交；回到均值區、停損、
+停利或收盤時間都可能觸發出場。同根同時碰到停損與停利時仍採停損優先。
 
 這會在 `output/demo/` 產生：
 

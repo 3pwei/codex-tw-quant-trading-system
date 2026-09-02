@@ -11,7 +11,12 @@ from .demo_data import save_demo_csv
 from .engine import BacktestEngine
 from .futures import FuturesCostConfig, load_taifex_ticks, run_night_orb, ticks_to_bars
 from .report import save_report
-from .strategies import OpeningRangeBreakout, OpeningRangeBreakoutConfig
+from .strategies import (
+    BNFMeanReversion,
+    BNFMeanReversionConfig,
+    OpeningRangeBreakout,
+    OpeningRangeBreakoutConfig,
+)
 
 
 def parse_time(value: str):
@@ -29,9 +34,14 @@ def add_backtest_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--take-profit", type=float, default=0.012, help="停利比例，例如 0.012")
     parser.add_argument("--force-exit", type=parse_time, default=parse_time("13:20"))
     parser.add_argument("--direction", choices=("long", "short", "both"), default="long")
+    parser.add_argument("--strategy", choices=("orb", "bnf"), default="orb")
     parser.add_argument("--opening-minutes", type=int, default=15)
     parser.add_argument("--volume-window", type=int, default=5)
     parser.add_argument("--volume-multiplier", type=float, default=1.2)
+    parser.add_argument("--bnf-window", type=int, default=20)
+    parser.add_argument("--bnf-entry-z", type=float, default=2.0)
+    parser.add_argument("--bnf-exit-z", type=float, default=0.5)
+    parser.add_argument("--bnf-rsi-period", type=int, default=14)
     parser.add_argument("--last-entry", type=parse_time, default=parse_time("12:45"))
     parser.add_argument("--commission-rate", type=float, default=0.001425)
     parser.add_argument("--commission-discount", type=float, default=1.0)
@@ -41,15 +51,27 @@ def add_backtest_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def make_engine(args: argparse.Namespace) -> BacktestEngine:
-    strategy = OpeningRangeBreakout(
-        OpeningRangeBreakoutConfig(
-            opening_range_minutes=args.opening_minutes,
-            volume_window=args.volume_window,
-            volume_multiplier=args.volume_multiplier,
-            last_entry_time=args.last_entry,
-            direction=args.direction,
+    if args.strategy == "bnf":
+        strategy = BNFMeanReversion(
+            BNFMeanReversionConfig(
+                mean_window=args.bnf_window,
+                std_window=args.bnf_window,
+                entry_z_score=args.bnf_entry_z,
+                exit_z_score=args.bnf_exit_z,
+                rsi_period=args.bnf_rsi_period,
+                direction=args.direction,
+            )
         )
-    )
+    else:
+        strategy = OpeningRangeBreakout(
+            OpeningRangeBreakoutConfig(
+                opening_range_minutes=args.opening_minutes,
+                volume_window=args.volume_window,
+                volume_multiplier=args.volume_multiplier,
+                last_entry_time=args.last_entry,
+                direction=args.direction,
+            )
+        )
     backtest = BacktestConfig(
         initial_capital=args.initial_capital,
         quantity=args.quantity,

@@ -18,6 +18,21 @@ class FixedSignalStrategy:
         return result
 
 
+class FixedMeanReversionStrategy(FixedSignalStrategy):
+    def __init__(self, signal_index: int, exit_index: int, signal: int = 1):
+        super().__init__(signal_index, signal)
+        self.exit_index = exit_index
+
+    def generate_exits(self, day_bars):
+        result = pd.DataFrame(
+            False, index=day_bars.index, columns=["long", "short"]
+        )
+        result.loc[
+            self.exit_index, "long" if self.signal == 1 else "short"
+        ] = True
+        return result
+
+
 def make_bars(count=10):
     timestamps = pd.date_range(
         "2026-01-02 09:00",
@@ -78,6 +93,24 @@ class EngineTests(unittest.TestCase):
         trade = engine.run(bars).trades.iloc[0]
         self.assertEqual(trade["exit_reason"], "stop_loss")
         self.assertEqual(trade["exit_price"], 99.0)
+
+
+    def test_mean_reversion_exit_executes_at_next_bar_open(self):
+        bars = make_bars(8)
+        engine = BacktestEngine(
+            FixedMeanReversionStrategy(signal_index=0, exit_index=3),
+            BacktestConfig(
+                stop_loss_pct=0.5,
+                take_profit_pct=0.5,
+                force_exit_time=time(9, 7),
+            ),
+            zero_costs(),
+        )
+        trade = engine.run(bars).trades.iloc[0]
+        self.assertEqual(trade["entry_time"], bars.iloc[1]["timestamp"])
+        self.assertEqual(trade["exit_time"], bars.iloc[4]["timestamp"])
+        self.assertEqual(trade["exit_price"], bars.iloc[4]["open"])
+        self.assertEqual(trade["exit_reason"], "mean_reversion")
 
 
 if __name__ == "__main__":

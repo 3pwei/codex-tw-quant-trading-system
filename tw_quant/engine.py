@@ -79,8 +79,16 @@ class BacktestEngine:
 
     def _run_day(self, bars: pd.DataFrame, realized_pnl_before_day: float) -> list[Trade]:
         signals = self.strategy.generate_entries(bars).reindex(bars.index, fill_value=0)
+        exit_generator = getattr(self.strategy, "generate_exits", None)
+        if callable(exit_generator):
+            exit_signals = exit_generator(bars).reindex(bars.index, fill_value=False)
+        else:
+            exit_signals = pd.DataFrame(
+                False, index=bars.index, columns=["long", "short"]
+            )
         trades: list[Trade] = []
         pending_signal = 0
+        pending_strategy_exit = False
         position = 0
         entry_price = 0.0
         entry_time = None
@@ -93,6 +101,25 @@ class BacktestEngine:
         for index, bar in bars.iterrows():
             timestamp = bar["timestamp"]
             current_time = timestamp.time()
+
+            if position != 0 and pending_strategy_exit:
+                trade = self._close_trade(
+                    symbol=str(bar["symbol"]),
+                    position=position,
+                    entry_time=entry_time,
+                    exit_time=timestamp,
+                    entry_price=entry_price,
+                    raw_exit_price=float(bar["open"]),
+                    entry_cost=entry_cost,
+                    mfe_per_share=mfe_per_share,
+                    mae_per_share=mae_per_share,
+                    reason="mean_reversion",
+                )
+                trades.append(trade)
+                position = 0
+                entry_time = None
+                entry_cost = None
+                pending_strategy_exit = False
 
             if (
                 position == 0
@@ -167,6 +194,11 @@ class BacktestEngine:
                     position = 0
                     entry_time = None
                     entry_cost = None
+                    pending_strategy_exit = False
+
+            if position != 0:
+                side = "long" if position == 1 else "short"
+                pending_strategy_exit = bool(exit_signals.loc[index, side])
 
             if position == 0 and pending_signal == 0 and len(trades) < self.config.max_trades_per_day:
                 signal = int(signals.loc[index])
