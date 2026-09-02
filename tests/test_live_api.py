@@ -53,6 +53,21 @@ class LiveApiTests(unittest.TestCase):
                 health = client.get("/api/health").json()
                 self.assertEqual(health["symbol"], "TMF")
                 self.assertIn("last_tick_time", health)
+                strategy_response = client.get(
+                    "/api/strategy-signals?symbol=TMF&strategies=orb,bnf&limit=500"
+                )
+                self.assertEqual(strategy_response.status_code, 200)
+                self.assertEqual(
+                    [
+                        item["key"]
+                        for item in strategy_response.json()["strategies"]
+                    ],
+                    ["orb", "bnf"],
+                )
+                invalid_strategy = client.get(
+                    "/api/strategy-signals?symbol=TMF&strategies=unknown&limit=500"
+                )
+                self.assertEqual(invalid_strategy.status_code, 400)
         finally:
             temp.cleanup()
 
