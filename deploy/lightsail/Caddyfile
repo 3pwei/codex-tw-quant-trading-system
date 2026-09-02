@@ -12,6 +12,10 @@
 
 		forward_auth market-api:8000 {
 			uri /internal/auth/cloudflare
+			# Keep the auth probe as regular HTTP even when the original request
+			# is a WebSocket handshake.
+			header_up -Connection
+			header_up -Upgrade
 			copy_headers X-Authenticated-Subject X-Authenticated-Email
 		}
 
