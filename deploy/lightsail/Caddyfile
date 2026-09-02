@@ -6,21 +6,22 @@
 {$MARKET_DOMAIN} {
 	encode zstd gzip
 
-	@health path /healthz
-	respond @health "ok" 200
+	route {
+		@health path /healthz
+		respond @health "ok" 200
 
-	@protected not path /healthz
-	forward_auth @protected market-api:8000 {
-		uri /internal/auth/cloudflare
-		copy_headers X-Authenticated-Subject X-Authenticated-Email
+		forward_auth market-api:8000 {
+			uri /internal/auth/cloudflare
+			copy_headers X-Authenticated-Subject X-Authenticated-Email
+		}
+
+		@backend path /api/* /ws/* /docs* /openapi.json /health/live
+		reverse_proxy @backend market-api:8000
+
+		root * /srv
+		try_files {path} {path}/index.html /404.html
+		file_server
 	}
-
-	@backend path /api/* /ws/* /docs* /openapi.json /health/live
-	reverse_proxy @backend market-api:8000
-
-	root * /srv
-	try_files {path} {path}/index.html /404.html
-	file_server
 
 	header {
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"

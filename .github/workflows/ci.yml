@@ -91,3 +91,22 @@ jobs:
           --env ACME_EMAIL=owner@example.com
           tw-quant-gateway:ci
           caddy validate --config /etc/caddy/Caddyfile
+
+      - name: Smoke test public gateway health route
+        run: |
+          docker run --detach --name tw-quant-gateway-health \
+            --env MARKET_DOMAIN=http://:8080 \
+            --env ACME_EMAIL=owner@example.com \
+            --publish 127.0.0.1:8080:8080 \
+            tw-quant-gateway:ci
+          trap 'docker rm --force tw-quant-gateway-health' EXIT
+          for attempt in {1..10}; do
+            if test "$(curl --silent --output /tmp/health \
+              --write-out '%{http_code}' http://127.0.0.1:8080/healthz)" = 200; then
+              test "$(cat /tmp/health)" = ok
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs tw-quant-gateway-health
+          exit 1
