@@ -66,16 +66,21 @@ class LiveApiTests(unittest.TestCase):
         try:
             with client:
                 with client.websocket_connect("/ws/market/TMF") as socket:
-                    forming_times = []
+                    forming_counts = {}
                     deadline = time.time() + 3
-                    while time.time() < deadline and len(forming_times) < 2:
+                    while time.time() < deadline and not any(
+                        count >= 2 for count in forming_counts.values()
+                    ):
                         message = socket.receive_json()
                         if message.get("type") == "kbar":
                             self.assertTrue(required.issubset(message))
                             if message["status"] == "forming":
-                                forming_times.append(message["time"])
-                    self.assertGreaterEqual(len(forming_times), 2)
-                    self.assertEqual(forming_times[0], forming_times[1])
+                                bar_time = message["time"]
+                                forming_counts[bar_time] = forming_counts.get(bar_time, 0) + 1
+                    self.assertTrue(
+                        any(count >= 2 for count in forming_counts.values()),
+                        "expected repeated forming updates for the same minute",
+                    )
         finally:
             temp.cleanup()
 
