@@ -54,6 +54,16 @@ const BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
 const apiBase = () => CONFIGURED_API_BASE
   || (typeof window === "undefined" ? "http://localhost:8000" : window.location.origin);
 const toTime = (value: string): UTCTimestamp => Math.floor(Date.parse(value) / 1000) as UTCTimestamp;
+const chartDate = (value: Time) => {
+  if (typeof value === "number") return new Date(value * 1000);
+  if (typeof value === "string") return new Date(value);
+  return new Date(Date.UTC(value.year, value.month - 1, value.day));
+};
+const chartTimeFormatter = new Intl.DateTimeFormat("zh-TW", {
+  timeZone: "Asia/Taipei", month: "2-digit", day: "2-digit",
+  hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+});
+const formatChartTime = (value: Time) => chartTimeFormatter.format(chartDate(value));
 const fmt = (value?: number | null) => value == null ? "—" : new Intl.NumberFormat("zh-TW", { maximumFractionDigits: 2 }).format(value);
 const fmtTime = (value?: string | null) => value ? new Date(value).toLocaleString("zh-TW", { hour12: false, timeZone: "Asia/Taipei" }) : "尚未收到";
 
@@ -104,14 +114,18 @@ export default function LiveDashboard() {
   useEffect(() => {
     if (!hostRef.current) return;
     const chart = createChart(hostRef.current, {
-      autoSize: true,
-      height: 610,
+      autoSize: false,
+      width: hostRef.current.clientWidth,
+      height: window.matchMedia("(max-width: 840px)").matches ? 500 : 610,
       layout: { background: { type: ColorType.Solid, color: "#07111f" }, textColor: "#9fb0c7", panes: { separatorColor: "#17283b" } },
       grid: { vertLines: { color: "#132237" }, horzLines: { color: "#132237" } },
       crosshair: { vertLine: { color: "#94a3b8" }, horzLine: { color: "#94a3b8" } },
-      timeScale: { borderColor: "#26384d", timeVisible: true, secondsVisible: false, rightOffset: 6 },
+      timeScale: {
+        borderColor: "#26384d", timeVisible: true, secondsVisible: false,
+        rightOffset: 6, tickMarkFormatter: formatChartTime,
+      },
       rightPriceScale: { borderColor: "#26384d" },
-      localization: { locale: "zh-TW" },
+      localization: { locale: "zh-TW", timeFormatter: formatChartTime },
     });
     const candles = chart.addSeries(CandlestickSeries, {
       upColor: "#2dd4bf", downColor: "#f87171", borderVisible: false,
@@ -126,6 +140,11 @@ export default function LiveDashboard() {
     chartRef.current = chart;
     candleRef.current = candles;
     volumeRef.current = volumes;
+    const resizeObserver = new ResizeObserver(entries => {
+      const width = Math.floor(entries[0]?.contentRect.width ?? 0);
+      if (width > 0) chart.applyOptions({ width });
+    });
+    resizeObserver.observe(hostRef.current);
 
     fetch(`${BASE_PATH}/backtest-data.json`)
       .then(response => response.ok ? response.json() : null)
@@ -139,7 +158,13 @@ export default function LiveDashboard() {
       })
       .catch(() => undefined);
 
-    return () => { chart.remove(); chartRef.current = null; candleRef.current = null; volumeRef.current = null; };
+    return () => {
+      resizeObserver.disconnect();
+      chart.remove();
+      chartRef.current = null;
+      candleRef.current = null;
+      volumeRef.current = null;
+    };
   }, []);
 
   useEffect(() => {
