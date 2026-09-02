@@ -134,6 +134,28 @@ class ReplayConnectionTests(unittest.IsolatedAsyncioTestCase):
         await feed.stop()
         self.assertFalse(await feed.heartbeat())
 
+    async def test_looping_replay_keeps_ticks_unique_and_time_monotonic(self):
+        feed = ReplayFeed(ROOT / "data/mock_tmf_ticks.csv", speed=1000, loop=True)
+        ticks = []
+        try:
+            await feed.start(ticks.append, lambda _status: None)
+            deadline = time.time() + 2
+            while len(ticks) < 24 and time.time() < deadline:
+                await asyncio.sleep(0.02)
+            self.assertGreaterEqual(len(ticks), 24)
+            sample = ticks[:24]
+            self.assertEqual(len({item.sequence for item in sample}), len(sample))
+            self.assertEqual(
+                [item.exchange_time for item in sample],
+                sorted(item.exchange_time for item in sample),
+            )
+            self.assertLess(
+                (sample[-1].exchange_time - sample[0].exchange_time).total_seconds(),
+                3,
+            )
+        finally:
+            await feed.stop()
+
     async def test_connection_events_recover_without_using_tick_timeout(self):
         class EventFeed:
             contract = "TMFI6"
