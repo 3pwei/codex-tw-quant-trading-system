@@ -113,6 +113,7 @@ def run_strategy_backtest(
         [strategy],
         force_close_last=True,
         parameters={strategy: parameters or {}},
+        interval=selected_interval,
     )["strategies"][0]
     signals = analysis["signals"]
     cost_config = costs or FuturesCostConfig()

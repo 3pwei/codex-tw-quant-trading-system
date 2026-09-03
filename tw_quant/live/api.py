@@ -184,6 +184,7 @@ def create_app(
             ),
             selected,
             parameters=repo.strategy_parameters(),
+            interval=selected_interval,
         )
 
     @app.get("/api/strategies")

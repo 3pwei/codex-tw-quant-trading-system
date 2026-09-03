@@ -103,6 +103,7 @@ def analyze_strategies(
     *,
     force_close_last: bool = False,
     parameters: dict[str, dict[str, object]] | None = None,
+    interval: str = "1m",
 ) -> dict[str, object]:
     """Analyze canonical bars independent of whether they came from live or history."""
     requested = tuple(dict.fromkeys(value.lower() for value in selected))
@@ -129,11 +130,15 @@ def analyze_strategies(
     if frame.empty:
         return {"strategies": [catalog[key] for key in requested]}
 
-    groups = list(frame.groupby(["contract", "session", "trading_date"], sort=False))
+    higher_timeframe = interval in {"1d", "1w"}
+    group_columns: str | list[str] = "contract" if higher_timeframe else [
+        "contract", "session", "trading_date"
+    ]
+    groups = list(frame.groupby(group_columns, sort=False))
     for group_index, (_, session_bars) in enumerate(groups):
         session_bars = session_bars.reset_index(drop=True)
         force_final = force_close_last or group_index < len(groups) - 1
-        if "orb" in requested:
+        if "orb" in requested and not higher_timeframe:
             values = resolved["orb"]
             catalog["orb"]["signals"].extend(
                 simulate_signals(
