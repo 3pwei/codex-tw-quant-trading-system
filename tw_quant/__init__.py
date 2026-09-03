@@ -2,7 +2,7 @@
 
 from .config import BacktestConfig, CostConfig
 from .engine import BacktestEngine, BacktestResult, Trade
-from .strategies import OpeningRangeBreakout, OpeningRangeBreakoutConfig
+from .strategy import OpeningRangeBreakout, OpeningRangeBreakoutConfig
 
 __all__ = [
     "BacktestConfig",

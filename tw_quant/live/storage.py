@@ -6,7 +6,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Protocol
 
-from .models import KBar
+from ..market import KBar
 
 
 class BarRepository(Protocol):

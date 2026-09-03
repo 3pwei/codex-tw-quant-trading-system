@@ -7,13 +7,8 @@ from pathlib import Path
 from time import monotonic
 from typing import Callable, Protocol
 from uuid import uuid4
-from zoneinfo import ZoneInfo
 
-from .models import ConnectionStatus, KBar, TickEvent
-from .sessions import classify_tmf_session, minute_floor
-
-
-TAIPEI = ZoneInfo("Asia/Taipei")
+from ..market import TAIPEI, ConnectionStatus, KBar, TickEvent, classify_tmf_session, minute_floor
 TickCallback = Callable[[TickEvent], None]
 StatusCallback = Callable[[ConnectionStatus], None]
 

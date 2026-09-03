@@ -12,8 +12,9 @@ Dashboard 採功能導向 URL：
 | `/strategies/` | ORB／BNF 策略與風險規則 | 唯讀目錄可使用 |
 | `/settings/` | 行情、商品與部署設定摘要 | 唯讀摘要可使用 |
 
-`/live/` 與 `/backtest/` 共用 FastAPI 提供的 ORB／BNF 策略分析核心，
-避免即時訊號與回測規則不同步。
+`/live/`、未來 `/replay/` 與 `/backtest/` 共用
+`tw_quant.strategy.analyze_strategies()`；資料來源先轉成標準 `KBar`，再進入
+同一套 ORB／BNF、停損／停利與模擬成交流程，避免不同模式的規則漂移。
 
 回測頁會先呼叫 `/api/backtest/options` 取得 SQLite 可用交易日，再呼叫
 `/api/backtest` 執行所選策略與日期。日期區間由前後端共同限制為最多 31 個

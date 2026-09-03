@@ -39,17 +39,23 @@ CSV 1 分 K
 | 檔案 | 功能 |
 |---|---|
 | `tw_quant/data.py` | CSV 載入、時區與 OHLCV 品質檢查 |
-| `tw_quant/strategies.py` | ORB 與 BNF 均值回歸策略 |
+| `tw_quant/strategy/definitions.py` | ORB 與 BNF 均值回歸策略定義 |
 | `tw_quant/engine.py` | 事件式撮合、部位、風控與交易紀錄 |
 | `tw_quant/costs.py` | 台股交易成本與滑價 |
 | `tw_quant/metrics.py` | 勝率、淨利、PF、回撤與日頻 Sharpe |
 | `tw_quant/report.py` | 儲存 CSV、JSON 與權益曲線圖 |
+| `tw_quant/market/` | Live、Replay、CSV 共用的 Tick／KBar 與交易時段模型 |
+| `tw_quant/strategy/engine.py` | 與資料來源無關的 ORB／BNF 策略分析器 |
+| `tw_quant/risk/engine.py` | 共用停損、停利價格與觸發優先序 |
+| `tw_quant/execution/simulator.py` | 下一根開盤、風險出場與時段平倉模擬 |
+| `tw_quant/backtest/runner.py` | 成本、交易、權益與績效報表 |
 | `tw_quant/live/feed.py` | Shioaji quote-only adapter 與 Mock Replay feed |
 | `tw_quant/live/aggregator.py` | Tick 去重、亂序政策、缺漏分鐘與即時 1 分 K |
 | `tw_quant/live/storage.py` | SQLite repository；介面可替換 PostgreSQL |
 | `tw_quant/live/api.py` | FastAPI REST、WebSocket 與健康檢查 |
-| `tw_quant/live/strategy_analysis.py` | 依已收盤 TMF 1 分 K 計算 ORB／BNF 訊號 |
-| `tw_quant/live/backtest.py` | 即時與離線共用策略訊號後的成本、損益與績效計算 |
+| `tw_quant/live/models.py` | 舊匯入相容層；新程式不應使用 |
+| `tw_quant/live/strategy_analysis.py` | 舊策略名稱相容層；新程式不應使用 |
+| `tw_quant/live/backtest.py` | 舊回測名稱相容層；新程式不應使用 |
 | `tw_quant/futures.py` | 期交所逐筆 CSV 匯入與標準 KBar 轉換 |
 | `tw_quant/futures_costs.py` | 各 TMF 回測入口共用的契約乘數、手續費、稅與滑價 |
 | `dashboard/app/live/` | 即時 K 線、成交量、狀態與自動重連前端 |
@@ -191,6 +197,22 @@ SJ_PRODUCTION=true
 才會嘗試回補一個月；實際可選日期仍以 Shioaji 回傳並成功寫入 SQLite 的範圍為準。
 
 WebSocket 的 K 棒訊息包含 symbol、實際契約、交易所／接收時間、延遲、OHLCV、forming/closed、日夜盤、交易日與行情連線狀態。獨立 heartbeat 即使無成交也會持續推送。
+
+### 共用策略資料流
+
+Live、歷史回放與 CSV 的差異只存在資料來源；三者先轉為
+`tw_quant.market.KBar`，再呼叫同一個 `analyze_strategies()`：
+
+```text
+Shioaji Live Feed ─┐
+Replay Feed ───────┼─→ canonical KBar → Strategy Engine → Risk Engine
+TAIFEX CSV Feed ───┘                                      ↓
+                                      Execution Simulator → Backtest Result
+```
+
+目前 Live 是 quote-only，策略訊號只推送至 Dashboard，不會連到 Broker 下單。
+未來若加入實盤，Broker adapter 必須與 `Execution Simulator` 分開，且必須先經過
+獨立的下單風控與使用者授權。
 
 ### Docker 與本機部署
 
@@ -396,7 +418,7 @@ python -m tw_quant backtest \
 
 `tw_quant/futures.py` 只負責讀取期交所逐筆成交 CSV、篩選商品／契約及轉換
 OHLCV。`futures-night` 會把資料聚合成 1 分 K，再轉成與即時系統相同的
-`KBar` 模型，最後呼叫 `run_live_strategy_backtest()`。ORB、BNF、停損與停利
+`KBar` 模型，最後呼叫 `run_strategy_backtest()`。ORB、BNF、停損與停利
 不在 CSV 匯入模組重複實作。
 
 2026/8/24 夜盤使用 `TMF 202609`，時段為 2026/8/24 15:00 至
@@ -418,7 +440,7 @@ python -m tw_quant futures-night \
 ```
 
 輸出包含 1 分 K `bars.csv`、`trades.csv`、`equity.csv` 與 `summary.json`。
-策略規則若在 `tw_quant/live/strategy_analysis.py` 修改，即時訊號、動態回測與
+策略規則若在 `tw_quant/strategy/engine.py` 修改，即時訊號、動態回測與
 此離線 CSV 回測會一起更新。
 
 ## 使用自己的 1 分 K

@@ -2,8 +2,8 @@ from datetime import datetime, timedelta
 import unittest
 from zoneinfo import ZoneInfo
 
-from tw_quant.live.models import KBar
-from tw_quant.live.strategy_analysis import analyze_live_strategies
+from tw_quant.market import KBar
+from tw_quant.strategy import analyze_strategies
 
 
 TAIPEI = ZoneInfo("Asia/Taipei")
@@ -31,12 +31,12 @@ def bar(minute: int, close: float, volume: int = 100, status: str = "closed") ->
     )
 
 
-class LiveStrategyAnalysisTests(unittest.TestCase):
+class StrategyAnalysisTests(unittest.TestCase):
     def test_orb_breakout_is_filled_on_next_bar_open(self):
         bars = [bar(index, 100.0) for index in range(15)]
         bars.append(bar(15, 102.0, volume=500))
         bars.append(bar(16, 103.0))
-        result = analyze_live_strategies(bars, ["orb"])
+        result = analyze_strategies(bars, ["orb"])
         signals = result["strategies"][0]["signals"]
         self.assertEqual(signals[0]["event"], "entry")
         self.assertEqual(signals[0]["direction"], "long")
@@ -52,7 +52,7 @@ class LiveStrategyAnalysisTests(unittest.TestCase):
         bars = [bar(index, 100.0) for index in range(20)]
         bars.append(bar(20, 90.0, volume=500))
         bars.append(bar(21, 90.0))
-        result = analyze_live_strategies(bars, ["bnf"])
+        result = analyze_strategies(bars, ["bnf"])
         signals = result["strategies"][0]["signals"]
         self.assertEqual(signals[0]["strategy"], "bnf")
         self.assertEqual(signals[0]["event"], "entry")
@@ -68,7 +68,7 @@ class LiveStrategyAnalysisTests(unittest.TestCase):
         bars = [bar(index, 100.0) for index in range(15)]
         bars.append(bar(15, 98.0, volume=500))
         bars.append(bar(16, 97.0))
-        signals = analyze_live_strategies(bars, ["orb"])["strategies"][0]["signals"]
+        signals = analyze_strategies(bars, ["orb"])["strategies"][0]["signals"]
         self.assertEqual(signals[0]["direction"], "short")
         self.assertEqual(signals[0]["price"], 97.0)
         self.assertEqual(signals[0]["stop_loss_price"], 97.582)
@@ -77,16 +77,16 @@ class LiveStrategyAnalysisTests(unittest.TestCase):
     def test_forming_bar_does_not_confirm_bnf_signal(self):
         bars = [bar(index, 100.0) for index in range(20)]
         bars.append(bar(20, 90.0, volume=500, status="forming"))
-        result = analyze_live_strategies(bars, ["bnf"])
+        result = analyze_strategies(bars, ["bnf"])
         self.assertEqual(result["strategies"][0]["signals"], [])
 
     def test_strategy_filter_and_unknown_strategy(self):
-        result = analyze_live_strategies([], ["bnf"])
+        result = analyze_strategies([], ["bnf"])
         self.assertEqual(
             [item["key"] for item in result["strategies"]], ["bnf"]
         )
         with self.assertRaisesRegex(ValueError, "unsupported strategies"):
-            analyze_live_strategies([], ["unknown"])
+            analyze_strategies([], ["unknown"])
 
 
 if __name__ == "__main__":

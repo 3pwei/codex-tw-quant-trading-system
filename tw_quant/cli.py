@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from .backtest import run_strategy_backtest
 from .config import BacktestConfig, CostConfig
 from .data import load_bars
 from .demo_data import save_demo_csv
@@ -17,9 +18,8 @@ from .futures import (
     taifex_bars_to_kbars,
     ticks_to_bars,
 )
-from .live.backtest import run_live_strategy_backtest
 from .report import save_report
-from .strategies import (
+from .strategy import (
     BNFMeanReversion,
     BNFMeanReversionConfig,
     OpeningRangeBreakout,
@@ -167,7 +167,7 @@ def run_futures_night(args: argparse.Namespace) -> None:
         raise ValueError("指定條件沒有可回測的期交所成交資料")
     start = min(bar.trading_date for bar in canonical_bars)
     end = max(bar.trading_date for bar in canonical_bars)
-    result = run_live_strategy_backtest(
+    result = run_strategy_backtest(
         canonical_bars,
         args.strategy,
         start,
@@ -180,6 +180,7 @@ def run_futures_night(args: argparse.Namespace) -> None:
             tax_rate=args.tax_rate,
             slippage_points=args.slippage_points,
         ),
+        source="臺灣期貨交易所逐筆 CSV",
     )
 
     output = Path(args.output)

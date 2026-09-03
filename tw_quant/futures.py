@@ -5,8 +5,7 @@ from pathlib import Path
 import pandas as pd
 
 from .futures_costs import FuturesCostConfig
-from .live.models import KBar
-from .live.sessions import DEFAULT_CALENDAR, TradingCalendar, classify_tmf_session
+from .market import DEFAULT_CALENDAR, KBar, TradingCalendar, classify_tmf_session
 
 __all__ = [
     "FuturesCostConfig",
@@ -87,7 +86,7 @@ def taifex_bars_to_kbars(
     interval: str = "1min",
     calendar: TradingCalendar = DEFAULT_CALENDAR,
 ) -> list[KBar]:
-    """Convert imported TAIFEX bars into the canonical live/backtest KBar model."""
+    """Convert imported TAIFEX bars into the canonical market KBar model."""
     duration = pd.Timedelta(interval)
     result: list[KBar] = []
     for row in bars.itertuples(index=False):
