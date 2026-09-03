@@ -7,12 +7,12 @@ export const metadata: Metadata = {
       "https://3pwei.github.io/codex-tw-quant-trading-system/"
   ),
   title: "微型臺指期貨量化儀表板",
-  description: "TMF 回測與即時 1 分 K 行情儀表板。",
+  description: "TMF 即時行情、歷史回測、策略與系統狀態儀表板。",
   openGraph: {
     title: "微型臺指期貨 1 分 K 與策略回測",
-    description: "TMF 即時行情、ORB／BNF 進出場、損益與風險一頁掌握。",
+    description: "TMF 即時行情、歷史回測、ORB／BNF 策略與系統狀態一站管理。",
     url: ".",
-    siteName: "微型臺指期貨夜盤回測",
+    siteName: "Wade Quant Lab",
     locale: "zh_TW",
     type: "website",
     images: [
@@ -27,7 +27,7 @@ export const metadata: Metadata = {
   twitter: {
     card: "summary_large_image",
     title: "微型臺指期貨 1 分 K 與策略回測",
-    description: "TMF 即時行情、ORB／BNF 進出場、損益與風險一頁掌握。",
+    description: "TMF 即時行情、歷史回測、ORB／BNF 策略與系統狀態一站管理。",
     images: ["og.png"],
   },
   icons: {

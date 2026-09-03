@@ -1,7 +1,19 @@
 # TMF Dashboard
 
-`/` 是動態策略回測頁，`/live/` 是 TMF 即時 1 分 K。兩頁共用 FastAPI
-提供的 ORB／BNF 策略分析核心，避免即時訊號與回測規則不同步。
+Dashboard 採功能導向 URL：
+
+| URL | 功能 | 狀態 |
+|---|---|---|
+| `/` | 系統總覽、目前行情與策略狀態 | 可使用 |
+| `/live/` | TMF 即時 1 分 K | 可使用 |
+| `/backtest/` | 動態歷史回測 | 可使用 |
+| `/replay/` | 動態歷史回放 | 路由已保留，功能建置中 |
+| `/history/` | 回測／交易執行紀錄 | 路由已保留，功能建置中 |
+| `/strategies/` | ORB／BNF 策略與風險規則 | 唯讀目錄可使用 |
+| `/settings/` | 行情、商品與部署設定摘要 | 唯讀摘要可使用 |
+
+`/live/` 與 `/backtest/` 共用 FastAPI 提供的 ORB／BNF 策略分析核心，
+避免即時訊號與回測規則不同步。
 
 回測頁會先呼叫 `/api/backtest/options` 取得 SQLite 可用交易日，再呼叫
 `/api/backtest` 執行所選策略與日期。日期區間由前後端共同限制為最多 31 個

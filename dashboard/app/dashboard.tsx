@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import SystemNav from "./components/system-nav";
 
 type Bar = { timestamp: string; open: number; high: number; low: number; close: number; volume: number; contract?: string; session?: string; trading_date?: string };
 type Trade = {
@@ -105,7 +106,8 @@ export default function Dashboard() {
   const maximumEnd=start?[addDays(start,(options?.max_days??31)-1),options?.available_end??"9999-12-31"].sort()[0]:(options?.available_end??undefined);
 
   return <main className="shell">
-    <header className="topbar"><div className="brand"><b>WQ</b><div><span>WADE QUANT LAB · BACKTEST 03</span><h1>微型臺指期貨策略回測</h1></div></div><div className="headmeta"><a className="live-link" href="live/">即時 1 分 K</a><em>● {loading?"回測中":"回測完成"}</em><span>{data.metadata.date_range}</span></div></header>
+    <header className="topbar"><div className="brand"><b>WQ</b><div><span>WADE QUANT LAB · BACKTEST 03</span><h1>微型臺指期貨策略回測</h1></div></div><div className="headmeta"><em>● {loading?"回測中":"回測完成"}</em><span>{data.metadata.date_range}</span></div></header>
+    <SystemNav active="/backtest/" />
     <section className="backtest-controls"><label><span>交易策略</span><select value={strategy} onChange={e=>setStrategy(e.target.value)}>{options?.strategies.map(item=><option key={item.key} value={item.key}>{item.name}</option>)}</select></label><label><span>開始日期</span><input type="date" value={start} min={options?.available_start??undefined} max={end||(options?.available_end??undefined)} onChange={e=>setStart(e.target.value)}/></label><label><span>結束日期</span><input type="date" value={end} min={start||(options?.available_start??undefined)} max={maximumEnd} onChange={e=>setEnd(e.target.value)}/></label><button disabled={loading} onClick={()=>runBacktest()}>{loading?"執行中…":"執行回測"}</button><small>已收盤 1 分 K · 單次最多 {options?.max_days??31} 天</small></section>
     {error&&<div className="live-error">{error}</div>}
     <section className="instrument"><div><strong>{data.metadata.symbol}</strong><span>{data.metadata.display_name}</span></div><div className="tags"><span>{data.metadata.strategy}</span><span>{data.metadata.interval}</span><span>每筆 {money.format(data.config.quantity)} {data.config.quantity_unit??"單位"}</span><span className="official">即時資料庫 · 非投資建議</span></div></section>
