@@ -4,7 +4,7 @@ from datetime import date
 
 import pandas as pd
 
-from ..futures import FuturesCostConfig
+from ..futures_costs import FuturesCostConfig
 from ..metrics import build_equity_curve, calculate_summary
 from .models import KBar
 from .strategy_analysis import SUPPORTED_STRATEGIES, analyze_live_strategies
