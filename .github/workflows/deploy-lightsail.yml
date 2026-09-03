@@ -22,14 +22,7 @@ concurrency:
 
 jobs:
   verify:
-    if: >-
-      ${{
-        github.event_name == 'workflow_dispatch' ||
-        (
-          github.event.workflow_run.conclusion == 'success' &&
-          github.event.workflow_run.head_branch == 'master'
-        )
-      }}
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'master') }}
     runs-on: ubuntu-latest
     outputs:
       sha: ${{ steps.revision.outputs.sha }}
@@ -40,11 +33,7 @@ jobs:
           fetch-depth: 0
       - id: revision
         env:
-          REQUESTED_SHA: ${{
-            github.event_name == 'workflow_run' &&
-            github.event.workflow_run.head_sha ||
-            inputs.commit_sha
-          }}
+          REQUESTED_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || inputs.commit_sha }}
         run: |
           sha="${REQUESTED_SHA:-$(git rev-parse HEAD)}"
           case "$sha" in
