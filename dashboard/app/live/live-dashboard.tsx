@@ -16,6 +16,7 @@ import {
   type Time,
   type UTCTimestamp,
 } from "lightweight-charts";
+import SystemNav from "../components/system-nav";
 
 type ConnectionStatus = "connecting" | "connected" | "reconnecting" | "disconnected";
 type KBar = {
@@ -307,7 +308,7 @@ export default function LiveDashboard() {
   const shown = crosshair ?? latest;
   return <main className="live-shell">
     <header className="live-header">
-      <div><a href="../" className="back-link">← 回測 Dashboard</a><span>WADE QUANT LAB · LIVE 01</span><h1>TMF 即時 1 分 K</h1></div>
+      <div><span>WADE QUANT LAB · LIVE 01</span><h1>TMF 即時 1 分 K</h1></div>
       <div className="live-header-actions">
         <details className="strategy-select">
           <summary>交易策略 <b>{selectedStrategies.length}</b></summary>
@@ -323,6 +324,7 @@ export default function LiveDashboard() {
         <div className={`connection-pill ${status}`}><i />{status === "connected" ? "即時連線" : status === "reconnecting" ? "重新連線中" : status === "connecting" ? "連線中" : "行情中斷"}</div>
       </div>
     </header>
+    <SystemNav active="/live/" />
     <section className="live-summary">
       <div><span>商品／契約</span><b>TMF · {latest?.contract ?? "等待行情"}</b></div>
       <div><span>交易時段</span><b>{latest?.session === "night" ? "夜盤" : latest?.session === "day" ? "日盤" : "—"}</b></div>

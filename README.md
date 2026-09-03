@@ -148,7 +148,8 @@ Windows PowerShell 可先執行 `$env:NEXT_PUBLIC_MARKET_API_URL="http://localho
 
 開啟：
 
-- 回測 Dashboard：<http://localhost:3000/>
+- 系統總覽：<http://localhost:3000/>
+- 回測 Dashboard：<http://localhost:3000/backtest/>
 - 即時 1 分 K：<http://localhost:3000/live/>
 - API 文件：<http://localhost:8000/docs>
 
@@ -206,7 +207,7 @@ Dashboard 可由 `.github/workflows/pages.yml` 部署至 GitHub Pages。先部�
 MARKET_API_URL=https://your-market-api.example.com
 ```
 
-接著在 Settings → Pages 將 Source 設為 GitHub Actions；合併 `master` 或手動執行 Pages workflow。公開 Dashboard 預期網址為 <https://3pwei.github.io/codex-tw-quant-trading-system/>，即時頁為 `/live/`。HTTPS Pages 不能連接不安全的 `http://`／`ws://` 後端。
+接著在 Settings → Pages 將 Source 設為 GitHub Actions；合併 `master` 或手動執行 Pages workflow。公開 Dashboard 預期網址為 <https://3pwei.github.io/codex-tw-quant-trading-system/>，回測頁為 `/backtest/`、即時頁為 `/live/`。HTTPS Pages 不能連接不安全的 `http://`／`ws://` 後端。
 
 ## AWS Lightsail 公開部署
 
@@ -216,7 +217,7 @@ MARKET_API_URL=https://your-market-api.example.com
 
 ```text
 瀏覽器 ─HTTPS/WSS→ Caddy
-                     ├─ /、/live → 靜態 Dashboard
+                     ├─ /、/live、/backtest 等 → 靜態 Dashboard
                      ├─ /api     → FastAPI REST
                      └─ /ws      → FastAPI WebSocket
                                       └→ Shioaji Tick → Queue → Worker → SQLite Volume
