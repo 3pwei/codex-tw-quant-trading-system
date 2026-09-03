@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import json
 from datetime import date, datetime
 from pathlib import Path
 from threading import Lock
@@ -20,6 +21,10 @@ class BarRepository(Protocol):
     def tick_seen(self, key: str) -> bool: ...
     def remember_tick(self, key: str, exchange_time: datetime) -> None: ...
     def purge_backfill(self, symbol: str, contract: str) -> None: ...
+    def strategy_parameters(self) -> dict[str, dict[str, object]]: ...
+    def save_strategy_parameters(
+        self, strategy: str, parameters: dict[str, int | float]
+    ) -> None: ...
     def close(self) -> None: ...
 
 
@@ -60,6 +65,15 @@ class SQLiteBarRepository:
             CREATE TABLE IF NOT EXISTS processed_ticks (
                 dedup_key TEXT PRIMARY KEY,
                 exchange_time TEXT NOT NULL
+            )
+            """
+        )
+        self.connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS strategy_parameters (
+                strategy TEXT PRIMARY KEY,
+                parameters_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL
             )
             """
         )
@@ -189,6 +203,34 @@ class SQLiteBarRepository:
             self.connection.executemany(
                 "DELETE FROM minute_bars WHERE symbol=? AND contract=? AND time=?",
                 keys,
+            )
+            self.connection.commit()
+
+    def strategy_parameters(self) -> dict[str, dict[str, object]]:
+        with self.lock:
+            rows = self.connection.execute(
+                "SELECT strategy, parameters_json FROM strategy_parameters"
+            ).fetchall()
+        return {
+            row["strategy"]: json.loads(row["parameters_json"])
+            for row in rows
+        }
+
+    def save_strategy_parameters(
+        self, strategy: str, parameters: dict[str, int | float]
+    ) -> None:
+        payload = json.dumps(parameters, ensure_ascii=False, sort_keys=True)
+        updated_at = datetime.now().astimezone().isoformat(timespec="seconds")
+        with self.lock:
+            self.connection.execute(
+                """
+                INSERT INTO strategy_parameters(strategy, parameters_json, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(strategy) DO UPDATE SET
+                    parameters_json=excluded.parameters_json,
+                    updated_at=excluded.updated_at
+                """,
+                (strategy, payload, updated_at),
             )
             self.connection.commit()
 

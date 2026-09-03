@@ -96,6 +96,7 @@ def run_strategy_backtest(
     contracts: int = 1,
     costs: FuturesCostConfig | None = None,
     source: str = "行情資料庫（已收盤 1 分 K）",
+    parameters: dict[str, object] | None = None,
 ) -> dict[str, object]:
     validate_date_range(start, end)
     strategy = strategy.lower()
@@ -106,7 +107,10 @@ def run_strategy_backtest(
         raise ValueError("所選區間沒有可用的已收盤 K 棒")
 
     analysis = analyze_strategies(
-        closed, [strategy], force_close_last=True
+        closed,
+        [strategy],
+        force_close_last=True,
+        parameters={strategy: parameters or {}},
     )["strategies"][0]
     signals = analysis["signals"]
     cost_config = costs or FuturesCostConfig()
@@ -156,7 +160,9 @@ def run_strategy_backtest(
             "initial_capital": initial_capital,
             "quantity": contracts,
             "quantity_unit": "口",
-            "opening_range_minutes": 15,
+            "opening_range_minutes": int(
+                analysis["parameters"].get("opening_range_minutes", 0)
+            ),
             "bar_minutes": 1,
             "stop_loss_pct": float(analysis["parameters"]["stop_loss_pct"]),
             "take_profit_pct": float(analysis["parameters"]["take_profit_pct"]),

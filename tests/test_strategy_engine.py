@@ -4,6 +4,7 @@ from zoneinfo import ZoneInfo
 
 from tw_quant.market import KBar
 from tw_quant.strategy import analyze_strategies
+from tw_quant.strategy import validate_strategy_parameters
 
 
 TAIPEI = ZoneInfo("Asia/Taipei")
@@ -32,6 +33,34 @@ def bar(minute: int, close: float, volume: int = 100, status: str = "closed") ->
 
 
 class StrategyAnalysisTests(unittest.TestCase):
+    def test_custom_orb_and_risk_parameters_change_shared_signals(self):
+        bars = [bar(0, 100.0), bar(1, 100.0)]
+        bars.append(bar(2, 102.0, volume=500))
+        bars.append(bar(3, 103.0))
+        result = analyze_strategies(
+            bars,
+            ["orb"],
+            parameters={
+                "orb": {
+                    "opening_range_minutes": 2,
+                    "volume_window": 2,
+                    "volume_multiplier": 1.0,
+                    "stop_loss_pct": 0.01,
+                    "take_profit_pct": 0.03,
+                }
+            },
+        )
+        entry = result["strategies"][0]["signals"][0]
+        self.assertEqual(entry["price"], 103.0)
+        self.assertEqual(entry["stop_loss_price"], 101.97)
+        self.assertEqual(entry["take_profit_price"], 106.09)
+
+    def test_invalid_cross_parameter_rules_are_rejected(self):
+        with self.assertRaisesRegex(ValueError, "exit_z_score"):
+            validate_strategy_parameters(
+                "bnf", {"entry_z_score": 1.0, "exit_z_score": 1.0}
+            )
+
     def test_orb_breakout_is_filled_on_next_bar_open(self):
         bars = [bar(index, 100.0) for index in range(15)]
         bars.append(bar(15, 102.0, volume=500))

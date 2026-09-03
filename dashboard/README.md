@@ -9,12 +9,15 @@ Dashboard 採功能導向 URL：
 | `/backtest/` | 動態歷史回測 | 可使用 |
 | `/replay/` | 動態歷史回放 | 路由已保留，功能建置中 |
 | `/history/` | 回測／交易執行紀錄 | 路由已保留，功能建置中 |
-| `/strategies/` | ORB／BNF 策略與風險規則 | 唯讀目錄可使用 |
+| `/strategies/` | ORB／BNF 策略與風險規則 | 可輸入並儲存參數 |
 | `/settings/` | 行情、商品與部署設定摘要 | 唯讀摘要可使用 |
 
 `/live/`、未來 `/replay/` 與 `/backtest/` 共用
 `tw_quant.strategy.analyze_strategies()`；資料來源先轉成標準 `KBar`，再進入
 同一套 ORB／BNF、停損／停利與模擬成交流程，避免不同模式的規則漂移。
+策略管理頁透過 `GET /api/strategies` 載入欄位規格，並以
+`PUT /api/strategies/{strategy}` 儲存到後端 SQLite；Live、Replay 與 Backtest
+下一次分析時都會使用這份共用設定。
 
 回測頁會先呼叫 `/api/backtest/options` 取得 SQLite 可用交易日，再呼叫
 `/api/backtest` 執行所選策略與日期。日期區間由前後端共同限制為最多 31 個
@@ -30,7 +33,7 @@ NEXT_PUBLIC_MARKET_API_URL=http://localhost:8000 npm run dev
 ```
 
 正式 Lightsail 部署由 Caddy 讓前端與 FastAPI 共用 `tmf.milespapa.com`，不需
-設定 `NEXT_PUBLIC_MARKET_API_URL`。GitHub Pages 必須用 Repository Variable
-`MARKET_API_URL` 指向可公開連線的 HTTPS FastAPI；Pages 本身不能執行回測後端。
+設定 `NEXT_PUBLIC_MARKET_API_URL`。目前 GitHub Pages workflow 已停用，正式前後端
+均由 Lightsail 提供。
 
 回測結果不代表未來績效，也不構成投資建議。

@@ -21,6 +21,7 @@
 - 無憑證可執行的 Mock/Replay 模式
 - Next.js + TradingView Lightweight Charts 即時 K 線頁面
 - ORB／BNF Multi-select 策略圖層與即時訊號標記
+- 策略管理頁可調整 ORB／BNF 與停損停利參數，SQLite 持久化後供即時與回測共用
 
 ## 架構
 
@@ -46,6 +47,7 @@ CSV 1 分 K
 | `tw_quant/report.py` | 儲存 CSV、JSON 與權益曲線圖 |
 | `tw_quant/market/` | Live、Replay、CSV 共用的 Tick／KBar 與交易時段模型 |
 | `tw_quant/strategy/engine.py` | 與資料來源無關的 ORB／BNF 策略分析器 |
+| `tw_quant/strategy/parameters.py` | 共用參數規格、預設值與後端驗證 |
 | `tw_quant/risk/engine.py` | 共用停損、停利價格與觸發優先序 |
 | `tw_quant/execution/simulator.py` | 下一根開盤、風險出場與時段平倉模擬 |
 | `tw_quant/backtest/runner.py` | 成本、交易、權益與績效報表 |
@@ -59,6 +61,7 @@ CSV 1 分 K
 | `tw_quant/futures.py` | 期交所逐筆 CSV 匯入與標準 KBar 轉換 |
 | `tw_quant/futures_costs.py` | 各 TMF 回測入口共用的契約乘數、手續費、稅與滑價 |
 | `dashboard/app/live/` | 即時 K 線、成交量、狀態與自動重連前端 |
+| `dashboard/app/strategies/` | 策略參數輸入、驗證訊息與儲存介面 |
 
 ## 安裝
 
@@ -121,6 +124,12 @@ K 棒使用 Tick 的交易所時間（`Asia/Taipei`）分桶，不使用瀏覽�
 兩套策略只使用已收盤 K 棒確認，並在下一根 K 棒開盤建立訊號標記，
 不使用形成中 K 棒偷看結果。風控預設為停損 0.6%、停利 1.2%；標記
 只供研究與觀察，不會觸發模擬或真實訂單。
+
+`/strategies/` 可以修改上述策略條件以及各策略自己的停損／停利。前端只負責
+輸入；FastAPI 會依 `tw_quant/strategy/parameters.py` 再次驗證範圍與跨欄位規則，
+通過後寫入行情服務使用的 SQLite。Live、Replay 與 Backtest 都會將同一份設定
+傳入 `analyze_strategies()`，不會各自維護另一套參數。按「恢復預設」只會先更新
+畫面，仍需按「儲存參數」才會套用。
 
 ### Mock／Replay 本機啟動
 
@@ -185,6 +194,8 @@ SJ_PRODUCTION=true
 - `GET /api/health`
 - `GET /api/kbars?symbol=TMF&interval=1m&limit=500`
 - `GET /api/strategy-signals?symbol=TMF&strategies=orb,bnf&limit=500`
+- `GET /api/strategies`
+- `PUT /api/strategies/{strategy}`，JSON：`{"parameters": {...}}`
 - `GET /api/backtest/options?symbol=TMF`
 - `GET /api/backtest?symbol=TMF&strategy=orb&start=2026-08-01&end=2026-08-31`
 - `WS /ws/market/TMF`
@@ -223,13 +234,8 @@ curl http://localhost:8000/api/health
 
 FastAPI、Shioaji callback 與 WebSocket 必須部署在可常駐執行 Python 的主機；GitHub Actions 只負責測試與建置，不能作為盤中行情 daemon。部署主機需掛載 `output/` 保存 SQLite，或日後將 `BarRepository` 換成 PostgreSQL。
 
-Dashboard 可由 `.github/workflows/pages.yml` 部署至 GitHub Pages。先部署 HTTPS/WSS 後端，再在 Repository → Settings → Secrets and variables → Actions 建立變數：
-
-```text
-MARKET_API_URL=https://your-market-api.example.com
-```
-
-接著在 Settings → Pages 將 Source 設為 GitHub Actions；合併 `master` 或手動執行 Pages workflow。公開 Dashboard 預期網址為 <https://3pwei.github.io/codex-tw-quant-trading-system/>，回測頁為 `/backtest/`、即時頁為 `/live/`。HTTPS Pages 不能連接不安全的 `http://`／`ws://` 後端。
+目前 GitHub Pages workflow 已停用；正式 Dashboard 與 FastAPI 統一由 Lightsail
+上的 Caddy 提供。GitHub Actions 負責 CI 與核准後部署，不負責盤中常駐行情。
 
 ## AWS Lightsail 公開部署
 
@@ -247,7 +253,7 @@ MARKET_API_URL=https://your-market-api.example.com
 
 前端在沒有設定 `NEXT_PUBLIC_MARKET_API_URL` 時會使用目前網頁的 origin，因此
 正式網站不會退回 `localhost`。GitHub Pages 模式仍可透過 Repository Variable
-指定獨立 API 網址，既有 Pages 功能不受影響。
+指定獨立 API 網址；正式 Lightsail 同源部署不需要設定此變數。
 
 ### 1. 建立 Lightsail 主機
 
