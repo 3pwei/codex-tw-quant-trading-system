@@ -18,8 +18,8 @@ class LiveSettings:
     replay_csv: str = "data/mock_tmf_ticks.csv"
     replay_speed: float = 8.0
     heartbeat_seconds: float = 5.0
-    history_days: int = 7
-    history_limit: int = 500
+    history_days: int = 30
+    history_limit: int = 50_000
     allowed_origins: tuple[str, ...] = ("http://localhost:3000",)
     shioaji_api_key: str | None = None
     shioaji_secret_key: str | None = None
@@ -50,8 +50,8 @@ class LiveSettings:
             replay_csv=os.getenv("MARKET_REPLAY_CSV", "data/mock_tmf_ticks.csv"),
             replay_speed=float(os.getenv("MARKET_REPLAY_SPEED", "8")),
             heartbeat_seconds=float(os.getenv("MARKET_HEARTBEAT_SECONDS", "5")),
-            history_days=int(os.getenv("MARKET_HISTORY_DAYS", "7")),
-            history_limit=int(os.getenv("MARKET_HISTORY_LIMIT", "500")),
+            history_days=int(os.getenv("MARKET_HISTORY_DAYS", "30")),
+            history_limit=int(os.getenv("MARKET_HISTORY_LIMIT", "50000")),
             allowed_origins=_split_origins(
                 os.getenv("MARKET_ALLOWED_ORIGINS", "http://localhost:3000")
             ),
@@ -74,8 +74,8 @@ class LiveSettings:
             raise ValueError("replay speed and heartbeat interval must be positive")
         if not 1 <= self.history_days <= 30:
             raise ValueError("MARKET_HISTORY_DAYS must be between 1 and 30")
-        if not 1 <= self.history_limit <= 5000:
-            raise ValueError("MARKET_HISTORY_LIMIT must be between 1 and 5000")
+        if not 1 <= self.history_limit <= 50_000:
+            raise ValueError("MARKET_HISTORY_LIMIT must be between 1 and 50000")
         if self.mode == "shioaji" and not (
             self.shioaji_api_key and self.shioaji_secret_key
         ):

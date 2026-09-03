@@ -158,15 +158,15 @@ Mock 會重播 `data/mock_tmf_ticks.csv`。同一分鐘包含多筆 Tick，圖�
 ```dotenv
 MARKET_MODE=shioaji
 MARKET_CONTRACT=TMFR1
-MARKET_HISTORY_DAYS=7
-MARKET_HISTORY_LIMIT=500
+MARKET_HISTORY_DAYS=30
+MARKET_HISTORY_LIMIT=50000
 SJ_API_KEY=your-real-key
 SJ_SEC_KEY=your-real-secret
 SJ_PRODUCTION=true
 ```
 
-再啟動同一個 FastAPI 指令。啟動時會使用 Shioaji `kbars` 一次回補最近 7 日內
-最多 500 根已收盤 1 分 K，之後只依靠 Tick callback 即時更新；不會輪詢歷史 API。
+再啟動同一個 FastAPI 指令。啟動時會使用 Shioaji `kbars` 一次回補最近 30 日內
+最多 50,000 根已收盤 1 分 K，之後只依靠 Tick callback 即時更新；不會輪詢歷史 API。
 行情服務登入時停用 trade event subscription，只保留歷史／即時行情；不啟用 CA、
 不提供下單 API。正式 key 建議只授予 Market/Data 權限並限制來源 IP。
 
@@ -175,7 +175,16 @@ SJ_PRODUCTION=true
 - `GET /api/health`
 - `GET /api/kbars?symbol=TMF&interval=1m&limit=500`
 - `GET /api/strategy-signals?symbol=TMF&strategies=orb,bnf&limit=500`
+- `GET /api/backtest/options?symbol=TMF`
+- `GET /api/backtest?symbol=TMF&strategy=orb&start=2026-08-01&end=2026-08-31`
 - `WS /ws/market/TMF`
+
+回測 Dashboard 與即時頁共用 ORB／BNF 訊號分析器，只使用 SQLite 內已收盤的
+1 分 K。畫面可選策略與起訖交易日，單次最多 31 個日曆日；FastAPI 也會驗證
+相同上限，不能只靠瀏覽器繞過。夜盤跨日依 `trading_date` 查詢，而非日曆時間。
+既有 Lightsail 若仍使用舊版 `/opt/tw-quant/config/market.env`，需把
+`MARKET_HISTORY_DAYS` 改為 `30`、`MARKET_HISTORY_LIMIT` 改為 `50000`，重啟後
+才會嘗試回補一個月；實際可選日期仍以 Shioaji 回傳並成功寫入 SQLite 的範圍為準。
 
 WebSocket 的 K 棒訊息包含 symbol、實際契約、交易所／接收時間、延遲、OHLCV、forming/closed、日夜盤、交易日與行情連線狀態。獨立 heartbeat 即使無成交也會持續推送。
 
