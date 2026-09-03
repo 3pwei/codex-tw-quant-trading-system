@@ -9,8 +9,8 @@ export const metadata: Metadata = {
   title: "微型臺指期貨量化儀表板",
   description: "TMF 回測與即時 1 分 K 行情儀表板。",
   openGraph: {
-    title: "微型臺指期貨 5 分 K 夜盤回測",
-    description: "8/24 夜盤進出場、損益與風險一頁掌握。",
+    title: "微型臺指期貨 1 分 K 與策略回測",
+    description: "TMF 即時行情、ORB／BNF 進出場、損益與風險一頁掌握。",
     url: ".",
     siteName: "微型臺指期貨夜盤回測",
     locale: "zh_TW",
@@ -20,14 +20,14 @@ export const metadata: Metadata = {
         url: "og.png",
         width: 1200,
         height: 630,
-        alt: "微型臺指期貨 5 分 K 夜盤回測",
+        alt: "微型臺指期貨 1 分 K 與策略回測",
       },
     ],
   },
   twitter: {
     card: "summary_large_image",
-    title: "微型臺指期貨 5 分 K 夜盤回測",
-    description: "8/24 夜盤進出場、損益與風險一頁掌握。",
+    title: "微型臺指期貨 1 分 K 與策略回測",
+    description: "TMF 即時行情、ORB／BNF 進出場、損益與風險一頁掌握。",
     images: ["og.png"],
   },
   icons: {

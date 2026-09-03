@@ -49,6 +49,9 @@ CSV 1 分 K
 | `tw_quant/live/storage.py` | SQLite repository；介面可替換 PostgreSQL |
 | `tw_quant/live/api.py` | FastAPI REST、WebSocket 與健康檢查 |
 | `tw_quant/live/strategy_analysis.py` | 依已收盤 TMF 1 分 K 計算 ORB／BNF 訊號 |
+| `tw_quant/live/backtest.py` | 即時與離線共用策略訊號後的成本、損益與績效計算 |
+| `tw_quant/futures.py` | 期交所逐筆 CSV 匯入與標準 KBar 轉換 |
+| `tw_quant/futures_costs.py` | 各 TMF 回測入口共用的契約乘數、手續費、稅與滑價 |
 | `dashboard/app/live/` | 即時 K 線、成交量、狀態與自動重連前端 |
 
 ## 安裝
@@ -303,8 +306,8 @@ Selector 選 `Everyone`；此路徑只回傳固定的 `ok`，不包含行情或�
 ```dotenv
 MARKET_MODE=shioaji
 MARKET_CONTRACT=TMFR1
-MARKET_HISTORY_DAYS=7
-MARKET_HISTORY_LIMIT=500
+MARKET_HISTORY_DAYS=30
+MARKET_HISTORY_LIMIT=50000
 SJ_API_KEY=replace-on-server
 SJ_SEC_KEY=replace-on-server
 SJ_PRODUCTION=true
@@ -388,20 +391,19 @@ python -m tw_quant backtest \
 - `summary.json`：績效摘要
 - `equity.png`：權益曲線
 
-## 微型臺指期貨 5 分 K 夜盤
+## 期交所逐筆 CSV 離線回測
 
-`tw_quant/futures.py` 支援讀取期交所近 30 個交易日逐筆成交 CSV，篩選
-微型臺指期貨（`TMF`）指定月份與夜盤時段，並聚合為 5 分 K。
+`tw_quant/futures.py` 只負責讀取期交所逐筆成交 CSV、篩選商品／契約及轉換
+OHLCV。`futures-night` 會把資料聚合成 1 分 K，再轉成與即時系統相同的
+`KBar` 模型，最後呼叫 `run_live_strategy_backtest()`。ORB、BNF、停損與停利
+不在 CSV 匯入模組重複實作。
 
 2026/8/24 夜盤使用 `TMF 202609`，時段為 2026/8/24 15:00 至
 2026/8/25 05:00。期貨損益依契約乘數每點新臺幣 10 元計算；券商手續費、
 交易稅與滑價均為可調參數。官方逐筆檔的「成交數量(B+S)」為買賣雙方合計，
 聚合成交量時會除以 2。
 
-本次固定參數回測輸出在 `output/tmf_20260824_night/`。單一夜盤結果只能驗證
-資料與撮合流程，不能推論策略的長期績效。
-
-取得期交所逐筆 CSV 後，可用 CLI 重跑任何指定夜盤：
+取得期交所逐筆 CSV 後，可選擇與即時 Dashboard 相同的 `orb` 或 `bnf`：
 
 ```bash
 python -m tw_quant futures-night \
@@ -410,12 +412,13 @@ python -m tw_quant futures-night \
   --contract-month 202609 \
   --session-start "2026-08-24 15:00" \
   --session-end "2026-08-25 05:00" \
-  --last-entry "2026-08-25 04:30" \
-  --interval 5min \
+  --strategy orb \
   --output output/tmf_20260824_night
 ```
 
-輸出包含 `bars.csv`、`trades.csv`、`equity.csv` 與 `summary.json`。
+輸出包含 1 分 K `bars.csv`、`trades.csv`、`equity.csv` 與 `summary.json`。
+策略規則若在 `tw_quant/live/strategy_analysis.py` 修改，即時訊號、動態回測與
+此離線 CSV 回測會一起更新。
 
 ## 使用自己的 1 分 K
 
