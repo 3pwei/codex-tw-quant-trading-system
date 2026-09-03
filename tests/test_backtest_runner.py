@@ -4,8 +4,8 @@ import unittest
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from tw_quant.live.backtest import run_live_strategy_backtest, validate_date_range
-from tw_quant.live.models import KBar
+from tw_quant.backtest import run_strategy_backtest, validate_date_range
+from tw_quant.market import KBar
 from tw_quant.live.storage import SQLiteBarRepository
 
 
@@ -25,7 +25,7 @@ def make_bar(minute: int, close: float, volume: int = 100) -> KBar:
     )
 
 
-class LiveBacktestTests(unittest.TestCase):
+class StrategyBacktestTests(unittest.TestCase):
     def test_range_is_inclusive_and_limited_to_31_days(self):
         validate_date_range(date(2026, 8, 1), date(2026, 8, 31))
         with self.assertRaisesRegex(ValueError, "31 天"):
@@ -33,10 +33,10 @@ class LiveBacktestTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "開始日期"):
             validate_date_range(date(2026, 8, 2), date(2026, 8, 1))
 
-    def test_orb_backtest_uses_live_signals_and_forces_last_session_exit(self):
+    def test_orb_backtest_uses_shared_signals_and_forces_last_session_exit(self):
         bars = [make_bar(index, 100.0) for index in range(15)]
         bars += [make_bar(15, 102.0, 500), make_bar(16, 103.0)]
-        result = run_live_strategy_backtest(
+        result = run_strategy_backtest(
             bars, "orb", date(2026, 8, 25), date(2026, 8, 25)
         )
         self.assertEqual(result["metadata"]["strategy_key"], "orb")
@@ -50,7 +50,7 @@ class LiveBacktestTests(unittest.TestCase):
     def test_bnf_backtest_uses_the_same_mean_reversion_signal_core(self):
         bars = [make_bar(index, 100.0) for index in range(20)]
         bars += [make_bar(20, 90.0, 500), make_bar(21, 90.0)]
-        result = run_live_strategy_backtest(
+        result = run_strategy_backtest(
             bars, "bnf", date(2026, 8, 25), date(2026, 8, 25)
         )
         self.assertEqual(result["metadata"]["strategy_key"], "bnf")

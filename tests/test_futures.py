@@ -68,7 +68,7 @@ class FuturesDataTests(unittest.TestCase):
         self.assertEqual(bars[0].trading_date.isoformat(), "2026-08-25")
         self.assertEqual(bars[0].status, "closed")
 
-    def test_futures_night_cli_delegates_to_shared_live_backtest(self):
+    def test_futures_night_cli_delegates_to_shared_strategy_backtest(self):
         ticks = pd.DataFrame({
             "timestamp": pd.to_datetime([
                 "2026-08-24 15:00:01+08:00",
@@ -94,7 +94,7 @@ class FuturesDataTests(unittest.TestCase):
                 output=str(Path(directory) / "result"),
             )
             with patch("tw_quant.cli.load_taifex_ticks", return_value=ticks), patch(
-                "tw_quant.cli.run_live_strategy_backtest", return_value=result
+                "tw_quant.cli.run_strategy_backtest", return_value=result
             ) as shared_backtest:
                 run_futures_night(args)
             shared_backtest.assert_called_once()

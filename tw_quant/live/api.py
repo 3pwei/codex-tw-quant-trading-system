@@ -6,19 +6,19 @@ from datetime import date
 from fastapi import FastAPI, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
+from ..backtest import MAX_BACKTEST_DAYS, run_strategy_backtest, validate_date_range
+from ..market import TradingCalendar
+from ..strategy import SUPPORTED_STRATEGIES, analyze_strategies
 from .access import (
     AccessTokenError,
     AccessValidator,
     CloudflareAccessValidator,
     DisabledAccessValidator,
 )
-from .backtest import MAX_BACKTEST_DAYS, run_live_strategy_backtest, validate_date_range
 from .feed import ReplayFeed, ShioajiFeed
 from .service import LiveMarketService
 from .settings import LiveSettings
 from .storage import BarRepository, SQLiteBarRepository
-from .sessions import TradingCalendar
-from .strategy_analysis import SUPPORTED_STRATEGIES, analyze_live_strategies
 
 
 def build_feed(settings: LiveSettings):
@@ -144,7 +144,7 @@ def create_app(
                 status_code=400,
                 detail=f"unsupported strategies: {', '.join(unsupported)}",
             )
-        return analyze_live_strategies(
+        return analyze_strategies(
             repo.latest(config.symbol, limit), selected
         )
 
@@ -153,7 +153,7 @@ def create_app(
         if symbol.upper() != config.symbol:
             raise HTTPException(status_code=404, detail="unsupported symbol")
         first, last = repo.date_bounds(config.symbol)
-        catalog = analyze_live_strategies([], SUPPORTED_STRATEGIES)["strategies"]
+        catalog = analyze_strategies([], SUPPORTED_STRATEGIES)["strategies"]
         return {
             "symbol": config.symbol,
             "available_start": first.isoformat() if first else None,
@@ -178,7 +178,7 @@ def create_app(
         try:
             validate_date_range(start, end)
             bars = repo.between_trading_dates(config.symbol, start, end)
-            return run_live_strategy_backtest(
+            return run_strategy_backtest(
                 bars, strategy.lower(), start, end
             )
         except ValueError as exc:

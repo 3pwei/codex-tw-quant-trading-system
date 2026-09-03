@@ -6,13 +6,13 @@ import unittest
 
 from fastapi.testclient import TestClient
 
+from tw_quant.market import KBar, TickEvent
 from tw_quant.live.api import create_app
 from tw_quant.live.access import AccessIdentity, AccessTokenError
 from tw_quant.live.feed import ReplayFeed, ShioajiFeed
 from tw_quant.live.service import LiveMarketService
 from tw_quant.live.settings import LiveSettings
 from tw_quant.live.storage import SQLiteBarRepository
-from tw_quant.live.models import KBar, TickEvent
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
