@@ -93,6 +93,26 @@ class StrategyAnalysisTests(unittest.TestCase):
         self.assertEqual(signals[0]["stop_loss_price"], 89.46)
         self.assertEqual(signals[0]["take_profit_price"], 91.08)
 
+    def test_daily_bnf_accumulates_across_trading_dates_but_orb_is_intraday_only(self):
+        values = [100.0] * 20 + [90.0, 90.0]
+        daily = []
+        for index, value in enumerate(values):
+            timestamp = datetime(2026, 7, 1, 15, 0, tzinfo=TAIPEI) + timedelta(days=index)
+            daily.append(
+                bar(index, value).copy(
+                    time=timestamp,
+                    trading_date=timestamp.date(),
+                    first_tick_time=timestamp,
+                    last_tick_time=timestamp + timedelta(seconds=50),
+                    exchange_time=timestamp + timedelta(seconds=50),
+                    received_time=timestamp + timedelta(seconds=50, milliseconds=20),
+                )
+            )
+        result = analyze_strategies(daily, ["orb", "bnf"], interval="1d")
+        orb, bnf = result["strategies"]
+        self.assertEqual(orb["signals"], [])
+        self.assertEqual(bnf["signals"][0]["event"], "entry")
+
     def test_short_entry_has_inverted_stop_and_take_profit_prices(self):
         bars = [bar(index, 100.0) for index in range(15)]
         bars.append(bar(15, 98.0, volume=500))

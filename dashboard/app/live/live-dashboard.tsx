@@ -21,6 +21,7 @@ import SystemNav from "../components/system-nav";
 type ConnectionStatus = "connecting" | "connected" | "reconnecting" | "disconnected";
 type KBar = {
   type: "kbar";
+  interval: Timeframe;
   symbol: string;
   contract: string;
   exchange_time: string;
@@ -51,6 +52,7 @@ type StatusMessage = {
 type FeedMessage = KBar | StatusMessage;
 type Ohlc = Pick<KBar, "open" | "high" | "low" | "close"> | null;
 type StrategyKey = "orb" | "bnf";
+type Timeframe = "1m" | "5m" | "10m" | "15m" | "30m" | "1h" | "1d" | "1w";
 type StrategySignal = {
   strategy: StrategyKey;
   event: "entry" | "exit";
@@ -88,6 +90,12 @@ const fmtTime = (value?: string | null) => value ? new Date(value).toLocaleStrin
 const STRATEGY_OPTIONS: { key: StrategyKey; name: string; detail: string; color: string }[] = [
   { key: "orb", name: "ORB 開盤突破", detail: "15 分鐘區間＋量能 · SL 0.6%／TP 1.2%", color: "#38bdf8" },
   { key: "bnf", name: "BNF 均值回歸", detail: "20MA／2Z＋RSI · SL 0.6%／TP 1.2%", color: "#a78bfa" },
+];
+const TIMEFRAME_OPTIONS: { key: Timeframe; name: string }[] = [
+  { key: "1m", name: "1 分 K" }, { key: "5m", name: "5 分 K" },
+  { key: "10m", name: "10 分 K" }, { key: "15m", name: "15 分 K" },
+  { key: "30m", name: "30 分 K" }, { key: "1h", name: "1 小時 K" },
+  { key: "1d", name: "日 K" }, { key: "1w", name: "週 K" },
 ];
 
 function StrategyStatus({ strategy }: { strategy: StrategyResult }) {
@@ -141,11 +149,12 @@ export default function LiveDashboard() {
   const [latency, setLatency] = useState<number | null>(null);
   const [error, setError] = useState("");
   const [historyCount, setHistoryCount] = useState(0);
+  const [selectedInterval, setSelectedInterval] = useState<Timeframe>("1m");
   const [selectedStrategies, setSelectedStrategies] = useState<StrategyKey[]>(["orb", "bnf"]);
   const [strategyResults, setStrategyResults] = useState<StrategyResult[]>([]);
 
   const loadHistory = useCallback(async () => {
-    const response = await fetch(`${apiBase()}/api/kbars?symbol=TMF&interval=1m&limit=500`, { cache: "no-store" });
+    const response = await fetch(`${apiBase()}/api/kbars?symbol=TMF&interval=${selectedInterval}&limit=500`, { cache: "no-store" });
     if (!response.ok) throw new Error(`歷史 K 棒載入失敗 (${response.status})`);
     const bars: KBar[] = await response.json();
     candleRef.current?.setData(bars.map(candle));
@@ -153,7 +162,7 @@ export default function LiveDashboard() {
     setHistoryCount(bars.length);
     if (bars.length) setLatest(bars[bars.length - 1]);
     return bars;
-  }, []);
+  }, [selectedInterval]);
 
   const loadStrategySignals = useCallback(async () => {
     const requestId = ++strategyRequest.current;
@@ -164,7 +173,7 @@ export default function LiveDashboard() {
     }
     const selected = selectedStrategies.join(",");
     const response = await fetch(
-      `${apiBase()}/api/strategy-signals?symbol=TMF&strategies=${selected}&limit=500`,
+      `${apiBase()}/api/strategy-signals?symbol=TMF&strategies=${selected}&interval=${selectedInterval}&limit=500`,
       { cache: "no-store" },
     );
     if (!response.ok) throw new Error(`策略訊號載入失敗 (${response.status})`);
@@ -187,7 +196,7 @@ export default function LiveDashboard() {
       })),
     );
     markerRef.current?.setMarkers(markers.sort((a, b) => Number(a.time) - Number(b.time)));
-  }, [selectedStrategies]);
+  }, [selectedStrategies, selectedInterval]);
 
   useEffect(() => {
     if (!hostRef.current) return;
@@ -249,7 +258,7 @@ export default function LiveDashboard() {
     const connect = async () => {
       setStatus(attempts.current ? "reconnecting" : "connecting");
       try { await loadHistory(); } catch (reason) { setError(reason instanceof Error ? reason.message : "REST 載入失敗"); }
-      const wsUrl = `${apiBase().replace(/^http/, "ws")}/ws/market/TMF`;
+      const wsUrl = `${apiBase().replace(/^http/, "ws")}/ws/market/TMF?interval=${selectedInterval}`;
       const socket = new WebSocket(wsUrl);
       socketRef.current = socket;
       socket.onopen = async () => {
@@ -297,7 +306,7 @@ export default function LiveDashboard() {
       if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
       socketRef.current?.close();
     };
-  }, [loadHistory]);
+  }, [loadHistory, selectedInterval]);
 
   const toggleStrategy = (key: StrategyKey) => {
     setSelectedStrategies(current => current.includes(key)
@@ -308,8 +317,9 @@ export default function LiveDashboard() {
   const shown = crosshair ?? latest;
   return <main className="live-shell">
     <header className="live-header">
-      <div><span>WADE QUANT LAB · LIVE 01</span><h1>TMF 即時 1 分 K</h1></div>
+      <div><span>WADE QUANT LAB · LIVE 01</span><h1>TMF 即時 {TIMEFRAME_OPTIONS.find(item => item.key === selectedInterval)?.name}</h1></div>
       <div className="live-header-actions">
+        <label className="timeframe-select"><span>K 棒週期</span><select value={selectedInterval} onChange={event => setSelectedInterval(event.target.value as Timeframe)}>{TIMEFRAME_OPTIONS.map(option => <option key={option.key} value={option.key}>{option.name}</option>)}</select></label>
         <details className="strategy-select">
           <summary>交易策略 <b>{selectedStrategies.length}</b></summary>
           <div className="strategy-menu">
@@ -339,7 +349,7 @@ export default function LiveDashboard() {
     </section>
     <section className="live-chart-panel">
       <div className="live-toolbar">
-        <div><strong>{latest?.contract ?? "TMF"}</strong><span>1 分鐘 · Asia/Taipei · Exchange Time</span></div>
+        <div><strong>{latest?.contract ?? "TMF"}</strong><span>{TIMEFRAME_OPTIONS.find(item => item.key === selectedInterval)?.name} · Asia/Taipei · Exchange Time</span></div>
         <div className="ohlc-strip"><span>O <b>{fmt(shown?.open)}</b></span><span>H <b>{fmt(shown?.high)}</b></span><span>L <b>{fmt(shown?.low)}</b></span><span>C <b>{fmt(shown?.close)}</b></span><span>V <b>{fmt(latest?.volume)}</b></span></div>
         <div className={`bar-state ${latest?.status ?? "forming"}`}>{latest?.status === "closed" ? "已收盤" : "形成中"}</div>
       </div>

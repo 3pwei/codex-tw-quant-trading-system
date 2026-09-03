@@ -50,6 +50,16 @@ class LiveApiTests(unittest.TestCase):
                 self.assertGreaterEqual(len(bars), 3)
                 self.assertEqual(bars[-1]["type"], "kbar")
                 self.assertIn(bars[-1]["status"], {"forming", "closed"})
+                five_minute = client.get(
+                    "/api/kbars?symbol=TMF&interval=5m&limit=500"
+                )
+                self.assertEqual(five_minute.status_code, 200)
+                self.assertTrue(five_minute.json())
+                self.assertEqual(five_minute.json()[-1]["interval"], "5m")
+                invalid_interval = client.get(
+                    "/api/kbars?symbol=TMF&interval=2h&limit=500"
+                )
+                self.assertEqual(invalid_interval.status_code, 400)
                 health = client.get("/api/health").json()
                 self.assertEqual(health["symbol"], "TMF")
                 self.assertIn("last_tick_time", health)
@@ -108,6 +118,10 @@ class LiveApiTests(unittest.TestCase):
                 self.assertEqual(options.status_code, 200)
                 self.assertEqual(options.json()["max_days"], 31)
                 self.assertEqual(
+                    [item["key"] for item in options.json()["intervals"]],
+                    ["1m", "5m", "10m", "15m", "30m", "1h", "1d", "1w"],
+                )
+                self.assertEqual(
                     [item["key"] for item in options.json()["strategies"]],
                     ["orb", "bnf"],
                 )
@@ -120,6 +134,15 @@ class LiveApiTests(unittest.TestCase):
                     self.assertEqual(backtest.status_code, 200)
                     self.assertEqual(backtest.json()["metadata"]["strategy_key"], "bnf")
                     self.assertIn("summary", backtest.json())
+                    five_minute_backtest = client.get(
+                        "/api/backtest?symbol=TMF&strategy=bnf&interval=5m"
+                        f"&start={available_end}&end={available_end}"
+                    )
+                    self.assertEqual(five_minute_backtest.status_code, 200)
+                    self.assertEqual(
+                        five_minute_backtest.json()["metadata"]["interval_key"],
+                        "5m",
+                    )
                 too_long = client.get(
                     "/api/backtest?symbol=TMF&strategy=orb"
                     "&start=2026-08-01&end=2026-09-01"
@@ -131,7 +154,7 @@ class LiveApiTests(unittest.TestCase):
     def test_websocket_message_schema_and_replay_updates_forming_bar(self):
         temp, client = self.make_client()
         required = {
-            "type", "symbol", "contract", "exchange_time", "received_time",
+            "type", "interval", "symbol", "contract", "exchange_time", "received_time",
             "latency_ms", "time", "open", "high", "low", "close", "volume",
             "status", "connection_status",
         }
@@ -146,6 +169,7 @@ class LiveApiTests(unittest.TestCase):
                         message = socket.receive_json()
                         if message.get("type") == "kbar":
                             self.assertTrue(required.issubset(message))
+                            self.assertEqual(message["interval"], "1m")
                             if message["status"] == "forming":
                                 bar_time = message["time"]
                                 forming_counts[bar_time] = forming_counts.get(bar_time, 0) + 1
@@ -153,6 +177,23 @@ class LiveApiTests(unittest.TestCase):
                         any(count >= 2 for count in forming_counts.values()),
                         "expected repeated forming updates for the same minute",
                     )
+        finally:
+            temp.cleanup()
+
+    def test_websocket_streams_selected_five_minute_bar(self):
+        temp, client = self.make_client()
+        try:
+            with client:
+                with client.websocket_connect(
+                    "/ws/market/TMF?interval=5m"
+                ) as socket:
+                    while True:
+                        message = socket.receive_json()
+                        if message.get("type") == "kbar":
+                            self.assertEqual(message["interval"], "5m")
+                            self.assertEqual(message["time"][14:16], "00")
+                            self.assertEqual(message["status"], "forming")
+                            break
         finally:
             temp.cleanup()
 

@@ -76,9 +76,12 @@ class KBar:
         values.update(changes)
         return KBar(**values)
 
-    def to_message(self, connection_status: ConnectionStatus) -> dict[str, object]:
+    def to_message(
+        self, connection_status: ConnectionStatus, interval: str = "1m"
+    ) -> dict[str, object]:
         return {
             "type": "kbar",
+            "interval": interval,
             "symbol": self.symbol,
             "contract": self.contract,
             "exchange_time": isoformat_millis(self.exchange_time),

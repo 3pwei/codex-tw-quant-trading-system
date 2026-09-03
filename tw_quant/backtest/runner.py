@@ -5,7 +5,7 @@ from datetime import date
 import pandas as pd
 
 from ..futures_costs import FuturesCostConfig
-from ..market import KBar
+from ..market import KBar, TIMEFRAME_LABELS, TIMEFRAME_MINUTES, validate_timeframe
 from ..metrics import build_equity_curve, calculate_summary
 from ..strategy import SUPPORTED_STRATEGIES, analyze_strategies
 
@@ -97,8 +97,10 @@ def run_strategy_backtest(
     costs: FuturesCostConfig | None = None,
     source: str = "行情資料庫（已收盤 1 分 K）",
     parameters: dict[str, object] | None = None,
+    interval: str = "1m",
 ) -> dict[str, object]:
     validate_date_range(start, end)
+    selected_interval = validate_timeframe(interval)
     strategy = strategy.lower()
     if strategy not in SUPPORTED_STRATEGIES:
         raise ValueError(f"unsupported strategy: {strategy}")
@@ -111,6 +113,7 @@ def run_strategy_backtest(
         [strategy],
         force_close_last=True,
         parameters={strategy: parameters or {}},
+        interval=selected_interval,
     )["strategies"][0]
     signals = analysis["signals"]
     cost_config = costs or FuturesCostConfig()
@@ -151,7 +154,8 @@ def run_strategy_backtest(
             "display_name": "微型臺指期貨",
             "strategy": analysis["name"],
             "strategy_key": strategy,
-            "interval": "1 分鐘",
+            "interval": TIMEFRAME_LABELS[selected_interval],
+            "interval_key": selected_interval,
             "date_range": f"{start.isoformat()} ～ {end.isoformat()}",
             "is_synthetic": False,
             "source": source,
@@ -163,7 +167,7 @@ def run_strategy_backtest(
             "opening_range_minutes": int(
                 analysis["parameters"].get("opening_range_minutes", 0)
             ),
-            "bar_minutes": 1,
+            "bar_minutes": TIMEFRAME_MINUTES[selected_interval] or 0,
             "stop_loss_pct": float(analysis["parameters"]["stop_loss_pct"]),
             "take_profit_pct": float(analysis["parameters"]["take_profit_pct"]),
             "force_exit_time": "每交易時段結束",
