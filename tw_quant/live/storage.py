@@ -13,6 +13,10 @@ class BarRepository(Protocol):
     def save(self, bar: KBar) -> None: ...
     def latest(self, symbol: str, limit: int) -> list[KBar]: ...
     def latest_forming(self, symbol: str) -> KBar | None: ...
+    def date_bounds(self, symbol: str) -> tuple[date | None, date | None]: ...
+    def between_trading_dates(
+        self, symbol: str, start: date, end: date
+    ) -> list[KBar]: ...
     def tick_seen(self, key: str) -> bool: ...
     def remember_tick(self, key: str, exchange_time: datetime) -> None: ...
     def purge_backfill(self, symbol: str, contract: str) -> None: ...
@@ -120,6 +124,29 @@ class SQLiteBarRepository:
                 (symbol,),
             ).fetchone()
         return self._to_bar(row) if row else None
+
+    def date_bounds(self, symbol: str) -> tuple[date | None, date | None]:
+        with self.lock:
+            row = self.connection.execute(
+                "SELECT MIN(trading_date) AS first_date, "
+                "MAX(trading_date) AS last_date FROM minute_bars "
+                "WHERE symbol=? AND status='closed'",
+                (symbol,),
+            ).fetchone()
+        first = date.fromisoformat(row["first_date"]) if row["first_date"] else None
+        last = date.fromisoformat(row["last_date"]) if row["last_date"] else None
+        return first, last
+
+    def between_trading_dates(
+        self, symbol: str, start: date, end: date
+    ) -> list[KBar]:
+        with self.lock:
+            rows = self.connection.execute(
+                "SELECT * FROM minute_bars WHERE symbol=? AND status='closed' "
+                "AND trading_date BETWEEN ? AND ? ORDER BY time",
+                (symbol, start.isoformat(), end.isoformat()),
+            ).fetchall()
+        return [self._to_bar(row) for row in rows]
 
     def tick_seen(self, key: str) -> bool:
         with self.lock:

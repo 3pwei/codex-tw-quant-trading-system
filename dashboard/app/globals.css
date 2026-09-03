@@ -35,3 +35,9 @@ footer{display:flex;justify-content:space-between;gap:24px;padding:20px 2px 0;co
 .strategy-risk-levels b{display:block;margin-top:3px;color:#dbe7f3!important;font-size:10px!important}
 .strategy-risk-levels .stop b{color:var(--red)!important}
 .strategy-risk-levels .target b{color:var(--green)!important}
+.backtest-controls{display:flex;align-items:end;gap:12px;margin:14px 0;padding:14px;border:1px solid var(--line);background:rgba(9,20,17,.88)}
+.backtest-controls label{display:grid;gap:6px}.backtest-controls label span,.backtest-controls small{color:var(--muted);font:9px ui-monospace,monospace}
+.backtest-controls select,.backtest-controls input{height:38px;min-width:175px;padding:0 10px;color:var(--text);border:1px solid var(--line2);background:#091612}
+.backtest-controls button{height:38px;padding:0 20px;cursor:pointer;color:#06110e;border:0;background:var(--green);font-weight:800}.backtest-controls button:disabled{opacity:.55;cursor:wait}
+.backtest-controls small{margin-left:auto;padding-bottom:10px}.empty-result{margin-bottom:12px;padding:36px;text-align:center}.empty-result p{color:var(--muted);font-size:12px}
+@media(max-width:840px){.backtest-controls{align-items:stretch;flex-wrap:wrap}.backtest-controls label{flex:1 1 180px}.backtest-controls select,.backtest-controls input{width:100%;min-width:0}.backtest-controls small{width:100%;margin-left:0}}

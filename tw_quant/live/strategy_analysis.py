@@ -152,7 +152,10 @@ def _simulate(
 
 
 def analyze_live_strategies(
-    bars: Iterable[KBar], selected: Iterable[str] = SUPPORTED_STRATEGIES
+    bars: Iterable[KBar],
+    selected: Iterable[str] = SUPPORTED_STRATEGIES,
+    *,
+    force_close_last: bool = False,
 ) -> dict[str, object]:
     requested = tuple(dict.fromkeys(value.lower() for value in selected))
     unsupported = sorted(set(requested) - set(SUPPORTED_STRATEGIES))
@@ -199,7 +202,7 @@ def analyze_live_strategies(
     groups = list(frame.groupby(group_columns, sort=False))
     for group_index, (_, session_bars) in enumerate(groups):
         session_bars = session_bars.reset_index(drop=True)
-        force_final = group_index < len(groups) - 1
+        force_final = force_close_last or group_index < len(groups) - 1
         if "orb" in requested:
             catalog["orb"]["signals"].extend(
                 _simulate(

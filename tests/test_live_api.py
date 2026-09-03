@@ -72,6 +72,27 @@ class LiveApiTests(unittest.TestCase):
                     "/api/strategy-signals?symbol=TMF&strategies=unknown&limit=500"
                 )
                 self.assertEqual(invalid_strategy.status_code, 400)
+                options = client.get("/api/backtest/options?symbol=TMF")
+                self.assertEqual(options.status_code, 200)
+                self.assertEqual(options.json()["max_days"], 31)
+                self.assertEqual(
+                    [item["key"] for item in options.json()["strategies"]],
+                    ["orb", "bnf"],
+                )
+                available_end = options.json()["available_end"]
+                if available_end:
+                    backtest = client.get(
+                        "/api/backtest?symbol=TMF&strategy=bnf"
+                        f"&start={available_end}&end={available_end}"
+                    )
+                    self.assertEqual(backtest.status_code, 200)
+                    self.assertEqual(backtest.json()["metadata"]["strategy_key"], "bnf")
+                    self.assertIn("summary", backtest.json())
+                too_long = client.get(
+                    "/api/backtest?symbol=TMF&strategy=orb"
+                    "&start=2026-08-01&end=2026-09-01"
+                )
+                self.assertEqual(too_long.status_code, 400)
         finally:
             temp.cleanup()
 

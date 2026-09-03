@@ -1,27 +1,23 @@
-# 微型臺指期貨 5 分 K 夜盤回測
+# TMF Dashboard
 
-線上儀表板：<https://tw-quant-backtest.popop9987.chatgpt.site>
+`/` 是動態策略回測頁，`/live/` 是 TMF 即時 1 分 K。兩頁共用 FastAPI
+提供的 ORB／BNF 策略分析核心，避免即時訊號與回測規則不同步。
 
-原有 `/` 仍是 5 分 K 回測頁；新增 `/live/` 為 TMF 即時 1 分 K。即時頁透過 `NEXT_PUBLIC_MARKET_API_URL` 連接獨立 FastAPI，先以 REST 補最近 500 根，再以 WebSocket `series.update()` 增量更新。前端可靜態部署至 GitHub Pages，Shioaji/FastAPI 不可部署到 Pages。
+回測頁會先呼叫 `/api/backtest/options` 取得 SQLite 可用交易日，再呼叫
+`/api/backtest` 執行所選策略與日期。日期區間由前後端共同限制為最多 31 個
+日曆日；回測只使用已收盤 1 分 K。每筆交易皆顯示進場、出場、停損、停利、
+成本、MFE、MAE 與權益回撤。
 
-## 資料與範圍
+本機啟動：
 
-- 資料來源：臺灣期貨交易所 2026/08/25 逐筆成交 CSV
-- 商品：微型臺指期貨 TMF
-- 契約：202609 最近月
-- 時段：2026/08/24 15:00 至 2026/08/25 05:00
-- 週期：5 分 K，共 168 根
-- 策略：15 分鐘 Opening Range Breakout
+```bash
+cd dashboard
+npm ci
+NEXT_PUBLIC_MARKET_API_URL=http://localhost:8000 npm run dev
+```
 
-## 本次結果
+正式 Lightsail 部署由 Caddy 讓前端與 FastAPI 共用 `tmf.milespapa.com`，不需
+設定 `NEXT_PUBLIC_MARKET_API_URL`。GitHub Pages 必須用 Repository Variable
+`MARKET_API_URL` 指向可公開連線的 HTTPS FastAPI；Pages 本身不能執行回測後端。
 
-- 16:00 做空 1 口，進場價 44,645
-- 19:35 停損出場，出場價 44,913.87
-- 毛損益：-NT$2,688.70
-- 成本：NT$38
-- 淨損益：-NT$2,726.70
-- 最大回撤：NT$3,507.70（3.48%）
-
-假設每點 NT$10、每邊手續費 NT$10、期貨交易稅十萬分之 2、每邊滑價 1 點，初始資金 NT$100,000。
-
-> 單一夜盤結果不能代表長期績效，且不構成投資建議。
+回測結果不代表未來績效，也不構成投資建議。
