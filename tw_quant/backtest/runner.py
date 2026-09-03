@@ -7,7 +7,11 @@ import pandas as pd
 from ..futures_costs import FuturesCostConfig
 from ..market import KBar, TIMEFRAME_LABELS, TIMEFRAME_MINUTES, validate_timeframe
 from ..metrics import build_equity_curve, calculate_summary
-from ..strategy import SUPPORTED_STRATEGIES, analyze_strategies
+from ..strategy import (
+    SUPPORTED_STRATEGIES,
+    analyze_strategies,
+    generate_composite_signals,
+)
 
 
 MAX_BACKTEST_DAYS = 31
@@ -198,4 +202,97 @@ def run_strategy_backtest(
             {**row, "timestamp": pd.Timestamp(row["timestamp"]).isoformat()}
             for row in equity.to_dict(orient="records")
         ],
+    }
+
+
+def run_composite_backtest(
+    bars: list[KBar],
+    definition: dict[str, object],
+    strategy_id: str,
+    version: int,
+    start: date,
+    end: date,
+    *,
+    initial_capital: float = INITIAL_CAPITAL,
+    contracts: int = 1,
+    costs: FuturesCostConfig | None = None,
+    source: str = "行情資料庫（已收盤 1 分 K）",
+) -> dict[str, object]:
+    """Backtest one immutable composite strategy version from source 1m bars."""
+    validate_date_range(start, end)
+    closed = sorted(
+        (bar for bar in bars if bar.status == "closed"), key=lambda bar: bar.time
+    )
+    if not closed:
+        raise ValueError("所選區間沒有可用的已收盤 K 棒")
+    signals, trace = generate_composite_signals(closed, definition)
+    cost_config = costs or FuturesCostConfig()
+    entries: list[dict[str, object]] = []
+    trades: list[dict[str, object]] = []
+    for signal in signals:
+        if signal["event"] == "entry":
+            entries.append(signal)
+        elif entries:
+            trades.append(_trade_from_signals(
+                entries.pop(0), signal, closed, cost_config, initial_capital, contracts
+            ))
+
+    frame = pd.DataFrame(
+        [{"timestamp": bar.time, "close": bar.close} for bar in closed]
+    )
+    trade_frame = pd.DataFrame(trades)
+    equity = build_equity_curve(trade_frame, initial_capital, frame)
+    summary = calculate_summary(trade_frame, equity, initial_capital)
+    risk = definition["risk"]
+    return {
+        "metadata": {
+            "symbol": closed[0].symbol,
+            "display_name": "微型臺指期貨",
+            "strategy": definition["name"],
+            "strategy_key": strategy_id,
+            "strategy_version": version,
+            "interval": "多週期",
+            "interval_key": "multi",
+            "date_range": f"{start.isoformat()} ～ {end.isoformat()}",
+            "is_synthetic": False,
+            "source": source,
+        },
+        "definition": definition,
+        "config": {
+            "initial_capital": initial_capital,
+            "quantity": contracts,
+            "quantity_unit": "口",
+            "bar_minutes": 1,
+            "stop_loss_pct": float(risk["stop_loss_pct"]),
+            "take_profit_pct": float(risk["take_profit_pct"]),
+            "force_exit_time": "每交易時段結束",
+            "commission_rate": 0,
+            "commission_per_side": cost_config.commission_per_side,
+            "sell_tax_rate": cost_config.tax_rate,
+            "slippage_bps": 0,
+            "slippage_points": cost_config.slippage_points,
+            "contract_multiplier": cost_config.multiplier,
+        },
+        "summary": summary,
+        "bars": [{
+            "timestamp": bar.time.isoformat(timespec="milliseconds"),
+            "open": bar.open,
+            "high": bar.high,
+            "low": bar.low,
+            "close": bar.close,
+            "volume": bar.volume,
+            "contract": bar.contract,
+            "session": bar.session,
+            "trading_date": bar.trading_date.isoformat(),
+        } for bar in closed],
+        "trades": [{
+            **trade,
+            "entry_time": trade["entry_time"].isoformat(timespec="milliseconds"),
+            "exit_time": trade["exit_time"].isoformat(timespec="milliseconds"),
+        } for trade in trades],
+        "equity": [
+            {**row, "timestamp": pd.Timestamp(row["timestamp"]).isoformat()}
+            for row in equity.to_dict(orient="records")
+        ],
+        "trace": trace,
     }

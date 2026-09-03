@@ -13,6 +13,12 @@ from .parameters import (
     strategy_catalog,
     validate_strategy_parameters,
 )
+from .composite import (
+    default_composite_definition,
+    generate_composite_signals,
+    new_composite_id,
+    validate_composite_definition,
+)
 
 __all__ = [
     "BNFMeanReversion",
@@ -24,4 +30,8 @@ __all__ = [
     "default_strategy_parameters",
     "strategy_catalog",
     "validate_strategy_parameters",
+    "default_composite_definition",
+    "generate_composite_signals",
+    "new_composite_id",
+    "validate_composite_definition",
 ]

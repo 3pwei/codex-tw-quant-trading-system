@@ -22,6 +22,7 @@
 - Next.js + TradingView Lightweight Charts 即時 K 線頁面
 - ORB／BNF Multi-select 策略圖層與即時訊號標記
 - 策略管理頁可調整 ORB／BNF 與停損停利參數，SQLite 持久化後供即時與回測共用
+- 無程式碼多週期策略組合器：Setup／Entry／Exit／Risk、ALL／ANY 與版本追蹤
 
 ## 架構
 
@@ -48,6 +49,7 @@ CSV 1 分 K
 | `tw_quant/market/` | Live、Replay、CSV 共用的 Tick／KBar 與交易時段模型 |
 | `tw_quant/strategy/engine.py` | 與資料來源無關的 ORB／BNF 策略分析器 |
 | `tw_quant/strategy/parameters.py` | 共用參數規格、預設值與後端驗證 |
+| `tw_quant/strategy/composite.py` | 多週期規則驗證、原子訊號組合與共用執行核心 |
 | `tw_quant/risk/engine.py` | 共用停損、停利價格與觸發優先序 |
 | `tw_quant/execution/simulator.py` | 下一根開盤、風險出場與時段平倉模擬 |
 | `tw_quant/backtest/runner.py` | 成本、交易、權益與績效報表 |
@@ -130,6 +132,39 @@ K 棒使用 Tick 的交易所時間（`Asia/Taipei`）分桶，不使用瀏覽�
 通過後寫入行情服務使用的 SQLite。Live、Replay 與 Backtest 都會將同一份設定
 傳入 `analyze_strategies()`，不會各自維護另一套參數。按「恢復預設」只會先更新
 畫面，仍需按「儲存參數」才會套用。
+
+### 多週期策略組合器
+
+`/strategies/` 下方可用結構式編輯器建立自己的組合策略，不需要也不允許輸入
+Python 程式碼。每個組合策略由四段構成：
+
+- `Setup`：市場背景或高週期啟動條件；可留空。
+- `Entry`：真正觸發進場的條件；至少一條。
+- `Exit`：策略出場條件；可留空，仍會受風控與時段結束平倉。
+- `Risk`：1 分 K 停損、停利與最長持有時間；必填。
+
+Setup、Entry 與 Exit 都能加入多條 ORB／BNF 規則，個別選擇 `1m`、`5m`、
+`10m`、`15m`、`30m`、`1h`、`1d` 或 `1w`，並設定 `ALL`／`ANY` 及條件確認
+視窗。每個規則積木預設繼承策略管理頁上方已保存的原子策略參數，也可在積木內
+個別覆寫（例如 Entry BNF 與 Exit BNF 使用不同門檻）；後端保存時會把完整解析後
+的參數快照寫入組合策略版本，之後修改原子策略不會竄改既有版本。
+
+儲存新策略會建立 v1；修改現有策略會新增 v2、v3，而不覆蓋舊版。歷史回測頁
+會列出最新版本，執行結果同時記錄策略 ID 與版本。組合策略一律從原始已收盤
+1 分 K 產生各週期訊號，再於下一根 1 分 K 開盤模擬成交；停損與停利也以
+1 分 K 檢查，同根同時觸發時採停損優先。
+
+相關 API：
+
+- `GET /api/composite-strategies`
+- `POST /api/composite-strategies`
+- `GET /api/composite-strategies/{id}?version=1`
+- `PUT /api/composite-strategies/{id}`（建立新版本）
+- `GET /api/composite-strategy-signals/{id}?version=1`
+- `GET /api/composite-backtest?strategy_id={id}&version=1&start=2026-08-01&end=2026-08-31`
+
+目前仍是研究與行情觀察階段：組合策略可在 Live／Replay 資料上呼叫相同訊號
+核心，也可執行歷史回測，但不會連接 Broker 下單。
 
 ### Mock／Replay 本機啟動
 
