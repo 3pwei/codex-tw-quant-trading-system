@@ -59,6 +59,27 @@ class StrategyBacktestTests(unittest.TestCase):
         self.assertEqual(result["trades"][0]["stop_loss_price"], 89.46)
         self.assertEqual(result["trades"][0]["take_profit_price"], 91.08)
 
+    def test_backtest_accepts_the_same_custom_strategy_parameters(self):
+        bars = [make_bar(index, 100.0) for index in range(2)]
+        bars += [make_bar(2, 102.0, 500), make_bar(3, 103.0)]
+        result = run_strategy_backtest(
+            bars,
+            "orb",
+            date(2026, 8, 25),
+            date(2026, 8, 25),
+            parameters={
+                "opening_range_minutes": 2,
+                "volume_window": 2,
+                "volume_multiplier": 1,
+                "stop_loss_pct": 0.01,
+                "take_profit_pct": 0.03,
+            },
+        )
+        self.assertEqual(result["config"]["opening_range_minutes"], 2)
+        self.assertEqual(result["config"]["stop_loss_pct"], 0.01)
+        self.assertEqual(result["trades"][0]["stop_loss_price"], 101.97)
+        self.assertEqual(result["trades"][0]["take_profit_price"], 106.09)
+
     def test_repository_filters_closed_bars_by_trading_date(self):
         with tempfile.TemporaryDirectory() as directory:
             repo = SQLiteBarRepository(Path(directory) / "bars.sqlite3")
@@ -78,6 +99,30 @@ class StrategyBacktestTests(unittest.TestCase):
                 self.assertEqual([bar.time for bar in selected], [first.time])
             finally:
                 repo.close()
+
+    def test_strategy_parameters_persist_across_repository_restart(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "bars.sqlite3"
+            first = SQLiteBarRepository(path)
+            first.save_strategy_parameters(
+                "orb",
+                {
+                    "opening_range_minutes": 10,
+                    "volume_window": 8,
+                    "volume_multiplier": 1.5,
+                    "stop_loss_pct": 0.01,
+                    "take_profit_pct": 0.025,
+                },
+            )
+            first.close()
+            reopened = SQLiteBarRepository(path)
+            try:
+                self.assertEqual(
+                    reopened.strategy_parameters()["orb"]["opening_range_minutes"],
+                    10,
+                )
+            finally:
+                reopened.close()
 
 
 if __name__ == "__main__":

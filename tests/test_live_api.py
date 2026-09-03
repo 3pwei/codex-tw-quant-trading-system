@@ -72,6 +72,38 @@ class LiveApiTests(unittest.TestCase):
                     "/api/strategy-signals?symbol=TMF&strategies=unknown&limit=500"
                 )
                 self.assertEqual(invalid_strategy.status_code, 400)
+                catalog = client.get("/api/strategies")
+                self.assertEqual(catalog.status_code, 200)
+                self.assertEqual(
+                    [item["key"] for item in catalog.json()["strategies"]],
+                    ["orb", "bnf"],
+                )
+                saved = client.put(
+                    "/api/strategies/orb",
+                    json={
+                        "parameters": {
+                            "opening_range_minutes": 10,
+                            "volume_window": 8,
+                            "volume_multiplier": 1.5,
+                            "stop_loss_pct": 0.01,
+                            "take_profit_pct": 0.025,
+                        }
+                    },
+                )
+                self.assertEqual(saved.status_code, 200)
+                self.assertEqual(
+                    saved.json()["parameters"]["opening_range_minutes"]["value"],
+                    10,
+                )
+                persisted = client.get("/api/strategies").json()["strategies"][0]
+                self.assertEqual(
+                    persisted["parameters"]["take_profit_pct"]["value"], 0.025
+                )
+                invalid_parameters = client.put(
+                    "/api/strategies/bnf",
+                    json={"parameters": {"entry_z_score": 1, "exit_z_score": 2}},
+                )
+                self.assertEqual(invalid_parameters.status_code, 422)
                 options = client.get("/api/backtest/options?symbol=TMF")
                 self.assertEqual(options.status_code, 200)
                 self.assertEqual(options.json()["max_days"], 31)
