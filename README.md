@@ -192,16 +192,23 @@ SJ_PRODUCTION=true
 ### API
 
 - `GET /api/health`
-- `GET /api/kbars?symbol=TMF&interval=1m&limit=500`
-- `GET /api/strategy-signals?symbol=TMF&strategies=orb,bnf&limit=500`
+- `GET /api/kbars?symbol=TMF&interval=5m&limit=500`
+- `GET /api/strategy-signals?symbol=TMF&strategies=orb,bnf&interval=5m&limit=500`
 - `GET /api/strategies`
 - `PUT /api/strategies/{strategy}`，JSON：`{"parameters": {...}}`
 - `GET /api/backtest/options?symbol=TMF`
-- `GET /api/backtest?symbol=TMF&strategy=orb&start=2026-08-01&end=2026-08-31`
-- `WS /ws/market/TMF`
+- `GET /api/backtest?symbol=TMF&strategy=orb&interval=5m&start=2026-08-01&end=2026-08-31`
+- `WS /ws/market/TMF?interval=5m`
 
-回測 Dashboard 與即時頁共用 ORB／BNF 訊號分析器，只使用 SQLite 內已收盤的
-1 分 K。畫面可選策略與起訖交易日，單次最多 31 個日曆日；FastAPI 也會驗證
+`interval` 支援 `1m`、`5m`、`10m`、`15m`、`30m`、`1h`、`1d`、`1w`。
+SQLite 仍只保存唯一一份 1 分 K；REST、WebSocket、策略訊號與回測會透過
+`tw_quant.market.timeframes` 共用聚合器產生所選週期，不重複儲存行情，也不在
+Live／Backtest 各寫一套。分鐘與小時 K 以日盤 08:45、夜盤 15:00 為分桶起點；
+日 K 依期交所 `trading_date` 合併前一晚夜盤與當日日盤，週 K 依交易日週次聚合，
+且合約換月時絕不合併不同契約。日／週 K 可顯示的長度取決於 1 分 K 實際保留範圍。
+
+回測 Dashboard 與即時頁共用 ORB／BNF 訊號分析器，只使用 SQLite 內的
+1 分 K 作為來源。畫面可選 K 棒週期、策略與起訖交易日，單次最多 31 個日曆日；FastAPI 也會驗證
 相同上限，不能只靠瀏覽器繞過。夜盤跨日依 `trading_date` 查詢，而非日曆時間。
 既有 Lightsail 若仍使用舊版 `/opt/tw-quant/config/market.env`，需把
 `MARKET_HISTORY_DAYS` 改為 `30`、`MARKET_HISTORY_LIMIT` 改為 `50000`，重啟後

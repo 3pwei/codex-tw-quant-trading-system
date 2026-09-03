@@ -8,7 +8,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from ..backtest import MAX_BACKTEST_DAYS, run_strategy_backtest, validate_date_range
-from ..market import TradingCalendar
+from ..market import (
+    SUPPORTED_TIMEFRAMES,
+    TIMEFRAME_LABELS,
+    TimeframeStreamAggregator,
+    TradingCalendar,
+    aggregate_kbars,
+    kbar_from_message,
+    source_bar_limit,
+    validate_timeframe,
+)
 from ..strategy import (
     SUPPORTED_STRATEGIES,
     analyze_strategies,
@@ -78,7 +87,7 @@ def create_app(
 
     app = FastAPI(
         title="TMF Live Market API",
-        version="0.4.0",
+        version="0.5.0",
         description="Quote-only Shioaji/Replay service; no order endpoints.",
         lifespan=lifespan,
     )
@@ -126,17 +135,25 @@ def create_app(
     ):
         if symbol.upper() != config.symbol:
             raise HTTPException(status_code=404, detail="unsupported symbol")
-        if interval != "1m":
-            raise HTTPException(status_code=400, detail="only interval=1m is supported")
+        try:
+            selected_interval = validate_timeframe(interval)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        source_limit = source_bar_limit(
+            selected_interval, limit, config.history_limit
+        )
         return [
-            bar.to_message(service.connection_status)
-            for bar in repo.latest(config.symbol, limit)
+            bar.to_message(service.connection_status, selected_interval)
+            for bar in aggregate_kbars(
+                repo.latest(config.symbol, source_limit), selected_interval, limit
+            )
         ]
 
     @app.get("/api/strategy-signals")
     async def strategy_signals(
         symbol: str = "TMF",
         strategies: str = "orb,bnf",
+        interval: str = "1m",
         limit: int = Query(500, ge=20, le=5000),
     ):
         if symbol.upper() != config.symbol:
@@ -154,8 +171,17 @@ def create_app(
                 status_code=400,
                 detail=f"unsupported strategies: {', '.join(unsupported)}",
             )
+        try:
+            selected_interval = validate_timeframe(interval)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        source_limit = source_bar_limit(
+            selected_interval, limit, config.history_limit
+        )
         return analyze_strategies(
-            repo.latest(config.symbol, limit),
+            aggregate_kbars(
+                repo.latest(config.symbol, source_limit), selected_interval, limit
+            ),
             selected,
             parameters=repo.strategy_parameters(),
         )
@@ -195,6 +221,10 @@ def create_app(
             "available_start": first.isoformat() if first else None,
             "available_end": last.isoformat() if last else None,
             "max_days": MAX_BACKTEST_DAYS,
+            "intervals": [
+                {"key": key, "name": TIMEFRAME_LABELS[key]}
+                for key in SUPPORTED_TIMEFRAMES
+            ],
             "strategies": [
                 {"key": item["key"], "name": item["name"]} for item in catalog
             ],
@@ -204,6 +234,7 @@ def create_app(
     def backtest(
         symbol: str = "TMF",
         strategy: str = "orb",
+        interval: str = "1m",
         start: date = Query(...),
         end: date = Query(...),
     ):
@@ -212,29 +243,52 @@ def create_app(
         if strategy.lower() not in SUPPORTED_STRATEGIES:
             raise HTTPException(status_code=400, detail="unsupported strategy")
         try:
+            selected_interval = validate_timeframe(interval)
             validate_date_range(start, end)
-            bars = repo.between_trading_dates(config.symbol, start, end)
+            bars = aggregate_kbars(
+                repo.between_trading_dates(config.symbol, start, end),
+                selected_interval,
+            )
             return run_strategy_backtest(
                 bars,
                 strategy.lower(),
                 start,
                 end,
+                interval=selected_interval,
                 parameters=repo.strategy_parameters().get(strategy.lower()),
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.websocket("/ws/market/{symbol}")
-    async def market_socket(websocket: WebSocket, symbol: str):
+    async def market_socket(
+        websocket: WebSocket, symbol: str, interval: str = "1m"
+    ):
         if symbol.upper() != config.symbol:
             await websocket.close(code=1008, reason="unsupported symbol")
             return
+        try:
+            selected_interval = validate_timeframe(interval)
+        except ValueError:
+            await websocket.close(code=1008, reason="unsupported interval")
+            return
         await websocket.accept()
         queue = service.hub.subscribe()
+        transformer = TimeframeStreamAggregator(
+            selected_interval,
+            repo.latest(config.symbol, config.history_limit),
+        )
         await websocket.send_json(service.status_message())
         try:
             while True:
-                await websocket.send_json(await queue.get())
+                message = await queue.get()
+                if message.get("type") != "kbar":
+                    await websocket.send_json(message)
+                    continue
+                for bar in transformer.push(kbar_from_message(message)):
+                    await websocket.send_json(
+                        bar.to_message(service.connection_status, selected_interval)
+                    )
         except (WebSocketDisconnect, RuntimeError):
             pass
         finally:

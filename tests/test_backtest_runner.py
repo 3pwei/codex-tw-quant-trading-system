@@ -80,6 +80,15 @@ class StrategyBacktestTests(unittest.TestCase):
         self.assertEqual(result["trades"][0]["stop_loss_price"], 101.97)
         self.assertEqual(result["trades"][0]["take_profit_price"], 106.09)
 
+    def test_backtest_reports_selected_timeframe(self):
+        bars = [make_bar(index, 100.0) for index in range(20)]
+        result = run_strategy_backtest(
+            bars, "orb", date(2026, 8, 25), date(2026, 8, 25), interval="5m"
+        )
+        self.assertEqual(result["metadata"]["interval"], "5 分鐘")
+        self.assertEqual(result["metadata"]["interval_key"], "5m")
+        self.assertEqual(result["config"]["bar_minutes"], 5)
+
     def test_repository_filters_closed_bars_by_trading_date(self):
         with tempfile.TemporaryDirectory() as directory:
             repo = SQLiteBarRepository(Path(directory) / "bars.sqlite3")
