@@ -76,6 +76,8 @@ def _simulate(
     entries: pd.Series,
     exits: pd.DataFrame | None = None,
     force_final: bool = False,
+    stop_loss_pct: float = 0.006,
+    take_profit_pct: float = 0.012,
 ) -> list[dict[str, object]]:
     signals: list[dict[str, object]] = []
     position = 0
@@ -93,6 +95,8 @@ def _simulate(
                 "direction": "long" if position == 1 else "short",
                 "time": row["timestamp"].isoformat(timespec="milliseconds"),
                 "price": round(float(price), 4),
+                "stop_loss_price": round(stop_price, 4),
+                "take_profit_price": round(target_price, 4),
                 "reason": reason,
                 "contract": row["contract"],
                 "session": row["session"],
@@ -109,8 +113,12 @@ def _simulate(
         if position == 0 and pending_entry:
             position = pending_entry
             entry_price = float(row["open"])
-            stop_price = entry_price * (1 - 0.006 if position == 1 else 1 + 0.006)
-            target_price = entry_price * (1 + 0.012 if position == 1 else 1 - 0.012)
+            stop_price = entry_price * (
+                1 - stop_loss_pct if position == 1 else 1 + stop_loss_pct
+            )
+            target_price = entry_price * (
+                1 + take_profit_pct if position == 1 else 1 - take_profit_pct
+            )
             emit("entry", row, entry_price, "signal_confirmed")
             pending_entry = 0
 
