@@ -25,6 +25,13 @@ class BarRepository(Protocol):
     def save_strategy_parameters(
         self, strategy: str, parameters: dict[str, int | float]
     ) -> None: ...
+    def composite_strategies(self) -> list[dict[str, object]]: ...
+    def composite_strategy(
+        self, strategy_id: str, version: int | None = None
+    ) -> dict[str, object] | None: ...
+    def save_composite_strategy(
+        self, strategy_id: str, definition: dict[str, object]
+    ) -> dict[str, object]: ...
     def close(self) -> None: ...
 
 
@@ -74,6 +81,18 @@ class SQLiteBarRepository:
                 strategy TEXT PRIMARY KEY,
                 parameters_json TEXT NOT NULL,
                 updated_at TEXT NOT NULL
+            )
+            """
+        )
+        self.connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS composite_strategies (
+                strategy_id TEXT NOT NULL,
+                version INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                definition_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY(strategy_id, version)
             )
             """
         )
@@ -233,6 +252,74 @@ class SQLiteBarRepository:
                 (strategy, payload, updated_at),
             )
             self.connection.commit()
+
+    @staticmethod
+    def _composite_row(row: sqlite3.Row) -> dict[str, object]:
+        return {
+            "id": row["strategy_id"],
+            "version": row["version"],
+            "name": row["name"],
+            "definition": json.loads(row["definition_json"]),
+            "created_at": row["created_at"],
+        }
+
+    def composite_strategies(self) -> list[dict[str, object]]:
+        with self.lock:
+            rows = self.connection.execute(
+                """
+                SELECT item.* FROM composite_strategies item
+                JOIN (
+                    SELECT strategy_id, MAX(version) AS version
+                    FROM composite_strategies GROUP BY strategy_id
+                ) latest ON latest.strategy_id=item.strategy_id
+                    AND latest.version=item.version
+                ORDER BY item.created_at DESC
+                """
+            ).fetchall()
+        return [self._composite_row(row) for row in rows]
+
+    def composite_strategy(
+        self, strategy_id: str, version: int | None = None
+    ) -> dict[str, object] | None:
+        with self.lock:
+            if version is None:
+                row = self.connection.execute(
+                    "SELECT * FROM composite_strategies WHERE strategy_id=? "
+                    "ORDER BY version DESC LIMIT 1",
+                    (strategy_id,),
+                ).fetchone()
+            else:
+                row = self.connection.execute(
+                    "SELECT * FROM composite_strategies "
+                    "WHERE strategy_id=? AND version=?",
+                    (strategy_id, version),
+                ).fetchone()
+        return self._composite_row(row) if row else None
+
+    def save_composite_strategy(
+        self, strategy_id: str, definition: dict[str, object]
+    ) -> dict[str, object]:
+        created_at = datetime.now().astimezone().isoformat(timespec="seconds")
+        payload = json.dumps(definition, ensure_ascii=False, sort_keys=True)
+        with self.lock:
+            row = self.connection.execute(
+                "SELECT COALESCE(MAX(version), 0) AS version "
+                "FROM composite_strategies WHERE strategy_id=?",
+                (strategy_id,),
+            ).fetchone()
+            version = int(row["version"]) + 1
+            self.connection.execute(
+                "INSERT INTO composite_strategies VALUES (?, ?, ?, ?, ?)",
+                (strategy_id, version, definition["name"], payload, created_at),
+            )
+            self.connection.commit()
+        return {
+            "id": strategy_id,
+            "version": version,
+            "name": definition["name"],
+            "definition": definition,
+            "created_at": created_at,
+        }
 
     def close(self) -> None:
         with self.lock:

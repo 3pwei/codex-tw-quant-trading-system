@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import CompositeBuilder from "./composite-builder";
 
 type ParameterField = {
   label: string;
@@ -159,6 +160,7 @@ export default function StrategyManager() {
         </div>
       </article>)}
     </section>
+    <CompositeBuilder strategies={strategies.map(({ key, name, parameters }) => ({ key, name, parameters }))} />
     <p className="page-note">參數儲存在伺服器 SQLite，不會送入 GitHub；新設定會同步套用於 Live、Replay 與 Backtest 的共用策略核心。正式下單功能仍未啟用。</p>
   </>;
 }

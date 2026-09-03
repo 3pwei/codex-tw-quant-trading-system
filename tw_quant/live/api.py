@@ -7,7 +7,12 @@ from fastapi import FastAPI, HTTPException, Query, Request, Response, WebSocket,
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from ..backtest import MAX_BACKTEST_DAYS, run_strategy_backtest, validate_date_range
+from ..backtest import (
+    MAX_BACKTEST_DAYS,
+    run_composite_backtest,
+    run_strategy_backtest,
+    validate_date_range,
+)
 from ..market import (
     SUPPORTED_TIMEFRAMES,
     TIMEFRAME_LABELS,
@@ -21,7 +26,11 @@ from ..market import (
 from ..strategy import (
     SUPPORTED_STRATEGIES,
     analyze_strategies,
+    default_composite_definition,
+    generate_composite_signals,
+    new_composite_id,
     strategy_catalog,
+    validate_composite_definition,
     validate_strategy_parameters,
 )
 from .access import (
@@ -38,6 +47,10 @@ from .storage import BarRepository, SQLiteBarRepository
 
 class StrategyParametersUpdate(BaseModel):
     parameters: dict[str, object]
+
+
+class CompositeStrategyUpdate(BaseModel):
+    definition: dict[str, object]
 
 
 def build_feed(settings: LiveSettings):
@@ -97,7 +110,7 @@ def create_app(
         CORSMiddleware,
         allow_origins=list(config.allowed_origins),
         allow_credentials=False,
-        allow_methods=["GET", "PUT", "OPTIONS"],
+        allow_methods=["GET", "POST", "PUT", "OPTIONS"],
         allow_headers=["*"],
     )
 
@@ -209,6 +222,67 @@ def create_app(
             if item["key"] == key
         )
 
+    @app.get("/api/composite-strategies")
+    def composite_strategies():
+        return {
+            "template": default_composite_definition(),
+            "strategies": repo.composite_strategies(),
+        }
+
+    @app.get("/api/composite-strategies/{strategy_id}")
+    def composite_strategy(strategy_id: str, version: int | None = None):
+        item = repo.composite_strategy(strategy_id, version)
+        if item is None:
+            raise HTTPException(status_code=404, detail="找不到組合策略版本")
+        return item
+
+    @app.get("/api/composite-strategy-signals/{strategy_id}")
+    def composite_strategy_signals(
+        strategy_id: str,
+        version: int | None = None,
+        symbol: str = "TMF",
+        limit: int = Query(5000, ge=20, le=5000),
+    ):
+        if symbol.upper() != config.symbol:
+            raise HTTPException(status_code=404, detail="unsupported symbol")
+        item = repo.composite_strategy(strategy_id, version)
+        if item is None:
+            raise HTTPException(status_code=404, detail="找不到組合策略版本")
+        signals, trace = generate_composite_signals(
+            repo.latest(config.symbol, limit), item["definition"]
+        )
+        return {
+            "id": item["id"],
+            "version": item["version"],
+            "name": item["name"],
+            "signals": signals,
+            "trace": trace,
+        }
+
+    @app.post("/api/composite-strategies", status_code=201)
+    def create_composite_strategy(update: CompositeStrategyUpdate):
+        try:
+            definition = validate_composite_definition(
+                update.definition, repo.strategy_parameters()
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return repo.save_composite_strategy(new_composite_id(), definition)
+
+    @app.put("/api/composite-strategies/{strategy_id}")
+    def update_composite_strategy(
+        strategy_id: str, update: CompositeStrategyUpdate
+    ):
+        if repo.composite_strategy(strategy_id) is None:
+            raise HTTPException(status_code=404, detail="找不到組合策略")
+        try:
+            definition = validate_composite_definition(
+                update.definition, repo.strategy_parameters()
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return repo.save_composite_strategy(strategy_id, definition)
+
     @app.get("/api/backtest/options")
     def backtest_options(symbol: str = "TMF"):
         if symbol.upper() != config.symbol:
@@ -228,6 +302,13 @@ def create_app(
             ],
             "strategies": [
                 {"key": item["key"], "name": item["name"]} for item in catalog
+            ] + [
+                {
+                    "key": f"composite:{item['id']}",
+                    "name": f"{item['name']} · v{item['version']}",
+                    "kind": "composite",
+                }
+                for item in repo.composite_strategies()
             ],
         }
 
@@ -257,6 +338,32 @@ def create_app(
                 end,
                 interval=selected_interval,
                 parameters=repo.strategy_parameters().get(strategy.lower()),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/composite-backtest")
+    def composite_backtest(
+        strategy_id: str,
+        version: int | None = None,
+        symbol: str = "TMF",
+        start: date = Query(...),
+        end: date = Query(...),
+    ):
+        if symbol.upper() != config.symbol:
+            raise HTTPException(status_code=404, detail="unsupported symbol")
+        item = repo.composite_strategy(strategy_id, version)
+        if item is None:
+            raise HTTPException(status_code=404, detail="找不到組合策略版本")
+        try:
+            validate_date_range(start, end)
+            return run_composite_backtest(
+                repo.between_trading_dates(config.symbol, start, end),
+                item["definition"],
+                str(item["id"]),
+                int(item["version"]),
+                start,
+                end,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
