@@ -64,6 +64,10 @@ class LiveApiTests(unittest.TestCase):
                     ],
                     ["orb", "bnf"],
                 )
+                for strategy in strategy_response.json()["strategies"]:
+                    for signal in strategy["signals"]:
+                        self.assertIn("stop_loss_price", signal)
+                        self.assertIn("take_profit_price", signal)
                 invalid_strategy = client.get(
                     "/api/strategy-signals?symbol=TMF&strategies=unknown&limit=500"
                 )

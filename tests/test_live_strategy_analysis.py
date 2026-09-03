@@ -44,6 +44,9 @@ class LiveStrategyAnalysisTests(unittest.TestCase):
             signals[0]["time"],
             bars[16].time.isoformat(timespec="milliseconds"),
         )
+        self.assertEqual(signals[0]["price"], 103.0)
+        self.assertEqual(signals[0]["stop_loss_price"], 102.382)
+        self.assertEqual(signals[0]["take_profit_price"], 104.236)
 
     def test_bnf_downside_stretch_emits_long_entry(self):
         bars = [bar(index, 100.0) for index in range(20)]
@@ -58,6 +61,18 @@ class LiveStrategyAnalysisTests(unittest.TestCase):
             signals[0]["time"],
             bars[21].time.isoformat(timespec="milliseconds"),
         )
+        self.assertEqual(signals[0]["stop_loss_price"], 89.46)
+        self.assertEqual(signals[0]["take_profit_price"], 91.08)
+
+    def test_short_entry_has_inverted_stop_and_take_profit_prices(self):
+        bars = [bar(index, 100.0) for index in range(15)]
+        bars.append(bar(15, 98.0, volume=500))
+        bars.append(bar(16, 97.0))
+        signals = analyze_live_strategies(bars, ["orb"])["strategies"][0]["signals"]
+        self.assertEqual(signals[0]["direction"], "short")
+        self.assertEqual(signals[0]["price"], 97.0)
+        self.assertEqual(signals[0]["stop_loss_price"], 97.582)
+        self.assertEqual(signals[0]["take_profit_price"], 95.836)
 
     def test_forming_bar_does_not_confirm_bnf_signal(self):
         bars = [bar(index, 100.0) for index in range(20)]

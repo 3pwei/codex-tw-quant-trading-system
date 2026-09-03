@@ -22,3 +22,16 @@ footer{display:flex;justify-content:space-between;gap:24px;padding:20px 2px 0;co
 @media(max-width:620px){.metrics{grid-template-columns:repeat(2,1fr)}.metric{min-height:114px}.metric strong{font-size:20px}.trade-panel,.equity-panel,.risk-panel,.ledger{padding:15px}.execution{grid-template-columns:repeat(2,1fr)}.execution>div{border-bottom:1px solid var(--line)}.execution>div:nth-child(even){border-right:0}.execution>div:nth-last-child(-n+2){border-bottom:0}}
 
 @media(max-width:840px){.live-header-actions{width:100%;margin-top:15px;justify-content:space-between}.live-header-actions .connection-pill{margin-top:0}.strategy-menu{left:0;right:auto}.strategy-strip{align-items:stretch;flex-wrap:wrap}.strategy-strip>small{width:100%;margin-left:0}}
+
+.strategy-menu{width:320px}
+.strategy-strip{align-items:stretch}
+.strategy-strip>small{align-self:center}
+.strategy-card{display:block!important;min-width:285px}
+.strategy-card-title{display:flex;align-items:center;gap:8px}
+.strategy-card-title span{color:#b6c5d6}
+.strategy-card-title b{margin-left:auto;color:#8fa2b7}
+.strategy-risk-levels{display:grid;grid-template-columns:repeat(3,1fr);gap:5px;margin-top:8px}
+.strategy-risk-levels span{display:block!important;padding:5px 6px;color:#7f93aa;background:#07111f;border:1px solid #172b3f;font-size:8px!important}
+.strategy-risk-levels b{display:block;margin-top:3px;color:#dbe7f3!important;font-size:10px!important}
+.strategy-risk-levels .stop b{color:var(--red)!important}
+.strategy-risk-levels .target b{color:var(--green)!important}

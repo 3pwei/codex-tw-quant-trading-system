@@ -56,6 +56,8 @@ type StrategySignal = {
   direction: "long" | "short";
   time: string;
   price: number;
+  stop_loss_price: number;
+  take_profit_price: number;
   reason: string;
 };
 type StrategyResult = {
@@ -83,9 +85,25 @@ const formatChartTime = (value: Time) => chartTimeFormatter.format(chartDate(val
 const fmt = (value?: number | null) => value == null ? "—" : new Intl.NumberFormat("zh-TW", { maximumFractionDigits: 2 }).format(value);
 const fmtTime = (value?: string | null) => value ? new Date(value).toLocaleString("zh-TW", { hour12: false, timeZone: "Asia/Taipei" }) : "尚未收到";
 const STRATEGY_OPTIONS: { key: StrategyKey; name: string; detail: string; color: string }[] = [
-  { key: "orb", name: "ORB 開盤突破", detail: "15 分鐘區間＋量能確認", color: "#38bdf8" },
-  { key: "bnf", name: "BNF 均值回歸", detail: "20MA／2Z＋RSI 確認", color: "#a78bfa" },
+  { key: "orb", name: "ORB 開盤突破", detail: "15 分鐘區間＋量能 · SL 0.6%／TP 1.2%", color: "#38bdf8" },
+  { key: "bnf", name: "BNF 均值回歸", detail: "20MA／2Z＋RSI · SL 0.6%／TP 1.2%", color: "#a78bfa" },
 ];
+
+function StrategyStatus({ strategy }: { strategy: StrategyResult }) {
+  const latestEntry = [...strategy.signals].reverse().find(signal => signal.event === "entry");
+  return <div className="strategy-card">
+    <div className="strategy-card-title">
+      <i style={{ background: strategy.color }} />
+      <span>{strategy.name}</span>
+      <b>{strategy.signals.length} 個訊號</b>
+    </div>
+    <div className="strategy-risk-levels">
+      <span>進場 <b>{fmt(latestEntry?.price)}</b></span>
+      <span className="stop">停損 <b>{fmt(latestEntry?.stop_loss_price)}</b></span>
+      <span className="target">停利 <b>{fmt(latestEntry?.take_profit_price)}</b></span>
+    </div>
+  </div>;
+}
 
 function candle(bar: KBar): CandlestickData<UTCTimestamp> {
   const forming = bar.status === "forming";
@@ -162,7 +180,9 @@ export default function LiveDashboard() {
         shape: signal.event === "entry"
           ? signal.direction === "long" ? "arrowUp" : "arrowDown"
           : "circle",
-        text: `${strategy.key.toUpperCase()} ${signal.direction === "long" ? "多" : "空"}${signal.event === "entry" ? "進" : "出"}`,
+        text: signal.event === "entry"
+          ? `${strategy.key.toUpperCase()} ${signal.direction === "long" ? "多" : "空"}進 · SL ${fmt(signal.stop_loss_price)} · TP ${fmt(signal.take_profit_price)}`
+          : `${strategy.key.toUpperCase()} ${signal.direction === "long" ? "多" : "空"}出`,
       })),
     );
     markerRef.current?.setMarkers(markers.sort((a, b) => Number(a.time) - Number(b.time)));
@@ -312,11 +332,7 @@ export default function LiveDashboard() {
     </section>
     <section className="strategy-strip">
       <div><span>策略圖層</span><b>{selectedStrategies.length ? `${selectedStrategies.length} 套啟用` : "全部隱藏"}</b></div>
-      {strategyResults.map(strategy => <div key={strategy.key}>
-        <i style={{ background: strategy.color }} />
-        <span>{strategy.name}</span>
-        <b>{strategy.signals.length} 個訊號</b>
-      </div>)}
+      {strategyResults.map(strategy => <StrategyStatus key={strategy.key} strategy={strategy} />)}
       <small>僅用已收盤 K 棒確認；訊號於下一根開盤成立</small>
     </section>
     <section className="live-chart-panel">
