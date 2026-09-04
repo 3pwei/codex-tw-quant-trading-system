@@ -3,10 +3,28 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from datetime import date
 
-from fastapi import FastAPI, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect
+from fastapi import (
+    FastAPI,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from ..auth import (
+    AccessIdentity,
+    AccessTokenError,
+    AccessValidator,
+    AuthorizationError,
+    AuthService,
+    CloudflareAccessValidator,
+    DisabledAccessValidator,
+    SQLiteAuthRepository,
+)
 from ..backtest import (
     MAX_BACKTEST_DAYS,
     run_composite_backtest,
@@ -37,12 +55,6 @@ from ..strategy import (
     strategy_catalog,
     validate_composite_definition,
     validate_strategy_parameters,
-)
-from .access import (
-    AccessTokenError,
-    AccessValidator,
-    CloudflareAccessValidator,
-    DisabledAccessValidator,
 )
 from .service import LiveMarketService
 from .settings import LiveSettings
@@ -81,6 +93,7 @@ def create_app(
     history_provider: HistoricalMarketDataProvider | None = None,
     repository: BarRepository | None = None,
     access_validator: AccessValidator | None = None,
+    auth_repository: SQLiteAuthRepository | None = None,
 ) -> FastAPI:
     config = settings or LiveSettings.from_env()
     config.validate()
@@ -99,6 +112,11 @@ def create_app(
             )
         else:
             validator = DisabledAccessValidator()
+    identity_repo = auth_repository or SQLiteAuthRepository(config.db_path)
+    identity_repo.bootstrap_admins(config.bootstrap_admin_emails)
+    auth_service = AuthService(
+        identity_repo, authorization_mode=config.authorization_mode
+    )
     service = LiveMarketService(
         market_feed, repo, config.symbol, config.heartbeat_seconds,
         TradingCalendar(config.holidays), config.history_limit,
@@ -113,15 +131,18 @@ def create_app(
         finally:
             await service.stop()
             repo.close()
+            identity_repo.close()
 
     app = FastAPI(
         title="TMF Live Market API",
-        version="0.5.0",
+        version="0.6.0",
         description="Provider-neutral quote service; no order endpoints.",
         lifespan=lifespan,
     )
     app.state.market_service = service
     app.state.repository = repo
+    app.state.auth_repository = identity_repo
+    app.state.auth_service = auth_service
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(config.allowed_origins),
@@ -147,10 +168,46 @@ def create_app(
             )
         except AccessTokenError as exc:
             raise HTTPException(status_code=401, detail=str(exc)) from exc
+        try:
+            user = auth_service.identify(identity)
+        except AuthorizationError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
         headers = {"X-Authenticated-Subject": identity.subject}
         if identity.email:
             headers["X-Authenticated-Email"] = identity.email
+        if user.registered:
+            headers["X-Authenticated-User-ID"] = user.user_id
+            headers["X-Authenticated-Role"] = user.role.value
         return Response(status_code=204, headers=headers)
+
+    def request_identity(request: Request):
+        token = request.headers.get("cf-access-jwt-assertion")
+        if token:
+            return validator.authenticate(token)
+        subject = request.headers.get("x-authenticated-subject")
+        if subject:
+            return AccessIdentity(
+                subject=subject,
+                email=request.headers.get("x-authenticated-email"),
+            )
+        if config.access_mode == "disabled":
+            return None
+        raise AccessTokenError("missing authenticated request identity")
+
+    @app.get("/api/me")
+    def current_user(request: Request):
+        try:
+            identity = request_identity(request)
+            user = (
+                auth_service.local_development_user()
+                if identity is None
+                else auth_service.identify(identity)
+            )
+        except AccessTokenError as exc:
+            raise HTTPException(status_code=401, detail=str(exc)) from exc
+        except AuthorizationError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        return user.to_message(auth_service.enforced)
 
     @app.get("/api/health")
     async def health():

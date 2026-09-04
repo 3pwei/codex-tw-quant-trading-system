@@ -280,6 +280,7 @@ SJ_PRODUCTION=true
 ### API
 
 - `GET /api/health`
+- `GET /api/me`（目前登入身分、角色、帳號／交易狀態與權限）
 - `GET /api/kbars?symbol=TMF&interval=5m&limit=500`
 - `GET /api/strategy-signals?symbol=TMF&strategies=orb,bnf&interval=5m&limit=500`
 - `GET /api/strategies`
@@ -408,11 +409,41 @@ MARKET_ALLOWED_ORIGINS=https://tmf.example.com
 MARKET_ACCESS_MODE=cloudflare
 CF_ACCESS_TEAM_DOMAIN=team.cloudflareaccess.com
 CF_ACCESS_AUD=replace-with-application-audience-tag
+PLATFORM_AUTHORIZATION_MODE=disabled
+PLATFORM_BOOTSTRAP_ADMIN_EMAILS=owner@example.com
 ```
 
 Access 會在 Cloudflare 邊緣驗證 Email，FastAPI 源站再驗證
 `Cf-Access-Jwt-Assertion` 的簽章、issuer 與 audience。這可防止攻擊者用 Lightsail
 IP 和偽造 Host header 繞過登入。缺少或無效的 assertion 會在源站 fail closed。
+
+### 應用程式帳號與角色基礎
+
+Cloudflare Access 負責確認 Email 身分；FastAPI 另以 SQLite 的 `app_users`、
+`permissions`、`role_permissions` 與 `audit_events` 保存平台帳號、角色、交易狀態及
+稽核紀錄。兩層不能互相取代：通過 Cloudflare 不代表已取得平台功能權限。
+
+PR 1 上線時保持：
+
+```dotenv
+PLATFORM_AUTHORIZATION_MODE=disabled
+PLATFORM_BOOTSTRAP_ADMIN_EMAILS=owner@example.com
+```
+
+這會建立指定的第一位管理員、提供 `GET /api/me`，但不改變既有頁面與 API 的授權
+結果。確認 `/api/me` 回傳 `registered: true`、`role: admin` 後，才可在後續權限 PR
+將模式切換為 `enforced`。此設定不會自動建立其他 Email；未來一般使用者必須先由
+管理員建立平台帳號。
+
+目前角色資料模型包含：
+
+- `researcher`：行情、策略與回測研究。
+- `trader`：研究功能，加上自己的 Broker、模擬交易；真實交易仍需另行啟用。
+- `admin`：平台帳號、系統設定、Provider 診斷與稽核管理，不代替使用者下單。
+
+帳號狀態為 `active`、`suspended`、`revoked`；交易模式獨立保存為 `disabled`、
+`paper`、`live`。研究者與管理員不能設定為 `paper` 或 `live`。`audit_events` 僅提供
+append 操作，Secret、API Key 與 Token 不得寫入事件內容。
 
 先保持 DNS `DNS only`，讓 Caddy 取得源站 HTTPS 憑證，然後啟動：
 

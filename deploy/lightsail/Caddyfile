@@ -16,7 +16,7 @@
 			# is a WebSocket handshake.
 			header_up -Connection
 			header_up -Upgrade
-			copy_headers X-Authenticated-Subject X-Authenticated-Email
+			copy_headers X-Authenticated-Subject X-Authenticated-Email X-Authenticated-User-ID X-Authenticated-Role
 		}
 
 		@backend path /api/* /ws/* /docs* /openapi.json /health/live
