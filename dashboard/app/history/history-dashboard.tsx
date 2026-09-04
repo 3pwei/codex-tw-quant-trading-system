@@ -33,8 +33,11 @@ export default function HistoryDashboard() {
   const [detail, setDetail] = useState<Detail | null>(null);
   const [query, setQuery] = useState("");
   const [kind, setKind] = useState("all");
+  const [outcome, setOutcome] = useState("all");
   const [loading, setLoading] = useState(true);
+  const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
 
   const loadDetail = async (runId: string) => {
     setSelectedId(runId); setError("");
@@ -42,6 +45,23 @@ export default function HistoryDashboard() {
     const body = await response.json();
     if (!response.ok) throw new Error(body.detail ?? "無法取得回測明細");
     setDetail(body);
+  };
+
+  const deleteRun = async () => {
+    if (!detail || deleting) return;
+    const noTrades = detail.trade_count === 0 ? "（此回測沒有產生交易）" : "";
+    if (!window.confirm(`確定永久刪除這筆回測紀錄${noTrades}？\n\n刪除後無法復原，並會解除它對策略版本的引用。`)) return;
+    setDeleting(true); setError(""); setNotice("");
+    try {
+      const response = await fetch(`${apiBase()}/api/backtest-runs/${detail.run_id}`, { method: "DELETE" });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.detail ?? "無法刪除回測紀錄");
+      const remaining = runs.filter(run => run.run_id !== detail.run_id);
+      setRuns(remaining); setSelectedId(""); setDetail(null);
+      setNotice(body.released_strategy_reference ? "回測紀錄已刪除，策略版本引用已解除。" : "回測紀錄已刪除。");
+      if (remaining.length) await loadDetail(remaining[0].run_id);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "無法刪除回測紀錄"); }
+    finally { setDeleting(false); }
   };
 
   useEffect(() => {
@@ -59,27 +79,32 @@ export default function HistoryDashboard() {
 
   const filtered = useMemo(() => runs.filter(run => {
     const matchesKind = kind === "all" || run.strategy_kind === kind;
+    const matchesOutcome = outcome === "all" || (outcome === "empty" ? run.trade_count === 0 : run.trade_count > 0);
     const needle = query.trim().toLowerCase();
-    return matchesKind && (!needle || `${run.strategy_name} ${run.strategy_key}`.toLowerCase().includes(needle));
-  }), [runs, query, kind]);
+    return matchesKind && matchesOutcome && (!needle || `${run.strategy_name} ${run.strategy_key}`.toLowerCase().includes(needle));
+  }), [runs, query, kind, outcome]);
 
   if (loading) return <section className="panel history-loading">正在讀取回測紀錄…</section>;
   if (error && !runs.length) return <section className="feature-state panel"><span>HISTORY ERROR</span><h2>無法載入回測紀錄</h2><p>{error}</p></section>;
-  if (!runs.length) return <section className="feature-state panel"><span>HISTORY READY</span><h2>尚無已保存的回測</h2><p>到歷史回測頁選擇策略與期間，按下「執行回測」後，結果就會保存在這裡。</p><div><Link href="/backtest/">建立第一筆回測</Link></div></section>;
+  if (!runs.length) return <section className="feature-state panel"><span>HISTORY READY</span><h2>{notice || "尚無已保存的回測"}</h2><p>到歷史回測頁選擇策略與期間，按下「執行回測」後，結果就會保存在這裡。</p><div><Link href="/backtest/">建立第一筆回測</Link></div></section>;
 
   const summary = detail?.summary ?? {};
   const net = Number(summary.net_profit ?? 0);
   return <div className="history-layout">
     <aside className="panel history-index">
-      <div className="history-filters"><input aria-label="搜尋策略" placeholder="搜尋策略名稱" value={query} onChange={event => setQuery(event.target.value)} /><select aria-label="策略類型" value={kind} onChange={event => setKind(event.target.value)}><option value="all">全部類型</option><option value="atomic">基本策略</option><option value="composite">組合策略</option></select></div>
+      <div className="history-filters"><input aria-label="搜尋策略" placeholder="搜尋策略名稱" value={query} onChange={event => setQuery(event.target.value)} /><select aria-label="策略類型" value={kind} onChange={event => setKind(event.target.value)}><option value="all">全部類型</option><option value="atomic">基本策略</option><option value="composite">組合策略</option></select><select aria-label="交易結果" value={outcome} onChange={event => setOutcome(event.target.value)}><option value="all">全部結果</option><option value="traded">有交易</option><option value="empty">無交易</option></select></div>
       <div className="history-count">共 {filtered.length} 筆</div>
-      <div className="history-runs">{filtered.map(run => <button type="button" className={selectedId === run.run_id ? "active" : ""} key={run.run_id} onClick={() => void loadDetail(run.run_id).catch(reason => setError(reason instanceof Error ? reason.message : "無法取得回測明細"))}><span><b>{run.strategy_name}{run.strategy_version ? ` · v${run.strategy_version}` : ""}</b><em>{run.strategy_kind === "composite" ? "組合" : run.interval}</em></span><small>{run.start_date} ～ {run.end_date}</small><strong className={Number(run.summary.net_profit ?? 0) >= 0 ? "profit" : "loss"}>{signedMoney(Number(run.summary.net_profit ?? 0))}</strong><time>{formatTime(run.created_at)}</time></button>)}</div>
+      <div className="history-runs">{filtered.map(run => <button type="button" className={selectedId === run.run_id ? "active" : ""} key={run.run_id} onClick={() => void loadDetail(run.run_id).catch(reason => setError(reason instanceof Error ? reason.message : "無法取得回測明細"))}><span><b>{run.strategy_name}{run.strategy_version ? ` · v${run.strategy_version}` : ""}</b><em>{run.strategy_kind === "composite" ? "組合" : run.interval}</em>{run.trade_count === 0 && <i>無交易</i>}</span><small>{run.start_date} ～ {run.end_date}</small><strong className={Number(run.summary.net_profit ?? 0) >= 0 ? "profit" : "loss"}>{signedMoney(Number(run.summary.net_profit ?? 0))}</strong><time>{formatTime(run.created_at)}</time></button>)}</div>
     </aside>
-    {detail && <section className="history-detail">
+    <section className="history-detail">
+      {notice && <div className="history-notice">{notice}</div>}
       {error && <div className="live-error">{error}</div>}
-      <header className="panel history-detail-head"><div><span>BACKTEST RUN · {detail.run_id.slice(0, 8)}</span><h2>{detail.strategy_name}{detail.strategy_version ? ` · v${detail.strategy_version}` : ""}</h2><p>{detail.symbol} · {detail.start_date} ～ {detail.end_date} · {formatTime(detail.created_at)}</p></div><strong className={net >= 0 ? "profit" : "loss"}>{signedMoney(net)}</strong></header>
+      {!detail && runs.length > 0 && <div className="feature-state panel"><span>HISTORY</span><h2>請選擇一筆回測紀錄</h2></div>}
+      {detail && <>
+      <header className="panel history-detail-head"><div><span>BACKTEST RUN · {detail.run_id.slice(0, 8)}</span><h2>{detail.strategy_name}{detail.strategy_version ? ` · v${detail.strategy_version}` : ""}</h2><p>{detail.symbol} · {detail.start_date} ～ {detail.end_date} · {formatTime(detail.created_at)}</p></div><div className="history-result-actions"><strong className={net >= 0 ? "profit" : "loss"}>{signedMoney(net)}</strong><button type="button" disabled={deleting} onClick={() => void deleteRun()}>{deleting ? "刪除中…" : "永久刪除"}</button></div></header>
       <div className="history-metrics"><article><span>總報酬</span><b>{decimal.format(Number(summary.return_pct ?? 0))}%</b></article><article><span>最大回撤</span><b>{decimal.format(Number(summary.max_drawdown_pct ?? 0))}%</b></article><article><span>勝率</span><b>{decimal.format(Number(summary.win_rate_pct ?? 0))}%</b></article><article><span>交易次數</span><b>{detail.trade_count}</b></article><article><span>Profit Factor</span><b>{summary.profit_factor == null ? "N/A" : decimal.format(Number(summary.profit_factor))}</b></article></div>
-      <section className="panel history-ledger"><div className="panel-head"><div><span>IMMUTABLE RESULT</span><h2>交易明細</h2></div><small>策略快照與結果已保存</small></div><div className="table-scroll"><table><thead><tr><th>#</th><th>方向</th><th>進場</th><th>出場</th><th>停損／停利</th><th>成本</th><th>淨損益</th><th>原因</th></tr></thead><tbody>{detail.result.trades.map((trade, index) => <tr key={`${trade.entry_time}-${index}`}><td>{index + 1}</td><td><i className={`dir ${trade.direction}`}>{trade.direction === "long" ? "多" : "空"}</i></td><td>{formatTime(trade.entry_time)}<small>{decimal.format(trade.entry_price)}</small></td><td>{formatTime(trade.exit_time)}<small>{decimal.format(trade.exit_price)}</small></td><td><span className="loss">{decimal.format(trade.stop_loss_price ?? 0)}</span><small className="profit">{decimal.format(trade.take_profit_price ?? 0)}</small></td><td>NT$ {money.format(trade.total_cost)}</td><td className={trade.net_pnl >= 0 ? "profit" : "loss"}><b>{signedMoney(trade.net_pnl)}</b></td><td>{exitReason(trade.exit_reason)}</td></tr>)}</tbody></table>{!detail.result.trades.length && <p className="history-empty-trades">此回測沒有產生完整交易。</p>}</div></section>
-    </section>}
+      <section className="panel history-ledger"><div className="panel-head"><div><span>SAVED RESULT</span><h2>交易明細</h2></div><small>策略快照與結果已保存</small></div><div className="table-scroll"><table><thead><tr><th>#</th><th>方向</th><th>進場</th><th>出場</th><th>停損／停利</th><th>成本</th><th>淨損益</th><th>原因</th></tr></thead><tbody>{detail.result.trades.map((trade, index) => <tr key={`${trade.entry_time}-${index}`}><td>{index + 1}</td><td><i className={`dir ${trade.direction}`}>{trade.direction === "long" ? "多" : "空"}</i></td><td>{formatTime(trade.entry_time)}<small>{decimal.format(trade.entry_price)}</small></td><td>{formatTime(trade.exit_time)}<small>{decimal.format(trade.exit_price)}</small></td><td><span className="loss">{decimal.format(trade.stop_loss_price ?? 0)}</span><small className="profit">{decimal.format(trade.take_profit_price ?? 0)}</small></td><td>NT$ {money.format(trade.total_cost)}</td><td className={trade.net_pnl >= 0 ? "profit" : "loss"}><b>{signedMoney(trade.net_pnl)}</b></td><td>{exitReason(trade.exit_reason)}</td></tr>)}</tbody></table>{!detail.result.trades.length && <p className="history-empty-trades">此回測沒有產生完整交易。</p>}</div></section>
+      </>}
+    </section>
   </div>;
 }
