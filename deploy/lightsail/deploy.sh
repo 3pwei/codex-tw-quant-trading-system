@@ -13,6 +13,8 @@ fi
 git -C "${REPOSITORY}" fetch origin --prune
 git -C "${REPOSITORY}" checkout --detach "${COMMIT_SHA}"
 
+"${REPOSITORY}/deploy/lightsail/prepare-host.sh"
+
 docker compose \
   --env-file "${INSTALL_ROOT}/config/compose.env" \
   -f "${REPOSITORY}/deploy/lightsail/docker-compose.yml" \
