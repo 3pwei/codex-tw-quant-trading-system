@@ -1,6 +1,6 @@
 # 台股分鐘線當沖量化回測 MVP
 
-這是一套可直接執行、可逐步擴充的 Python 回測與行情 Dashboard 骨架。既有回測流程保持不變，新增的即時模組聚焦「永豐 Shioaji、微型臺指期貨 TMF、Tick 聚合 1 分 K」。目前只有行情，沒有任何下單端點或下單程式碼。
+這是一套可直接執行、可逐步擴充的 Python 回測與行情 Dashboard 骨架。行情來源透過 provider-neutral 介面接入，目前提供永豐 Shioaji 與 Mock Replay Adapter；微型臺指期貨 TMF Tick 會聚合成共用 1 分 K。目前只有行情，沒有任何下單端點或下單程式碼。
 
 > 本專案僅供研究與工程驗證，不構成投資建議。合成示範資料不能用來判斷策略獲利能力。
 
@@ -25,6 +25,23 @@
 - 無程式碼多週期策略組合器：Setup／Entry／Exit／Risk、ALL／ANY 與版本追蹤
 
 ## 架構
+
+行情與券商帳戶採用不同邊界。Strategy、K 棒聚合、Replay、Backtest、REST、
+WebSocket 與 Dashboard 只依賴標準 `TickEvent`／`KBar`，不依賴 Shioaji SDK：
+
+```text
+Shioaji / Replay / future provider
+  → MarketDataProvider
+  → Tick Queue → 1m KBar → SQLite
+  → Strategy / Backtest / REST / WebSocket / Dashboard
+
+TradeSignal → Risk → ExecutionSimulator
+                         └→ BrokerAccount / OrderExecutor（未來，現在 Disabled）
+```
+
+即使未來同一家券商同時提供行情與下單，也必須以兩個 Adapter、兩組設定與
+獨立生命週期接入。個人 Shioaji 行情只適合私人測試；多人平台仍需另行確認行情
+展示與轉發授權，本架構解耦不代表自動取得轉授權。
 
 ```text
 CSV 1 分 K
@@ -53,7 +70,11 @@ CSV 1 分 K
 | `tw_quant/risk/engine.py` | 共用停損、停利價格與觸發優先序 |
 | `tw_quant/execution/simulator.py` | 下一根開盤、風險出場與時段平倉模擬 |
 | `tw_quant/backtest/runner.py` | 成本、交易、權益與績效報表 |
-| `tw_quant/live/feed.py` | Shioaji quote-only adapter 與 Mock Replay feed |
+| `tw_quant/market_data/ports.py` | 即時／歷史行情 Provider 介面與能力宣告 |
+| `tw_quant/market_data/factory.py` | Provider 組裝點；FastAPI 不認識供應商實作 |
+| `tw_quant/market_data/providers/` | Shioaji quote-only 與 Mock Replay Adapter |
+| `tw_quant/broker/` | 獨立 Broker／Order 介面；目前只提供拒絕下單的 DisabledBroker |
+| `tw_quant/live/feed.py` | 舊行情 import 相容層；新程式不應使用 |
 | `tw_quant/live/aggregator.py` | Tick 去重、亂序政策、缺漏分鐘與即時 1 分 K |
 | `tw_quant/live/storage.py` | SQLite repository；介面可替換 PostgreSQL |
 | `tw_quant/live/api.py` | FastAPI REST、WebSocket 與健康檢查 |
@@ -214,7 +235,7 @@ Copy-Item .env.example .env
 啟動後端：
 
 ```bash
-MARKET_MODE=mock uvicorn tw_quant.live.api:app --host 0.0.0.0 --port 8000 --env-file .env
+MARKET_DATA_PROVIDER=replay uvicorn tw_quant.live.api:app --host 0.0.0.0 --port 8000 --env-file .env
 ```
 
 另一個終端啟動 Dashboard：
@@ -242,7 +263,7 @@ Mock 會重播 `data/mock_tmf_ticks.csv`。同一分鐘包含多筆 Tick，圖�
 `.env` 至少設定：
 
 ```dotenv
-MARKET_MODE=shioaji
+MARKET_DATA_PROVIDER=shioaji
 MARKET_CONTRACT=TMFR1
 MARKET_HISTORY_DAYS=30
 MARKET_HISTORY_LIMIT=50000
@@ -361,7 +382,8 @@ Git checkout 外，權限為 `0600`。接著編輯：
 /opt/tw-quant/config/compose.env
 ```
 
-先以 `MARKET_MODE=mock` 驗證。正式站不使用共用 Basic Auth 密碼，而是使用
+先以 `MARKET_DATA_PROVIDER=replay` 驗證。既有 `MARKET_MODE=mock`／`shioaji`
+仍可作為過渡相容設定，但新部署應使用 `MARKET_DATA_PROVIDER`。正式站不使用共用 Basic Auth 密碼，而是使用
 Cloudflare Access 的核准 Email 與一次性驗證碼。先在 Cloudflare Zero Trust 建立：
 
 1. `Access controls` → `Applications` → `Create new application`。
@@ -381,7 +403,7 @@ ACME_EMAIL=owner@example.com
 並在 `/opt/tw-quant/config/market.env` 設定：
 
 ```dotenv
-MARKET_MODE=mock
+MARKET_DATA_PROVIDER=replay
 MARKET_ALLOWED_ORIGINS=https://tmf.example.com
 MARKET_ACCESS_MODE=cloudflare
 CF_ACCESS_TEAM_DOMAIN=team.cloudflareaccess.com
@@ -409,7 +431,7 @@ Selector 選 `Everyone`；此路徑只回傳固定的 `ok`，不包含行情或�
 與 WebSocket。切換 Shioaji 前，將 `market.env` 改成：
 
 ```dotenv
-MARKET_MODE=shioaji
+MARKET_DATA_PROVIDER=shioaji
 MARKET_CONTRACT=TMFR1
 MARKET_HISTORY_DAYS=30
 MARKET_HISTORY_LIMIT=50000

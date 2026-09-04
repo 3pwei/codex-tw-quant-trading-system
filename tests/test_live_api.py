@@ -62,6 +62,7 @@ class LiveApiTests(unittest.TestCase):
                 self.assertEqual(invalid_interval.status_code, 400)
                 health = client.get("/api/health").json()
                 self.assertEqual(health["symbol"], "TMF")
+                self.assertEqual(health["market_data_provider"], "replay")
                 self.assertIn("last_tick_time", health)
                 strategy_response = client.get(
                     "/api/strategy-signals?symbol=TMF&strategies=orb,bnf&limit=500"

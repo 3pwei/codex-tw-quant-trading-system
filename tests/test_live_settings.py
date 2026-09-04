@@ -39,6 +39,18 @@ class LiveSettingsTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "MARKET_HISTORY_DAYS"):
             LiveSettings(history_days=31).validate()
 
+    def test_market_data_settings_are_composed_not_flattened(self):
+        with patch.dict("os.environ", {
+            "MARKET_DATA_PROVIDER": "replay",
+            "MARKET_SYMBOL": "TMF",
+        }, clear=True):
+            settings = LiveSettings.from_env()
+        self.assertEqual(settings.market_data.provider, "replay")
+        self.assertEqual(settings.market_data.symbol, "TMF")
+        # Compatibility properties keep existing deployments and callers valid.
+        self.assertEqual(settings.mode, "mock")
+        self.assertEqual(settings.symbol, "TMF")
+
 
 if __name__ == "__main__":
     unittest.main()
