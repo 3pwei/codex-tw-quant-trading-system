@@ -16,30 +16,50 @@ const routes = [
 
 export type SystemRoute = (typeof routes)[number]["href"];
 
+type CurrentUser = {
+  email: string;
+  role: string;
+};
+
 export default function SystemNav({ active }: { active: SystemRoute }) {
-  const [isAdmin, setIsAdmin] = useState(false);
+  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
 
   useEffect(() => {
     let activeRequest = true;
     fetch("/api/me", { cache: "no-store" })
       .then(response => response.ok ? response.json() : Promise.reject())
-      .then(user => { if (activeRequest) setIsAdmin(user.role === "admin"); })
-      .catch(() => { if (activeRequest) setIsAdmin(false); });
+      .then(user => { if (activeRequest) setCurrentUser(user); })
+      .catch(() => { if (activeRequest) setCurrentUser(null); });
     return () => { activeRequest = false; };
   }, []);
 
   return (
     <nav className="system-nav" aria-label="系統功能">
-      {routes.filter(route => !("admin" in route) || isAdmin).map(route => (
-        <Link
+      <div className="system-nav-routes">
+        {routes.filter(
+          route => !("admin" in route) || currentUser?.role === "admin"
+        ).map(route => (
+          <Link
           key={route.href}
           href={route.href}
           className={route.href === active ? "active" : undefined}
           aria-current={route.href === active ? "page" : undefined}
         >
           {route.label}
-        </Link>
-      ))}
+          </Link>
+        ))}
+      </div>
+      <div className="system-account">
+        {currentUser && (
+          <span title={currentUser.email}>
+            {currentUser.email}
+            <small>{currentUser.role}</small>
+          </span>
+        )}
+        <a className="logout-link" href="/cdn-cgi/access/logout">
+          登出
+        </a>
+      </div>
     </nav>
   );
 }
