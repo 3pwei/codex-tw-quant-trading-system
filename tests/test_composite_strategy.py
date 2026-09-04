@@ -107,12 +107,18 @@ class CompositeDefinitionTests(unittest.TestCase):
                 changed = {**definition, "name": "新版"}
                 second = repo.save_composite_strategy("combo", changed)
                 self.assertEqual((first["version"], second["version"]), (1, 2))
+                self.assertEqual(
+                    [item["version"] for item in repo.composite_strategy_versions("combo")],
+                    [2, 1],
+                )
                 self.assertEqual(repo.composite_strategy("combo", 1)["name"], "ORB 低週期進場")
                 self.assertEqual(repo.composite_strategies()[0]["name"], "新版")
                 archived = repo.archive_composite_strategy("combo")
                 self.assertEqual(archived["id"], "combo")
                 self.assertTrue(repo.composite_strategy_archived("combo"))
                 self.assertEqual(repo.composite_strategies(), [])
+                self.assertEqual(repo.archived_composite_strategies()[0]["version"], 2)
+                self.assertIn("archived_at", repo.archived_composite_strategies()[0])
                 self.assertEqual(repo.composite_strategy("combo", 1)["name"], "ORB 低週期進場")
                 with self.assertRaisesRegex(ValueError, "不可修改"):
                     repo.save_composite_strategy("combo", changed)
@@ -153,6 +159,16 @@ class CompositeApiTests(unittest.TestCase):
                 self.assertEqual(updated.json()["version"], 2)
                 listing = client.get("/api/composite-strategies").json()
                 self.assertEqual(listing["strategies"][0]["version"], 2)
+                self.assertEqual(listing["archived_strategies"], [])
+                versions = client.get(
+                    f"/api/composite-strategies/{item['id']}/versions"
+                )
+                self.assertEqual(versions.status_code, 200, versions.text)
+                self.assertEqual(
+                    [version["version"] for version in versions.json()["versions"]],
+                    [2, 1],
+                )
+                self.assertFalse(versions.json()["archived"])
                 result = client.get(
                     "/api/composite-backtest",
                     params={
@@ -171,6 +187,14 @@ class CompositeApiTests(unittest.TestCase):
                     client.get("/api/composite-strategies").json()["strategies"],
                     [],
                 )
+                archived_listing = client.get("/api/composite-strategies").json()
+                self.assertEqual(
+                    archived_listing["archived_strategies"][0]["id"], item["id"]
+                )
+                archived_versions = client.get(
+                    f"/api/composite-strategies/{item['id']}/versions"
+                ).json()
+                self.assertTrue(archived_versions["archived"])
                 old_version = client.get(
                     f"/api/composite-strategies/{item['id']}?version=1"
                 )

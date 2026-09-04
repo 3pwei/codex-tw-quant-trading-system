@@ -227,6 +227,18 @@ def create_app(
         return {
             "template": default_composite_definition(),
             "strategies": repo.composite_strategies(),
+            "archived_strategies": repo.archived_composite_strategies(),
+        }
+
+    @app.get("/api/composite-strategies/{strategy_id}/versions")
+    def composite_strategy_versions(strategy_id: str):
+        versions = repo.composite_strategy_versions(strategy_id)
+        if not versions:
+            raise HTTPException(status_code=404, detail="找不到組合策略")
+        return {
+            "id": strategy_id,
+            "archived": repo.composite_strategy_archived(strategy_id),
+            "versions": versions,
         }
 
     @app.get("/api/composite-strategies/{strategy_id}")
