@@ -183,13 +183,16 @@ Setup、Entry 與 Exit 都能加入多條 ORB／BNF 規則，個別選擇 `1m`�
 不重複寫入結果，仍由 `minute_bars` 管理。組合策略另外以 SQLite 外鍵固定引用
 `strategy_id + strategy_version`，因此有回測紀錄的版本不能被永久刪除。
 
-`/history/` 提供策略搜尋、基本／組合類型篩選、績效摘要與逐筆交易明細。
+`/history/` 提供策略搜尋、基本／組合類型與有無交易篩選、績效摘要、逐筆交易
+明細及單筆永久刪除。刪除組合策略回測會同步解除該策略版本的引用；若仍有其他
+回測引用相同版本，該策略仍不能永久刪除。
 
 相關 API：
 
 - `POST /api/backtest-runs`（執行並保存）
 - `GET /api/backtest-runs?limit=100&offset=0`
 - `GET /api/backtest-runs/{run_id}`
+- `DELETE /api/backtest-runs/{run_id}`（永久刪除並解除該筆策略版本引用）
 
 目前仍是研究與行情觀察階段：組合策略可在 Live／Replay 資料上呼叫相同訊號
 核心，也可執行歷史回測，但不會連接 Broker 下單。

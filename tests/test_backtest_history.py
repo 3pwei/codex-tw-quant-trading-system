@@ -69,6 +69,18 @@ class BacktestHistoryTests(unittest.TestCase):
                 self.assertEqual(detail["strategy_snapshot"]["opening_range_minutes"], 15)
                 self.assertNotIn("bars", detail["result"])
 
+                deleted = client.delete(f"/api/backtest-runs/{run_id}")
+                self.assertEqual(deleted.status_code, 200, deleted.text)
+                self.assertEqual(deleted.json()["deleted_run_id"], run_id)
+                self.assertFalse(deleted.json()["released_strategy_reference"])
+                self.assertEqual(client.get("/api/backtest-runs").json()["runs"], [])
+                self.assertEqual(
+                    client.get(f"/api/backtest-runs/{run_id}").status_code, 404
+                )
+                self.assertEqual(
+                    client.delete(f"/api/backtest-runs/{run_id}").status_code, 404
+                )
+
     def test_empty_legacy_reference_table_is_migrated(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "legacy.sqlite3"

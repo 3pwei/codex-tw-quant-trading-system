@@ -68,6 +68,7 @@ class BarRepository(Protocol):
         self, limit: int, offset: int, strategy_key: str | None = None
     ) -> list[dict[str, object]]: ...
     def backtest_run(self, run_id: str) -> dict[str, object] | None: ...
+    def delete_backtest_run(self, run_id: str) -> dict[str, object] | None: ...
     def close(self) -> None: ...
 
 
@@ -660,6 +661,28 @@ class SQLiteBarRepository:
                 "SELECT * FROM backtest_runs WHERE run_id=?", (run_id,)
             ).fetchone()
         return self._backtest_row(row, detail=True) if row else None
+
+    def delete_backtest_run(self, run_id: str) -> dict[str, object] | None:
+        with self.lock:
+            row = self.connection.execute(
+                "SELECT * FROM backtest_runs WHERE run_id=?", (run_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            try:
+                self.connection.execute("BEGIN IMMEDIATE")
+                self.connection.execute(
+                    "DELETE FROM backtest_runs WHERE run_id=?", (run_id,)
+                )
+                self.connection.commit()
+            except Exception:
+                self.connection.rollback()
+                raise
+        deleted = self._backtest_row(row)
+        deleted["released_strategy_reference"] = (
+            row["strategy_kind"] == "composite"
+        )
+        return deleted
 
     def close(self) -> None:
         with self.lock:

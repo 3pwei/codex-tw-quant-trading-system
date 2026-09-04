@@ -158,11 +158,9 @@ class CompositeDefinitionTests(unittest.TestCase):
                         ["referenced", "unused"]
                     )
                 self.assertIsNotNone(repo.composite_strategy("unused", 1))
-                repo.connection.execute(
-                    "DELETE FROM backtest_runs WHERE run_id=?",
-                    (saved_run["run_id"],),
-                )
-                repo.connection.commit()
+                deleted = repo.delete_backtest_run(saved_run["run_id"])
+                self.assertTrue(deleted["released_strategy_reference"])
+                self.assertEqual(deleted["strategy_key"], "referenced")
                 result = repo.purge_archived_composite_strategies(
                     ["referenced", "unused"]
                 )
@@ -279,10 +277,11 @@ class CompositeApiTests(unittest.TestCase):
                 )
                 self.assertEqual(blocked.status_code, 409, blocked.text)
                 self.assertIn("回測引用", blocked.json()["detail"])
-                repo.connection.execute(
-                    "DELETE FROM backtest_runs WHERE run_id=?", (run_id,)
+                deleted_run = client.delete(f"/api/backtest-runs/{run_id}")
+                self.assertEqual(deleted_run.status_code, 200, deleted_run.text)
+                self.assertTrue(
+                    deleted_run.json()["released_strategy_reference"]
                 )
-                repo.connection.commit()
                 purged = client.post(
                     "/api/composite-strategies/purge",
                     json={"strategy_ids": [item["id"]]},

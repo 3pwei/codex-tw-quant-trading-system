@@ -474,6 +474,18 @@ def create_app(
             raise HTTPException(status_code=404, detail="找不到回測紀錄")
         return item
 
+    @app.delete("/api/backtest-runs/{run_id}")
+    def delete_backtest_run(run_id: str):
+        item = repo.delete_backtest_run(run_id)
+        if item is None:
+            raise HTTPException(status_code=404, detail="找不到回測紀錄")
+        return {
+            "deleted_run_id": run_id,
+            "strategy_key": item["strategy_key"],
+            "strategy_version": item["strategy_version"],
+            "released_strategy_reference": item["released_strategy_reference"],
+        }
+
     @app.websocket("/ws/market/{symbol}")
     async def market_socket(
         websocket: WebSocket, symbol: str, interval: str = "1m"
