@@ -1,22 +1,22 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import StrEnum
+from enum import Enum
 
 
-class Role(StrEnum):
+class Role(str, Enum):
     RESEARCHER = "researcher"
     TRADER = "trader"
     ADMIN = "admin"
 
 
-class AccountStatus(StrEnum):
+class AccountStatus(str, Enum):
     ACTIVE = "active"
     SUSPENDED = "suspended"
     REVOKED = "revoked"
 
 
-class TradingMode(StrEnum):
+class TradingMode(str, Enum):
     DISABLED = "disabled"
     PAPER = "paper"
     LIVE = "live"
