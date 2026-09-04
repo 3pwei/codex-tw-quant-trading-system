@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import sqlite3
 import json
+import sqlite3
 from datetime import date, datetime
 from pathlib import Path
 from threading import Lock
@@ -9,6 +9,8 @@ from typing import Protocol
 from uuid import uuid4
 
 from ..market import KBar
+
+DEFAULT_OWNER_ID = "__legacy__"
 
 
 class StrategyPurgeError(ValueError):
@@ -36,25 +38,44 @@ class BarRepository(Protocol):
     def tick_seen(self, key: str) -> bool: ...
     def remember_tick(self, key: str, exchange_time: datetime) -> None: ...
     def purge_backfill(self, symbol: str, contract: str) -> None: ...
-    def strategy_parameters(self) -> dict[str, dict[str, object]]: ...
+    def strategy_parameters(
+        self, owner_user_id: str | None = None
+    ) -> dict[str, dict[str, object]]: ...
     def save_strategy_parameters(
-        self, strategy: str, parameters: dict[str, int | float]
+        self,
+        strategy: str,
+        parameters: dict[str, int | float],
+        owner_user_id: str | None = None,
     ) -> None: ...
-    def composite_strategies(self) -> list[dict[str, object]]: ...
-    def archived_composite_strategies(self) -> list[dict[str, object]]: ...
+    def composite_strategies(
+        self, owner_user_id: str | None = None
+    ) -> list[dict[str, object]]: ...
+    def archived_composite_strategies(
+        self, owner_user_id: str | None = None
+    ) -> list[dict[str, object]]: ...
     def composite_strategy_versions(
-        self, strategy_id: str
+        self, strategy_id: str, owner_user_id: str | None = None
     ) -> list[dict[str, object]]: ...
     def composite_strategy(
-        self, strategy_id: str, version: int | None = None
+        self,
+        strategy_id: str,
+        version: int | None = None,
+        owner_user_id: str | None = None,
     ) -> dict[str, object] | None: ...
     def save_composite_strategy(
-        self, strategy_id: str, definition: dict[str, object]
+        self,
+        strategy_id: str,
+        definition: dict[str, object],
+        owner_user_id: str | None = None,
     ) -> dict[str, object]: ...
-    def composite_strategy_archived(self, strategy_id: str) -> bool: ...
-    def archive_composite_strategy(self, strategy_id: str) -> dict[str, object]: ...
+    def composite_strategy_archived(
+        self, strategy_id: str, owner_user_id: str | None = None
+    ) -> bool: ...
+    def archive_composite_strategy(
+        self, strategy_id: str, owner_user_id: str | None = None
+    ) -> dict[str, object]: ...
     def purge_archived_composite_strategies(
-        self, strategy_ids: list[str]
+        self, strategy_ids: list[str], owner_user_id: str | None = None
     ) -> dict[str, object]: ...
     def save_backtest_run(
         self,
@@ -63,12 +84,22 @@ class BarRepository(Protocol):
         strategy_key: str,
         strategy_version: int | None,
         strategy_snapshot: dict[str, object],
+        owner_user_id: str | None = None,
     ) -> dict[str, object]: ...
     def backtest_runs(
-        self, limit: int, offset: int, strategy_key: str | None = None
+        self,
+        limit: int,
+        offset: int,
+        strategy_key: str | None = None,
+        owner_user_id: str | None = None,
     ) -> list[dict[str, object]]: ...
-    def backtest_run(self, run_id: str) -> dict[str, object] | None: ...
-    def delete_backtest_run(self, run_id: str) -> dict[str, object] | None: ...
+    def backtest_run(
+        self, run_id: str, owner_user_id: str | None = None
+    ) -> dict[str, object] | None: ...
+    def delete_backtest_run(
+        self, run_id: str, owner_user_id: str | None = None
+    ) -> dict[str, object] | None: ...
+    def claim_legacy_ownership(self, owner_user_id: str) -> None: ...
     def close(self) -> None: ...
 
 
@@ -116,9 +147,11 @@ class SQLiteBarRepository:
         self.connection.execute(
             """
             CREATE TABLE IF NOT EXISTS strategy_parameters (
-                strategy TEXT PRIMARY KEY,
+                owner_user_id TEXT NOT NULL,
+                strategy TEXT NOT NULL,
                 parameters_json TEXT NOT NULL,
-                updated_at TEXT NOT NULL
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(owner_user_id, strategy)
             )
             """
         )
@@ -130,6 +163,7 @@ class SQLiteBarRepository:
                 name TEXT NOT NULL,
                 definition_json TEXT NOT NULL,
                 created_at TEXT NOT NULL,
+                owner_user_id TEXT NOT NULL DEFAULT '__legacy__',
                 PRIMARY KEY(strategy_id, version)
             )
             """
@@ -138,12 +172,14 @@ class SQLiteBarRepository:
             """
             CREATE TABLE IF NOT EXISTS archived_composite_strategies (
                 strategy_id TEXT PRIMARY KEY,
-                archived_at TEXT NOT NULL
+                archived_at TEXT NOT NULL,
+                owner_user_id TEXT NOT NULL DEFAULT '__legacy__'
             )
             """
         )
         self.connection.commit()
         self._ensure_backtest_schema()
+        self._ensure_ownership_schema()
 
     def _ensure_backtest_schema(self) -> None:
         columns = {
@@ -176,6 +212,7 @@ class SQLiteBarRepository:
                 result_json TEXT NOT NULL,
                 status TEXT NOT NULL,
                 created_at TEXT NOT NULL,
+                owner_user_id TEXT NOT NULL DEFAULT '__legacy__',
                 CHECK(strategy_kind IN ('atomic', 'composite')),
                 CHECK(
                     (strategy_kind='atomic' AND strategy_version IS NULL)
@@ -212,19 +249,99 @@ class SQLiteBarRepository:
                 "equity": [],
             }
             self.connection.execute(
-                "INSERT INTO backtest_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO backtest_runs("
+                "run_id,strategy_kind,strategy_key,strategy_version,strategy_name,"
+                "symbol,interval,start_date,end_date,strategy_snapshot_json,"
+                "result_json,status,created_at,owner_user_id"
+                ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     row["run_id"], "composite", row["strategy_id"],
                     row["strategy_version"], row["strategy_id"], "TMF", "multi",
                     row["start_date"], row["end_date"],
                     row["strategy_snapshot_json"],
                     json.dumps(result, ensure_ascii=False), row["status"],
-                    row["created_at"],
+                    row["created_at"], DEFAULT_OWNER_ID,
                 ),
             )
         if legacy_rows or "strategy_kind" not in columns and columns:
             self.connection.execute("DROP TABLE IF EXISTS backtest_runs_legacy")
         self.connection.commit()
+
+    def _ensure_ownership_schema(self) -> None:
+        strategy_columns = {
+            row["name"]
+            for row in self.connection.execute(
+                "PRAGMA table_info(strategy_parameters)"
+            ).fetchall()
+        }
+        if "owner_user_id" not in strategy_columns:
+            self.connection.execute(
+                "ALTER TABLE strategy_parameters RENAME TO strategy_parameters_legacy"
+            )
+            self.connection.execute(
+                """
+                CREATE TABLE strategy_parameters (
+                    owner_user_id TEXT NOT NULL,
+                    strategy TEXT NOT NULL,
+                    parameters_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(owner_user_id, strategy)
+                )
+                """
+            )
+            self.connection.execute(
+                "INSERT INTO strategy_parameters "
+                "SELECT ?, strategy, parameters_json, updated_at "
+                "FROM strategy_parameters_legacy",
+                (DEFAULT_OWNER_ID,),
+            )
+            self.connection.execute("DROP TABLE strategy_parameters_legacy")
+
+        for table in (
+            "composite_strategies",
+            "archived_composite_strategies",
+            "backtest_runs",
+        ):
+            columns = {
+                row["name"]
+                for row in self.connection.execute(
+                    f"PRAGMA table_info({table})"
+                ).fetchall()
+            }
+            if "owner_user_id" not in columns:
+                self.connection.execute(
+                    f"ALTER TABLE {table} ADD COLUMN owner_user_id TEXT "
+                    f"NOT NULL DEFAULT '{DEFAULT_OWNER_ID}'"
+                )
+        self.connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_composite_owner "
+            "ON composite_strategies(owner_user_id, strategy_id, version)"
+        )
+        self.connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_archived_composite_owner "
+            "ON archived_composite_strategies(owner_user_id, strategy_id)"
+        )
+        self.connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_backtest_owner_created "
+            "ON backtest_runs(owner_user_id, created_at DESC)"
+        )
+        self.connection.commit()
+
+    def claim_legacy_ownership(self, owner_user_id: str) -> None:
+        if not owner_user_id or owner_user_id == DEFAULT_OWNER_ID:
+            raise ValueError("a real owner user id is required")
+        with self.lock:
+            for table in (
+                "strategy_parameters",
+                "composite_strategies",
+                "archived_composite_strategies",
+                "backtest_runs",
+            ):
+                self.connection.execute(
+                    f"UPDATE {table} SET owner_user_id=? WHERE owner_user_id=?",
+                    (owner_user_id, DEFAULT_OWNER_ID),
+                )
+            self.connection.commit()
 
     def save(self, bar: KBar) -> None:
         values = (
@@ -353,10 +470,19 @@ class SQLiteBarRepository:
             )
             self.connection.commit()
 
-    def strategy_parameters(self) -> dict[str, dict[str, object]]:
+    @staticmethod
+    def _owner(owner_user_id: str | None) -> str:
+        return owner_user_id or DEFAULT_OWNER_ID
+
+    def strategy_parameters(
+        self, owner_user_id: str | None = None
+    ) -> dict[str, dict[str, object]]:
+        owner = self._owner(owner_user_id)
         with self.lock:
             rows = self.connection.execute(
-                "SELECT strategy, parameters_json FROM strategy_parameters"
+                "SELECT strategy, parameters_json FROM strategy_parameters "
+                "WHERE owner_user_id=?",
+                (owner,),
             ).fetchall()
         return {
             row["strategy"]: json.loads(row["parameters_json"])
@@ -364,20 +490,25 @@ class SQLiteBarRepository:
         }
 
     def save_strategy_parameters(
-        self, strategy: str, parameters: dict[str, int | float]
+        self,
+        strategy: str,
+        parameters: dict[str, int | float],
+        owner_user_id: str | None = None,
     ) -> None:
+        owner = self._owner(owner_user_id)
         payload = json.dumps(parameters, ensure_ascii=False, sort_keys=True)
         updated_at = datetime.now().astimezone().isoformat(timespec="seconds")
         with self.lock:
             self.connection.execute(
                 """
-                INSERT INTO strategy_parameters(strategy, parameters_json, updated_at)
-                VALUES (?, ?, ?)
-                ON CONFLICT(strategy) DO UPDATE SET
+                INSERT INTO strategy_parameters(
+                    owner_user_id, strategy, parameters_json, updated_at
+                ) VALUES (?, ?, ?, ?)
+                ON CONFLICT(owner_user_id, strategy) DO UPDATE SET
                     parameters_json=excluded.parameters_json,
                     updated_at=excluded.updated_at
                 """,
-                (strategy, payload, updated_at),
+                (owner, strategy, payload, updated_at),
             )
             self.connection.commit()
 
@@ -391,26 +522,36 @@ class SQLiteBarRepository:
             "created_at": row["created_at"],
         }
 
-    def composite_strategies(self) -> list[dict[str, object]]:
+    def composite_strategies(
+        self, owner_user_id: str | None = None
+    ) -> list[dict[str, object]]:
+        owner = self._owner(owner_user_id)
         with self.lock:
             rows = self.connection.execute(
                 """
                 SELECT item.* FROM composite_strategies item
                 JOIN (
                     SELECT strategy_id, MAX(version) AS version
-                    FROM composite_strategies GROUP BY strategy_id
+                    FROM composite_strategies WHERE owner_user_id=?
+                    GROUP BY strategy_id
                 ) latest ON latest.strategy_id=item.strategy_id
                     AND latest.version=item.version
-                WHERE NOT EXISTS (
+                WHERE item.owner_user_id=?
+                AND NOT EXISTS (
                     SELECT 1 FROM archived_composite_strategies archived
                     WHERE archived.strategy_id=item.strategy_id
+                    AND archived.owner_user_id=item.owner_user_id
                 )
                 ORDER BY item.created_at DESC
-                """
+                """,
+                (owner, owner),
             ).fetchall()
         return [self._composite_row(row) for row in rows]
 
-    def archived_composite_strategies(self) -> list[dict[str, object]]:
+    def archived_composite_strategies(
+        self, owner_user_id: str | None = None
+    ) -> list[dict[str, object]]:
+        owner = self._owner(owner_user_id)
         with self.lock:
             rows = self.connection.execute(
                 """
@@ -418,13 +559,17 @@ class SQLiteBarRepository:
                 FROM archived_composite_strategies archived
                 JOIN composite_strategies item
                   ON item.strategy_id=archived.strategy_id
+                  AND item.owner_user_id=archived.owner_user_id
                 JOIN (
                     SELECT strategy_id, MAX(version) AS version
-                    FROM composite_strategies GROUP BY strategy_id
+                    FROM composite_strategies WHERE owner_user_id=?
+                    GROUP BY strategy_id
                 ) latest ON latest.strategy_id=item.strategy_id
                     AND latest.version=item.version
+                WHERE archived.owner_user_id=?
                 ORDER BY archived.archived_at DESC
-                """
+                """,
+                (owner, owner),
             ).fetchall()
         return [
             {**self._composite_row(row), "archived_at": row["archived_at"]}
@@ -432,55 +577,72 @@ class SQLiteBarRepository:
         ]
 
     def composite_strategy_versions(
-        self, strategy_id: str
+        self, strategy_id: str, owner_user_id: str | None = None
     ) -> list[dict[str, object]]:
+        owner = self._owner(owner_user_id)
         with self.lock:
             rows = self.connection.execute(
                 "SELECT * FROM composite_strategies WHERE strategy_id=? "
+                "AND owner_user_id=? "
                 "ORDER BY version DESC",
-                (strategy_id,),
+                (strategy_id, owner),
             ).fetchall()
         return [self._composite_row(row) for row in rows]
 
     def composite_strategy(
-        self, strategy_id: str, version: int | None = None
+        self,
+        strategy_id: str,
+        version: int | None = None,
+        owner_user_id: str | None = None,
     ) -> dict[str, object] | None:
+        owner = self._owner(owner_user_id)
         with self.lock:
             if version is None:
                 row = self.connection.execute(
                     "SELECT * FROM composite_strategies WHERE strategy_id=? "
+                    "AND owner_user_id=? "
                     "ORDER BY version DESC LIMIT 1",
-                    (strategy_id,),
+                    (strategy_id, owner),
                 ).fetchone()
             else:
                 row = self.connection.execute(
                     "SELECT * FROM composite_strategies "
-                    "WHERE strategy_id=? AND version=?",
-                    (strategy_id, version),
+                    "WHERE strategy_id=? AND version=? AND owner_user_id=?",
+                    (strategy_id, version, owner),
                 ).fetchone()
         return self._composite_row(row) if row else None
 
     def save_composite_strategy(
-        self, strategy_id: str, definition: dict[str, object]
+        self,
+        strategy_id: str,
+        definition: dict[str, object],
+        owner_user_id: str | None = None,
     ) -> dict[str, object]:
+        owner = self._owner(owner_user_id)
         created_at = datetime.now().astimezone().isoformat(timespec="seconds")
         payload = json.dumps(definition, ensure_ascii=False, sort_keys=True)
         with self.lock:
             archived = self.connection.execute(
-                "SELECT 1 FROM archived_composite_strategies WHERE strategy_id=?",
-                (strategy_id,),
+                "SELECT 1 FROM archived_composite_strategies WHERE strategy_id=? "
+                "AND owner_user_id=?",
+                (strategy_id, owner),
             ).fetchone()
             if archived:
                 raise ValueError("已封存的組合策略不可修改")
             row = self.connection.execute(
                 "SELECT COALESCE(MAX(version), 0) AS version "
-                "FROM composite_strategies WHERE strategy_id=?",
-                (strategy_id,),
+                "FROM composite_strategies WHERE strategy_id=? AND owner_user_id=?",
+                (strategy_id, owner),
             ).fetchone()
             version = int(row["version"]) + 1
             self.connection.execute(
-                "INSERT INTO composite_strategies VALUES (?, ?, ?, ?, ?)",
-                (strategy_id, version, definition["name"], payload, created_at),
+                "INSERT INTO composite_strategies("
+                "strategy_id,version,name,definition_json,created_at,owner_user_id"
+                ") VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    strategy_id, version, definition["name"], payload,
+                    created_at, owner,
+                ),
             )
             self.connection.commit()
         return {
@@ -491,34 +653,46 @@ class SQLiteBarRepository:
             "created_at": created_at,
         }
 
-    def composite_strategy_archived(self, strategy_id: str) -> bool:
+    def composite_strategy_archived(
+        self, strategy_id: str, owner_user_id: str | None = None
+    ) -> bool:
+        owner = self._owner(owner_user_id)
         with self.lock:
             row = self.connection.execute(
-                "SELECT 1 FROM archived_composite_strategies WHERE strategy_id=?",
-                (strategy_id,),
+                "SELECT 1 FROM archived_composite_strategies WHERE strategy_id=? "
+                "AND owner_user_id=?",
+                (strategy_id, owner),
             ).fetchone()
         return row is not None
 
-    def archive_composite_strategy(self, strategy_id: str) -> dict[str, object]:
+    def archive_composite_strategy(
+        self, strategy_id: str, owner_user_id: str | None = None
+    ) -> dict[str, object]:
+        owner = self._owner(owner_user_id)
         archived_at = datetime.now().astimezone().isoformat(timespec="seconds")
         with self.lock:
             exists = self.connection.execute(
-                "SELECT 1 FROM composite_strategies WHERE strategy_id=? LIMIT 1",
-                (strategy_id,),
+                "SELECT 1 FROM composite_strategies WHERE strategy_id=? "
+                "AND owner_user_id=? LIMIT 1",
+                (strategy_id, owner),
             ).fetchone()
             if not exists:
                 raise ValueError("找不到組合策略")
             self.connection.execute(
-                "INSERT INTO archived_composite_strategies VALUES (?, ?) "
-                "ON CONFLICT(strategy_id) DO UPDATE SET archived_at=excluded.archived_at",
-                (strategy_id, archived_at),
+                "INSERT INTO archived_composite_strategies("
+                "strategy_id,archived_at,owner_user_id) VALUES (?, ?, ?) "
+                "ON CONFLICT(strategy_id) DO UPDATE SET "
+                "archived_at=excluded.archived_at, "
+                "owner_user_id=excluded.owner_user_id",
+                (strategy_id, archived_at, owner),
             )
             self.connection.commit()
         return {"id": strategy_id, "archived_at": archived_at}
 
     def purge_archived_composite_strategies(
-        self, strategy_ids: list[str]
+        self, strategy_ids: list[str], owner_user_id: str | None = None
     ) -> dict[str, object]:
+        owner = self._owner(owner_user_id)
         ids = list(dict.fromkeys(item.strip() for item in strategy_ids if item.strip()))
         if not ids:
             raise StrategyPurgeError("至少需要選擇一個封存策略")
@@ -526,8 +700,8 @@ class SQLiteBarRepository:
         with self.lock:
             archived_rows = self.connection.execute(
                 f"SELECT strategy_id FROM archived_composite_strategies "
-                f"WHERE strategy_id IN ({placeholders})",
-                ids,
+                f"WHERE strategy_id IN ({placeholders}) AND owner_user_id=?",
+                [*ids, owner],
             ).fetchall()
             archived = {row["strategy_id"] for row in archived_rows}
             not_archived = [item for item in ids if item not in archived]
@@ -538,8 +712,9 @@ class SQLiteBarRepository:
             reference_rows = self.connection.execute(
                 f"SELECT strategy_key, COUNT(*) AS count FROM backtest_runs "
                 f"WHERE strategy_kind='composite' "
-                f"AND strategy_key IN ({placeholders}) GROUP BY strategy_key",
-                ids,
+                f"AND strategy_key IN ({placeholders}) AND owner_user_id=? "
+                f"GROUP BY strategy_key",
+                [*ids, owner],
             ).fetchall()
             references = {
                 row["strategy_key"]: int(row["count"]) for row in reference_rows
@@ -548,21 +723,22 @@ class SQLiteBarRepository:
                 raise StrategyReferencedError(references)
             version_rows = self.connection.execute(
                 f"SELECT strategy_id, COUNT(*) AS count FROM composite_strategies "
-                f"WHERE strategy_id IN ({placeholders}) GROUP BY strategy_id",
-                ids,
+                f"WHERE strategy_id IN ({placeholders}) AND owner_user_id=? "
+                f"GROUP BY strategy_id",
+                [*ids, owner],
             ).fetchall()
             version_count = sum(int(row["count"]) for row in version_rows)
             try:
                 self.connection.execute("BEGIN IMMEDIATE")
                 self.connection.execute(
                     f"DELETE FROM archived_composite_strategies "
-                    f"WHERE strategy_id IN ({placeholders})",
-                    ids,
+                    f"WHERE strategy_id IN ({placeholders}) AND owner_user_id=?",
+                    [*ids, owner],
                 )
                 self.connection.execute(
                     f"DELETE FROM composite_strategies "
-                    f"WHERE strategy_id IN ({placeholders})",
-                    ids,
+                    f"WHERE strategy_id IN ({placeholders}) AND owner_user_id=?",
+                    [*ids, owner],
                 )
                 self.connection.commit()
             except sqlite3.IntegrityError as exc:
@@ -610,7 +786,9 @@ class SQLiteBarRepository:
         strategy_key: str,
         strategy_version: int | None,
         strategy_snapshot: dict[str, object],
+        owner_user_id: str | None = None,
     ) -> dict[str, object]:
+        owner = self._owner(owner_user_id)
         if strategy_kind not in {"atomic", "composite"}:
             raise ValueError("unsupported strategy kind")
         metadata = result["metadata"]
@@ -624,7 +802,11 @@ class SQLiteBarRepository:
         created_at = datetime.now().astimezone().isoformat(timespec="seconds")
         with self.lock:
             self.connection.execute(
-                "INSERT INTO backtest_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO backtest_runs("
+                "run_id,strategy_kind,strategy_key,strategy_version,strategy_name,"
+                "symbol,interval,start_date,end_date,strategy_snapshot_json,"
+                "result_json,status,created_at,owner_user_id"
+                ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     run_id, strategy_kind, strategy_key, strategy_version,
                     metadata["strategy"], metadata["symbol"],
@@ -632,7 +814,7 @@ class SQLiteBarRepository:
                     date_range[0], date_range[1],
                     json.dumps(strategy_snapshot, ensure_ascii=False, sort_keys=True),
                     json.dumps(stored_result, ensure_ascii=False),
-                    "completed", created_at,
+                    "completed", created_at, owner,
                 ),
             )
             self.connection.commit()
@@ -642,12 +824,16 @@ class SQLiteBarRepository:
         return self._backtest_row(row, detail=True)
 
     def backtest_runs(
-        self, limit: int, offset: int, strategy_key: str | None = None
+        self,
+        limit: int,
+        offset: int,
+        strategy_key: str | None = None,
+        owner_user_id: str | None = None,
     ) -> list[dict[str, object]]:
-        sql = "SELECT * FROM backtest_runs"
-        parameters: list[object] = []
+        sql = "SELECT * FROM backtest_runs WHERE owner_user_id=?"
+        parameters: list[object] = [self._owner(owner_user_id)]
         if strategy_key:
-            sql += " WHERE strategy_key=?"
+            sql += " AND strategy_key=?"
             parameters.append(strategy_key)
         sql += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
         parameters.extend([limit, offset])
@@ -655,24 +841,32 @@ class SQLiteBarRepository:
             rows = self.connection.execute(sql, parameters).fetchall()
         return [self._backtest_row(row) for row in rows]
 
-    def backtest_run(self, run_id: str) -> dict[str, object] | None:
+    def backtest_run(
+        self, run_id: str, owner_user_id: str | None = None
+    ) -> dict[str, object] | None:
         with self.lock:
             row = self.connection.execute(
-                "SELECT * FROM backtest_runs WHERE run_id=?", (run_id,)
+                "SELECT * FROM backtest_runs WHERE run_id=? AND owner_user_id=?",
+                (run_id, self._owner(owner_user_id)),
             ).fetchone()
         return self._backtest_row(row, detail=True) if row else None
 
-    def delete_backtest_run(self, run_id: str) -> dict[str, object] | None:
+    def delete_backtest_run(
+        self, run_id: str, owner_user_id: str | None = None
+    ) -> dict[str, object] | None:
+        owner = self._owner(owner_user_id)
         with self.lock:
             row = self.connection.execute(
-                "SELECT * FROM backtest_runs WHERE run_id=?", (run_id,)
+                "SELECT * FROM backtest_runs WHERE run_id=? AND owner_user_id=?",
+                (run_id, owner),
             ).fetchone()
             if row is None:
                 return None
             try:
                 self.connection.execute("BEGIN IMMEDIATE")
                 self.connection.execute(
-                    "DELETE FROM backtest_runs WHERE run_id=?", (run_id,)
+                    "DELETE FROM backtest_runs WHERE run_id=? AND owner_user_id=?",
+                    (run_id, owner),
                 )
                 self.connection.commit()
             except Exception:
