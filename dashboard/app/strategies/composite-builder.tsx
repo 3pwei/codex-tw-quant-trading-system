@@ -12,6 +12,7 @@ type Definition = {
   risk: { monitor_interval: "1m"; stop_loss_pct: number; take_profit_pct: number; max_holding_minutes: number };
 };
 type SavedComposite = { id: string; version: number; name: string; definition: Definition; created_at: string };
+type ArchivedComposite = SavedComposite & { archived_at: string };
 
 const intervals = ["1m", "5m", "10m", "15m", "30m", "1h", "1d", "1w"];
 const intervalNames: Record<string, string> = { "1m":"1 分", "5m":"5 分", "10m":"10 分", "15m":"15 分", "30m":"30 分", "1h":"1 小時", "1d":"日 K", "1w":"週 K" };
@@ -47,6 +48,9 @@ function RuleGroupEditor({ title, hint, value, strategies, required, onChange }:
 export default function CompositeBuilder({ strategies }: { strategies: AtomicStrategy[] }) {
   const [template, setTemplate] = useState<Definition | null>(null);
   const [saved, setSaved] = useState<SavedComposite[]>([]);
+  const [archivedSaved, setArchivedSaved] = useState<ArchivedComposite[]>([]);
+  const [historyId, setHistoryId] = useState<string | null>(null);
+  const [history, setHistory] = useState<SavedComposite[]>([]);
   const [draft, setDraft] = useState<Definition | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -58,7 +62,7 @@ export default function CompositeBuilder({ strategies }: { strategies: AtomicStr
     const response = await fetch(`${apiBase()}/api/composite-strategies`, { cache: "no-store" });
     const body = await response.json();
     if (!response.ok) throw new Error(body.detail ?? "無法取得組合策略");
-    setTemplate(body.template); setSaved(body.strategies);
+    setTemplate(body.template); setSaved(body.strategies); setArchivedSaved(body.archived_strategies ?? []);
     setDraft(current => current ?? copy(body.template));
   };
   // Initial remote hydration runs once; later refreshes are user-triggered.
@@ -70,6 +74,17 @@ export default function CompositeBuilder({ strategies }: { strategies: AtomicStr
   const setGroup = (key: "setup" | "entry" | "exit", value: Group) => setDraft({ ...draft, [key]: value });
   const startNew = () => { if (template) setDraft(copy(template)); setEditingId(null); setNotice(""); setError(""); };
   const edit = (item: SavedComposite) => { setDraft(copy(item.definition)); setEditingId(item.id); setNotice(`正在編輯 ${item.name} v${item.version}；儲存後會建立新版本。`); setError(""); };
+  const copyVersion = (item: SavedComposite) => { setDraft(copy(item.definition)); setEditingId(null); setNotice(`已載入 ${item.name} v${item.version}；儲存後會建立一個全新策略，不會修改原版本。`); setError(""); };
+  const toggleHistory = async (item: SavedComposite) => {
+    if (historyId === item.id) { setHistoryId(null); setHistory([]); return; }
+    setError("");
+    try {
+      const response = await fetch(`${apiBase()}/api/composite-strategies/${item.id}/versions`, { cache: "no-store" });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.detail ?? "無法取得策略版本");
+      setHistoryId(item.id); setHistory(body.versions);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "無法取得策略版本"); }
+  };
   const save = async () => {
     setSaving(true); setError(""); setNotice("");
     try {
@@ -94,11 +109,20 @@ export default function CompositeBuilder({ strategies }: { strategies: AtomicStr
     finally { setArchiving(""); }
   };
 
+  const strategyItem = (item: SavedComposite, isArchived = false) => <div className={`composite-list-item-wrap ${editingId === item.id ? "active" : ""}`} key={`${isArchived ? "archived" : "active"}-${item.id}`}>
+    <div className="composite-list-item">
+      <button type="button" className="select-composite" onClick={() => isArchived ? copyVersion(item) : edit(item)}><strong>{item.name}</strong><span>最新版 v{item.version} · {item.definition.direction === "both" ? "多空" : item.definition.direction === "long" ? "只做多" : "只做空"}</span></button>
+      {!isArchived && <button type="button" className="archive-composite" disabled={archiving === item.id} aria-label={`刪除 ${item.name}`} onClick={() => void archive(item)}>{archiving === item.id ? "…" : "刪除"}</button>}
+    </div>
+    <button type="button" className="version-toggle" onClick={() => void toggleHistory(item)}>{historyId === item.id ? "收合版本紀錄" : `查看 v1–v${item.version}`}</button>
+    {historyId === item.id && <div className="version-history">{history.map(version => <button type="button" key={version.version} onClick={() => copyVersion(version)}><b>v{version.version}</b><span>{new Date(version.created_at).toLocaleString("zh-TW", { timeZone: "Asia/Taipei" })}</span><em>複製</em></button>)}</div>}
+  </div>;
+
   return <section className="composite-area">
     <div className="composite-title"><div><span>NO-CODE COMPOSER</span><h2>多週期策略組合器</h2><p>將基本策略當成條件積木；策略邏輯仍由後端共用核心執行，不產生任意程式碼。</p></div><button type="button" className="secondary" onClick={startNew}>＋ 新策略</button></div>
     {error && <div className="live-error">{error}</div>}{notice && <div className="strategy-notice">{notice}</div>}
     <div className="composite-layout">
-      <aside className="panel composite-list"><b>已儲存策略</b>{saved.length ? saved.map(item => <div className={`composite-list-item ${editingId === item.id ? "active" : ""}`} key={item.id}><button type="button" className="select-composite" onClick={() => edit(item)}><strong>{item.name}</strong><span>v{item.version} · {item.definition.direction === "both" ? "多空" : item.definition.direction === "long" ? "只做多" : "只做空"}</span></button><button type="button" className="archive-composite" disabled={archiving === item.id} aria-label={`刪除 ${item.name}`} onClick={() => void archive(item)}>{archiving === item.id ? "…" : "刪除"}</button></div>) : <p>尚未建立組合策略。</p>}</aside>
+      <aside className="panel composite-list"><b>已儲存策略</b>{saved.length ? saved.map(item => strategyItem(item)) : <p>尚未建立組合策略。</p>}{archivedSaved.length > 0 && <div className="archived-composites"><b>已封存</b>{archivedSaved.map(item => strategyItem(item, true))}</div>}</aside>
       <div className="panel composite-editor">
         <div className="composer-basics"><label><span>策略名稱</span><input value={draft.name} maxLength={80} onChange={event => setDraft({ ...draft, name: event.target.value })} /></label><label><span>交易方向</span><select value={draft.direction} onChange={event => setDraft({ ...draft, direction: event.target.value as Definition["direction"] })}><option value="both">多空皆可</option><option value="long">只做多</option><option value="short">只做空</option></select></label><label className="wide"><span>策略說明</span><input value={draft.description} maxLength={500} onChange={event => setDraft({ ...draft, description: event.target.value })} /></label></div>
         <RuleGroupEditor title="1 · SETUP" hint="高週期背景／啟動條件，可留空" value={draft.setup} strategies={strategies} onChange={value => setGroup("setup", value)} />

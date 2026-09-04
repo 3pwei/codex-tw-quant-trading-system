@@ -26,6 +26,10 @@ class BarRepository(Protocol):
         self, strategy: str, parameters: dict[str, int | float]
     ) -> None: ...
     def composite_strategies(self) -> list[dict[str, object]]: ...
+    def archived_composite_strategies(self) -> list[dict[str, object]]: ...
+    def composite_strategy_versions(
+        self, strategy_id: str
+    ) -> list[dict[str, object]]: ...
     def composite_strategy(
         self, strategy_id: str, version: int | None = None
     ) -> dict[str, object] | None: ...
@@ -289,6 +293,38 @@ class SQLiteBarRepository:
                 )
                 ORDER BY item.created_at DESC
                 """
+            ).fetchall()
+        return [self._composite_row(row) for row in rows]
+
+    def archived_composite_strategies(self) -> list[dict[str, object]]:
+        with self.lock:
+            rows = self.connection.execute(
+                """
+                SELECT item.*, archived.archived_at
+                FROM archived_composite_strategies archived
+                JOIN composite_strategies item
+                  ON item.strategy_id=archived.strategy_id
+                JOIN (
+                    SELECT strategy_id, MAX(version) AS version
+                    FROM composite_strategies GROUP BY strategy_id
+                ) latest ON latest.strategy_id=item.strategy_id
+                    AND latest.version=item.version
+                ORDER BY archived.archived_at DESC
+                """
+            ).fetchall()
+        return [
+            {**self._composite_row(row), "archived_at": row["archived_at"]}
+            for row in rows
+        ]
+
+    def composite_strategy_versions(
+        self, strategy_id: str
+    ) -> list[dict[str, object]]:
+        with self.lock:
+            rows = self.connection.execute(
+                "SELECT * FROM composite_strategies WHERE strategy_id=? "
+                "ORDER BY version DESC",
+                (strategy_id,),
             ).fetchall()
         return [self._composite_row(row) for row in rows]
 

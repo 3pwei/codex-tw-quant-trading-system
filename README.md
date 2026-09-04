@@ -149,8 +149,9 @@ Setup、Entry 與 Exit 都能加入多條 ORB／BNF 規則，個別選擇 `1m`�
 個別覆寫（例如 Entry BNF 與 Exit BNF 使用不同門檻）；後端保存時會把完整解析後
 的參數快照寫入組合策略版本，之後修改原子策略不會竄改既有版本。
 
-儲存新策略會建立 v1；修改現有策略會新增 v2、v3，而不覆蓋舊版。歷史回測頁
-會列出最新版本，執行結果同時記錄策略 ID 與版本。組合策略一律從原始已收盤
+儲存新策略會建立 v1；修改現有策略會新增 v2、v3，而不覆蓋舊版。策略管理頁
+可展開完整版本紀錄；歷史版本只能複製成另一個全新策略，不能原地修改。歷史
+回測頁會列出最新版本，執行結果同時記錄策略 ID 與版本。組合策略一律從原始已收盤
 1 分 K 產生各週期訊號，再於下一根 1 分 K 開盤模擬成交；停損與停利也以
 1 分 K 檢查，同根同時觸發時採停損優先。
 
@@ -162,6 +163,7 @@ Setup、Entry 與 Exit 都能加入多條 ORB／BNF 規則，個別選擇 `1m`�
 
 - `GET /api/composite-strategies`
 - `POST /api/composite-strategies`
+- `GET /api/composite-strategies/{id}/versions`
 - `GET /api/composite-strategies/{id}?version=1`
 - `PUT /api/composite-strategies/{id}`（建立新版本）
 - `DELETE /api/composite-strategies/{id}`（封存，不刪除版本）
