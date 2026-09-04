@@ -90,7 +90,7 @@ jobs:
           ssh -i ~/.ssh/lightsail \
             -o BatchMode=yes \
             "${LIGHTSAIL_USER}@${LIGHTSAIL_HOST}" \
-            "git -C /opt/tw-quant/repo fetch origin --prune && git -C /opt/tw-quant/repo show '${DEPLOY_SHA}:deploy/lightsail/prepare-host.sh' | sudo bash"
+            "sudo git -C /opt/tw-quant/repo fetch origin --prune && sudo git -C /opt/tw-quant/repo show '${DEPLOY_SHA}:deploy/lightsail/prepare-host.sh' | sudo bash"
 
           ssh -i ~/.ssh/lightsail \
             -o BatchMode=yes \
