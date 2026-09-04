@@ -109,6 +109,13 @@ class CompositeDefinitionTests(unittest.TestCase):
                 self.assertEqual((first["version"], second["version"]), (1, 2))
                 self.assertEqual(repo.composite_strategy("combo", 1)["name"], "ORB 低週期進場")
                 self.assertEqual(repo.composite_strategies()[0]["name"], "新版")
+                archived = repo.archive_composite_strategy("combo")
+                self.assertEqual(archived["id"], "combo")
+                self.assertTrue(repo.composite_strategy_archived("combo"))
+                self.assertEqual(repo.composite_strategies(), [])
+                self.assertEqual(repo.composite_strategy("combo", 1)["name"], "ORB 低週期進場")
+                with self.assertRaisesRegex(ValueError, "不可修改"):
+                    repo.save_composite_strategy("combo", changed)
             finally:
                 repo.close()
 
@@ -155,6 +162,29 @@ class CompositeApiTests(unittest.TestCase):
                 )
                 self.assertEqual(result.status_code, 200, result.text)
                 self.assertEqual(result.json()["metadata"]["strategy_version"], 1)
+                archived = client.delete(
+                    f"/api/composite-strategies/{item['id']}"
+                )
+                self.assertEqual(archived.status_code, 200, archived.text)
+                self.assertIn("archived_at", archived.json())
+                self.assertEqual(
+                    client.get("/api/composite-strategies").json()["strategies"],
+                    [],
+                )
+                old_version = client.get(
+                    f"/api/composite-strategies/{item['id']}?version=1"
+                )
+                self.assertEqual(old_version.status_code, 200)
+                rejected_update = client.put(
+                    f"/api/composite-strategies/{item['id']}",
+                    json={"definition": updated_definition},
+                )
+                self.assertEqual(rejected_update.status_code, 410)
+                options = client.get("/api/backtest/options?symbol=TMF").json()
+                self.assertFalse(any(
+                    option["key"] == f"composite:{item['id']}"
+                    for option in options["strategies"]
+                ))
 
 
 if __name__ == "__main__":

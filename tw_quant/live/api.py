@@ -110,7 +110,7 @@ def create_app(
         CORSMiddleware,
         allow_origins=list(config.allowed_origins),
         allow_credentials=False,
-        allow_methods=["GET", "POST", "PUT", "OPTIONS"],
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
         allow_headers=["*"],
     )
 
@@ -275,6 +275,8 @@ def create_app(
     ):
         if repo.composite_strategy(strategy_id) is None:
             raise HTTPException(status_code=404, detail="找不到組合策略")
+        if repo.composite_strategy_archived(strategy_id):
+            raise HTTPException(status_code=410, detail="組合策略已封存")
         try:
             definition = validate_composite_definition(
                 update.definition, repo.strategy_parameters()
@@ -282,6 +284,13 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         return repo.save_composite_strategy(strategy_id, definition)
+
+    @app.delete("/api/composite-strategies/{strategy_id}")
+    def archive_composite_strategy(strategy_id: str):
+        try:
+            return repo.archive_composite_strategy(strategy_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @app.get("/api/backtest/options")
     def backtest_options(symbol: str = "TMF"):

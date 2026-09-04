@@ -50,6 +50,7 @@ export default function CompositeBuilder({ strategies }: { strategies: AtomicStr
   const [draft, setDraft] = useState<Definition | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [archiving, setArchiving] = useState("");
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
 
@@ -80,12 +81,24 @@ export default function CompositeBuilder({ strategies }: { strategies: AtomicStr
     } catch (reason) { setError(reason instanceof Error ? reason.message : "組合策略儲存失敗"); }
     finally { setSaving(false); }
   };
+  const archive = async (item: SavedComposite) => {
+    if (!window.confirm(`確定刪除「${item.name}」？\n\n策略會從清單與回測選單移除，但 v1～v${item.version} 會保留供歷史追溯。`)) return;
+    setArchiving(item.id); setError(""); setNotice("");
+    try {
+      const response = await fetch(`${apiBase()}/api/composite-strategies/${item.id}`, { method: "DELETE" });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.detail ?? "策略刪除失敗");
+      if (editingId === item.id) startNew();
+      await load(); setNotice(`${item.name} 已刪除；既有版本仍保留供歷史追溯。`);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "策略刪除失敗"); }
+    finally { setArchiving(""); }
+  };
 
   return <section className="composite-area">
     <div className="composite-title"><div><span>NO-CODE COMPOSER</span><h2>多週期策略組合器</h2><p>將基本策略當成條件積木；策略邏輯仍由後端共用核心執行，不產生任意程式碼。</p></div><button type="button" className="secondary" onClick={startNew}>＋ 新策略</button></div>
     {error && <div className="live-error">{error}</div>}{notice && <div className="strategy-notice">{notice}</div>}
     <div className="composite-layout">
-      <aside className="panel composite-list"><b>已儲存策略</b>{saved.length ? saved.map(item => <button type="button" className={editingId === item.id ? "active" : ""} key={item.id} onClick={() => edit(item)}><strong>{item.name}</strong><span>v{item.version} · {item.definition.direction === "both" ? "多空" : item.definition.direction === "long" ? "只做多" : "只做空"}</span></button>) : <p>尚未建立組合策略。</p>}</aside>
+      <aside className="panel composite-list"><b>已儲存策略</b>{saved.length ? saved.map(item => <div className={`composite-list-item ${editingId === item.id ? "active" : ""}`} key={item.id}><button type="button" className="select-composite" onClick={() => edit(item)}><strong>{item.name}</strong><span>v{item.version} · {item.definition.direction === "both" ? "多空" : item.definition.direction === "long" ? "只做多" : "只做空"}</span></button><button type="button" className="archive-composite" disabled={archiving === item.id} aria-label={`刪除 ${item.name}`} onClick={() => void archive(item)}>{archiving === item.id ? "…" : "刪除"}</button></div>) : <p>尚未建立組合策略。</p>}</aside>
       <div className="panel composite-editor">
         <div className="composer-basics"><label><span>策略名稱</span><input value={draft.name} maxLength={80} onChange={event => setDraft({ ...draft, name: event.target.value })} /></label><label><span>交易方向</span><select value={draft.direction} onChange={event => setDraft({ ...draft, direction: event.target.value as Definition["direction"] })}><option value="both">多空皆可</option><option value="long">只做多</option><option value="short">只做空</option></select></label><label className="wide"><span>策略說明</span><input value={draft.description} maxLength={500} onChange={event => setDraft({ ...draft, description: event.target.value })} /></label></div>
         <RuleGroupEditor title="1 · SETUP" hint="高週期背景／啟動條件，可留空" value={draft.setup} strategies={strategies} onChange={value => setGroup("setup", value)} />

@@ -32,6 +32,8 @@ class BarRepository(Protocol):
     def save_composite_strategy(
         self, strategy_id: str, definition: dict[str, object]
     ) -> dict[str, object]: ...
+    def composite_strategy_archived(self, strategy_id: str) -> bool: ...
+    def archive_composite_strategy(self, strategy_id: str) -> dict[str, object]: ...
     def close(self) -> None: ...
 
 
@@ -93,6 +95,14 @@ class SQLiteBarRepository:
                 definition_json TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 PRIMARY KEY(strategy_id, version)
+            )
+            """
+        )
+        self.connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS archived_composite_strategies (
+                strategy_id TEXT PRIMARY KEY,
+                archived_at TEXT NOT NULL
             )
             """
         )
@@ -273,6 +283,10 @@ class SQLiteBarRepository:
                     FROM composite_strategies GROUP BY strategy_id
                 ) latest ON latest.strategy_id=item.strategy_id
                     AND latest.version=item.version
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM archived_composite_strategies archived
+                    WHERE archived.strategy_id=item.strategy_id
+                )
                 ORDER BY item.created_at DESC
                 """
             ).fetchall()
@@ -302,6 +316,12 @@ class SQLiteBarRepository:
         created_at = datetime.now().astimezone().isoformat(timespec="seconds")
         payload = json.dumps(definition, ensure_ascii=False, sort_keys=True)
         with self.lock:
+            archived = self.connection.execute(
+                "SELECT 1 FROM archived_composite_strategies WHERE strategy_id=?",
+                (strategy_id,),
+            ).fetchone()
+            if archived:
+                raise ValueError("已封存的組合策略不可修改")
             row = self.connection.execute(
                 "SELECT COALESCE(MAX(version), 0) AS version "
                 "FROM composite_strategies WHERE strategy_id=?",
@@ -320,6 +340,31 @@ class SQLiteBarRepository:
             "definition": definition,
             "created_at": created_at,
         }
+
+    def composite_strategy_archived(self, strategy_id: str) -> bool:
+        with self.lock:
+            row = self.connection.execute(
+                "SELECT 1 FROM archived_composite_strategies WHERE strategy_id=?",
+                (strategy_id,),
+            ).fetchone()
+        return row is not None
+
+    def archive_composite_strategy(self, strategy_id: str) -> dict[str, object]:
+        archived_at = datetime.now().astimezone().isoformat(timespec="seconds")
+        with self.lock:
+            exists = self.connection.execute(
+                "SELECT 1 FROM composite_strategies WHERE strategy_id=? LIMIT 1",
+                (strategy_id,),
+            ).fetchone()
+            if not exists:
+                raise ValueError("找不到組合策略")
+            self.connection.execute(
+                "INSERT INTO archived_composite_strategies VALUES (?, ?) "
+                "ON CONFLICT(strategy_id) DO UPDATE SET archived_at=excluded.archived_at",
+                (strategy_id, archived_at),
+            )
+            self.connection.commit()
+        return {"id": strategy_id, "archived_at": archived_at}
 
     def close(self) -> None:
         with self.lock:
