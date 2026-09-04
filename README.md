@@ -154,12 +154,17 @@ Setup、Entry 與 Exit 都能加入多條 ORB／BNF 規則，個別選擇 `1m`�
 1 分 K 產生各週期訊號，再於下一根 1 分 K 開盤模擬成交；停損與停利也以
 1 分 K 檢查，同根同時觸發時採停損優先。
 
+策略管理清單的「刪除」採封存方式：策略會立即從管理清單與新回測選單移除，
+但不會物理刪除 v1、v2 等既有版本，因此歷史結果仍可依原策略 ID／版本重現。
+已封存策略不可再修改，以免同一個策略 ID 出現不連續或被覆寫的版本歷史。
+
 相關 API：
 
 - `GET /api/composite-strategies`
 - `POST /api/composite-strategies`
 - `GET /api/composite-strategies/{id}?version=1`
 - `PUT /api/composite-strategies/{id}`（建立新版本）
+- `DELETE /api/composite-strategies/{id}`（封存，不刪除版本）
 - `GET /api/composite-strategy-signals/{id}?version=1`
 - `GET /api/composite-backtest?strategy_id={id}&version=1&start=2026-08-01&end=2026-08-31`
 
