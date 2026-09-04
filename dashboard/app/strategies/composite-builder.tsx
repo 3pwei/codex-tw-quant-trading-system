@@ -49,12 +49,14 @@ export default function CompositeBuilder({ strategies }: { strategies: AtomicStr
   const [template, setTemplate] = useState<Definition | null>(null);
   const [saved, setSaved] = useState<SavedComposite[]>([]);
   const [archivedSaved, setArchivedSaved] = useState<ArchivedComposite[]>([]);
+  const [selectedArchived, setSelectedArchived] = useState<string[]>([]);
   const [historyId, setHistoryId] = useState<string | null>(null);
   const [history, setHistory] = useState<SavedComposite[]>([]);
   const [draft, setDraft] = useState<Definition | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [archiving, setArchiving] = useState("");
+  const [purging, setPurging] = useState(false);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
 
@@ -108,9 +110,27 @@ export default function CompositeBuilder({ strategies }: { strategies: AtomicStr
     } catch (reason) { setError(reason instanceof Error ? reason.message : "策略刪除失敗"); }
     finally { setArchiving(""); }
   };
+  const toggleArchived = (strategyId: string) => setSelectedArchived(current => current.includes(strategyId) ? current.filter(item => item !== strategyId) : [...current, strategyId]);
+  const purgeArchived = async () => {
+    if (!selectedArchived.length) return;
+    const selected = archivedSaved.filter(item => selectedArchived.includes(item.id));
+    const versionCount = selected.reduce((total, item) => total + item.version, 0);
+    const confirmation = window.prompt(`將永久刪除 ${selected.length} 個策略及 ${versionCount} 個版本。\n此操作無法復原。\n\n請輸入「永久刪除」確認：`);
+    if (confirmation !== "永久刪除") return;
+    setPurging(true); setError(""); setNotice("");
+    try {
+      const response = await fetch(`${apiBase()}/api/composite-strategies/purge`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ strategy_ids: selectedArchived }) });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.detail ?? "永久刪除失敗");
+      if (historyId && selectedArchived.includes(historyId)) { setHistoryId(null); setHistory([]); }
+      setSelectedArchived([]); await load(); setNotice(`已永久刪除 ${body.deleted_strategies} 個策略及 ${body.deleted_versions} 個版本。`);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "永久刪除失敗"); }
+    finally { setPurging(false); }
+  };
 
   const strategyItem = (item: SavedComposite, isArchived = false) => <div className={`composite-list-item-wrap ${editingId === item.id ? "active" : ""}`} key={`${isArchived ? "archived" : "active"}-${item.id}`}>
     <div className="composite-list-item">
+      {isArchived && <label className="archive-select" title="選取以永久刪除"><input aria-label={`選取 ${item.name}`} type="checkbox" checked={selectedArchived.includes(item.id)} onChange={() => toggleArchived(item.id)} /></label>}
       <button type="button" className="select-composite" onClick={() => isArchived ? copyVersion(item) : edit(item)}><strong>{item.name}</strong><span>最新版 v{item.version} · {item.definition.direction === "both" ? "多空" : item.definition.direction === "long" ? "只做多" : "只做空"}</span></button>
       {!isArchived && <button type="button" className="archive-composite" disabled={archiving === item.id} aria-label={`刪除 ${item.name}`} onClick={() => void archive(item)}>{archiving === item.id ? "…" : "刪除"}</button>}
     </div>
@@ -122,7 +142,7 @@ export default function CompositeBuilder({ strategies }: { strategies: AtomicStr
     <div className="composite-title"><div><span>NO-CODE COMPOSER</span><h2>多週期策略組合器</h2><p>將基本策略當成條件積木；策略邏輯仍由後端共用核心執行，不產生任意程式碼。</p></div><button type="button" className="secondary" onClick={startNew}>＋ 新策略</button></div>
     {error && <div className="live-error">{error}</div>}{notice && <div className="strategy-notice">{notice}</div>}
     <div className="composite-layout">
-      <aside className="panel composite-list"><b>已儲存策略</b>{saved.length ? saved.map(item => strategyItem(item)) : <p>尚未建立組合策略。</p>}{archivedSaved.length > 0 && <div className="archived-composites"><b>已封存</b>{archivedSaved.map(item => strategyItem(item, true))}</div>}</aside>
+      <aside className="panel composite-list"><b>可用策略</b>{saved.length ? saved.map(item => strategyItem(item)) : <p>尚未建立組合策略。</p>}{archivedSaved.length > 0 && <details className="archived-composites"><summary>封存庫（{archivedSaved.length}）</summary><div className="archive-actions"><button type="button" onClick={() => setSelectedArchived(selectedArchived.length === archivedSaved.length ? [] : archivedSaved.map(item => item.id))}>{selectedArchived.length === archivedSaved.length ? "取消全選" : "全選"}</button><button type="button" className="purge-selected" disabled={!selectedArchived.length || purging} onClick={() => void purgeArchived()}>{purging ? "刪除中…" : `永久刪除（${selectedArchived.length}）`}</button></div>{archivedSaved.map(item => strategyItem(item, true))}</details>}</aside>
       <div className="panel composite-editor">
         <div className="composer-basics"><label><span>策略名稱</span><input value={draft.name} maxLength={80} onChange={event => setDraft({ ...draft, name: event.target.value })} /></label><label><span>交易方向</span><select value={draft.direction} onChange={event => setDraft({ ...draft, direction: event.target.value as Definition["direction"] })}><option value="both">多空皆可</option><option value="long">只做多</option><option value="short">只做空</option></select></label><label className="wide"><span>策略說明</span><input value={draft.description} maxLength={500} onChange={event => setDraft({ ...draft, description: event.target.value })} /></label></div>
         <RuleGroupEditor title="1 · SETUP" hint="高週期背景／啟動條件，可留空" value={draft.setup} strategies={strategies} onChange={value => setGroup("setup", value)} />

@@ -10,6 +10,20 @@ from typing import Protocol
 from ..market import KBar
 
 
+class StrategyPurgeError(ValueError):
+    """Raised when a composite strategy cannot be permanently deleted."""
+
+
+class StrategyReferencedError(StrategyPurgeError):
+    def __init__(self, references: dict[str, int]):
+        self.references = references
+        labels = ", ".join(
+            f"{strategy_id} ({count} 筆)"
+            for strategy_id, count in references.items()
+        )
+        super().__init__(f"策略已有回測引用，禁止永久刪除：{labels}")
+
+
 class BarRepository(Protocol):
     def save(self, bar: KBar) -> None: ...
     def latest(self, symbol: str, limit: int) -> list[KBar]: ...
@@ -38,6 +52,9 @@ class BarRepository(Protocol):
     ) -> dict[str, object]: ...
     def composite_strategy_archived(self, strategy_id: str) -> bool: ...
     def archive_composite_strategy(self, strategy_id: str) -> dict[str, object]: ...
+    def purge_archived_composite_strategies(
+        self, strategy_ids: list[str]
+    ) -> dict[str, object]: ...
     def close(self) -> None: ...
 
 
@@ -48,6 +65,7 @@ class SQLiteBarRepository:
         self.connection = sqlite3.connect(target, check_same_thread=False)
         self.connection.row_factory = sqlite3.Row
         self.lock = Lock()
+        self.connection.execute("PRAGMA foreign_keys=ON")
         self.connection.execute("PRAGMA journal_mode=WAL")
         self.connection.execute(
             """
@@ -107,6 +125,25 @@ class SQLiteBarRepository:
             CREATE TABLE IF NOT EXISTS archived_composite_strategies (
                 strategy_id TEXT PRIMARY KEY,
                 archived_at TEXT NOT NULL
+            )
+            """
+        )
+        self.connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS backtest_runs (
+                run_id TEXT PRIMARY KEY,
+                strategy_id TEXT NOT NULL,
+                strategy_version INTEGER NOT NULL,
+                strategy_snapshot_json TEXT NOT NULL,
+                start_date TEXT NOT NULL,
+                end_date TEXT NOT NULL,
+                parameters_json TEXT NOT NULL,
+                metrics_json TEXT NOT NULL,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(strategy_id, strategy_version)
+                    REFERENCES composite_strategies(strategy_id, version)
+                    ON DELETE RESTRICT
             )
             """
         )
@@ -401,6 +438,68 @@ class SQLiteBarRepository:
             )
             self.connection.commit()
         return {"id": strategy_id, "archived_at": archived_at}
+
+    def purge_archived_composite_strategies(
+        self, strategy_ids: list[str]
+    ) -> dict[str, object]:
+        ids = list(dict.fromkeys(item.strip() for item in strategy_ids if item.strip()))
+        if not ids:
+            raise StrategyPurgeError("至少需要選擇一個封存策略")
+        placeholders = ",".join("?" for _ in ids)
+        with self.lock:
+            archived_rows = self.connection.execute(
+                f"SELECT strategy_id FROM archived_composite_strategies "
+                f"WHERE strategy_id IN ({placeholders})",
+                ids,
+            ).fetchall()
+            archived = {row["strategy_id"] for row in archived_rows}
+            not_archived = [item for item in ids if item not in archived]
+            if not_archived:
+                raise StrategyPurgeError(
+                    "只有封存策略可以永久刪除：" + ", ".join(not_archived)
+                )
+            reference_rows = self.connection.execute(
+                f"SELECT strategy_id, COUNT(*) AS count FROM backtest_runs "
+                f"WHERE strategy_id IN ({placeholders}) GROUP BY strategy_id",
+                ids,
+            ).fetchall()
+            references = {
+                row["strategy_id"]: int(row["count"]) for row in reference_rows
+            }
+            if references:
+                raise StrategyReferencedError(references)
+            version_rows = self.connection.execute(
+                f"SELECT strategy_id, COUNT(*) AS count FROM composite_strategies "
+                f"WHERE strategy_id IN ({placeholders}) GROUP BY strategy_id",
+                ids,
+            ).fetchall()
+            version_count = sum(int(row["count"]) for row in version_rows)
+            try:
+                self.connection.execute("BEGIN IMMEDIATE")
+                self.connection.execute(
+                    f"DELETE FROM archived_composite_strategies "
+                    f"WHERE strategy_id IN ({placeholders})",
+                    ids,
+                )
+                self.connection.execute(
+                    f"DELETE FROM composite_strategies "
+                    f"WHERE strategy_id IN ({placeholders})",
+                    ids,
+                )
+                self.connection.commit()
+            except sqlite3.IntegrityError as exc:
+                self.connection.rollback()
+                raise StrategyReferencedError(
+                    {strategy_id: 1 for strategy_id in ids}
+                ) from exc
+            except Exception:
+                self.connection.rollback()
+                raise
+        return {
+            "purged_strategy_ids": ids,
+            "deleted_strategies": len(ids),
+            "deleted_versions": version_count,
+        }
 
     def close(self) -> None:
         with self.lock:
