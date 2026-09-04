@@ -71,6 +71,19 @@ def orb_composite() -> dict[str, object]:
     }
 
 
+def minimal_backtest_result(strategy_id: str) -> dict[str, object]:
+    return {
+        "metadata": {
+            "symbol": "TMF", "strategy": "組合測試",
+            "strategy_key": strategy_id, "strategy_version": 1,
+            "interval": "多週期", "interval_key": "multi",
+            "date_range": "2026-08-25 ～ 2026-08-25",
+        },
+        "config": {}, "summary": {"net_profit": 0},
+        "trades": [], "equity": [], "bars": [],
+    }
+
+
 class CompositeDefinitionTests(unittest.TestCase):
     def test_risk_is_required_and_entry_must_have_rule(self):
         value = default_composite_definition()
@@ -136,22 +149,18 @@ class CompositeDefinitionTests(unittest.TestCase):
                     repo.purge_archived_composite_strategies(["unused"])
                 repo.archive_composite_strategy("referenced")
                 repo.archive_composite_strategy("unused")
-                repo.connection.execute(
-                    "INSERT INTO backtest_runs VALUES (?,?,?,?,?,?,?,?,?,?)",
-                    (
-                        "run-1", "referenced", 1, "{}", "2026-08-01",
-                        "2026-08-01", "{}", "{}", "completed",
-                        "2026-09-04T00:00:00+08:00",
-                    ),
+                saved_run = repo.save_backtest_run(
+                    minimal_backtest_result("referenced"), "composite",
+                    "referenced", 1, definition,
                 )
-                repo.connection.commit()
                 with self.assertRaisesRegex(ValueError, "回測引用"):
                     repo.purge_archived_composite_strategies(
                         ["referenced", "unused"]
                     )
                 self.assertIsNotNone(repo.composite_strategy("unused", 1))
                 repo.connection.execute(
-                    "DELETE FROM backtest_runs WHERE run_id='run-1'"
+                    "DELETE FROM backtest_runs WHERE run_id=?",
+                    (saved_run["run_id"],),
                 )
                 repo.connection.commit()
                 result = repo.purge_archived_composite_strategies(
@@ -247,15 +256,23 @@ class CompositeApiTests(unittest.TestCase):
                     option["key"] == f"composite:{item['id']}"
                     for option in options["strategies"]
                 ))
-                repo.connection.execute(
-                    "INSERT INTO backtest_runs VALUES (?,?,?,?,?,?,?,?,?,?)",
-                    (
-                        "api-run", item["id"], 1, "{}", "2026-08-01",
-                        "2026-08-01", "{}", "{}", "completed",
-                        "2026-09-04T00:00:00+08:00",
-                    ),
+                saved_history = client.post(
+                    "/api/backtest-runs",
+                    json={
+                        "strategy": f"composite:{item['id']}",
+                        "version": 1,
+                        "start": "2026-08-25",
+                        "end": "2026-08-25",
+                    },
                 )
-                repo.connection.commit()
+                self.assertEqual(saved_history.status_code, 201, saved_history.text)
+                run_id = saved_history.json()["history_run_id"]
+                history = client.get("/api/backtest-runs").json()["runs"]
+                self.assertEqual(history[0]["run_id"], run_id)
+                self.assertEqual(history[0]["strategy_version"], 1)
+                detail = client.get(f"/api/backtest-runs/{run_id}")
+                self.assertEqual(detail.status_code, 200, detail.text)
+                self.assertEqual(detail.json()["strategy_snapshot"]["name"], "ORB 低週期進場")
                 blocked = client.post(
                     "/api/composite-strategies/purge",
                     json={"strategy_ids": [item["id"]]},
@@ -263,7 +280,7 @@ class CompositeApiTests(unittest.TestCase):
                 self.assertEqual(blocked.status_code, 409, blocked.text)
                 self.assertIn("回測引用", blocked.json()["detail"])
                 repo.connection.execute(
-                    "DELETE FROM backtest_runs WHERE run_id='api-run'"
+                    "DELETE FROM backtest_runs WHERE run_id=?", (run_id,)
                 )
                 repo.connection.commit()
                 purged = client.post(

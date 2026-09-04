@@ -22,7 +22,7 @@ const modules = [
   { href: "/live/", code: "LIVE", title: "即時交易／1 分 K", detail: "WebSocket 行情、形成中 K 棒與策略訊號", ready: true },
   { href: "/backtest/", code: "TEST", title: "歷史回測", detail: "選擇策略與最長 31 天的歷史範圍", ready: true },
   { href: "/replay/", code: "PLAY", title: "動態歷史回放", detail: "依時間軸模擬行情逐根推進", ready: false },
-  { href: "/history/", code: "LOG", title: "回測／交易歷史", detail: "集中查看過去執行結果", ready: false },
+  { href: "/history/", code: "LOG", title: "回測／交易歷史", detail: "查看績效、交易明細與策略版本", ready: true },
   { href: "/strategies/", code: "STR", title: "策略管理", detail: "ORB、BNF 規則與風險參數", ready: true },
   { href: "/settings/", code: "SET", title: "系統設定", detail: "行情、商品、連線與部署設定", ready: true },
 ] as const;

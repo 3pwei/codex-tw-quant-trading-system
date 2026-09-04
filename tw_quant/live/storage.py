@@ -6,6 +6,7 @@ from datetime import date, datetime
 from pathlib import Path
 from threading import Lock
 from typing import Protocol
+from uuid import uuid4
 
 from ..market import KBar
 
@@ -55,6 +56,18 @@ class BarRepository(Protocol):
     def purge_archived_composite_strategies(
         self, strategy_ids: list[str]
     ) -> dict[str, object]: ...
+    def save_backtest_run(
+        self,
+        result: dict[str, object],
+        strategy_kind: str,
+        strategy_key: str,
+        strategy_version: int | None,
+        strategy_snapshot: dict[str, object],
+    ) -> dict[str, object]: ...
+    def backtest_runs(
+        self, limit: int, offset: int, strategy_key: str | None = None
+    ) -> list[dict[str, object]]: ...
+    def backtest_run(self, run_id: str) -> dict[str, object] | None: ...
     def close(self) -> None: ...
 
 
@@ -128,25 +141,88 @@ class SQLiteBarRepository:
             )
             """
         )
+        self.connection.commit()
+        self._ensure_backtest_schema()
+
+    def _ensure_backtest_schema(self) -> None:
+        columns = {
+            row["name"]
+            for row in self.connection.execute(
+                "PRAGMA table_info(backtest_runs)"
+            ).fetchall()
+        }
+        legacy_rows: list[sqlite3.Row] = []
+        if columns and "strategy_kind" not in columns:
+            legacy_rows = self.connection.execute(
+                "SELECT * FROM backtest_runs"
+            ).fetchall()
+            self.connection.execute(
+                "ALTER TABLE backtest_runs RENAME TO backtest_runs_legacy"
+            )
         self.connection.execute(
             """
             CREATE TABLE IF NOT EXISTS backtest_runs (
                 run_id TEXT PRIMARY KEY,
-                strategy_id TEXT NOT NULL,
-                strategy_version INTEGER NOT NULL,
-                strategy_snapshot_json TEXT NOT NULL,
+                strategy_kind TEXT NOT NULL,
+                strategy_key TEXT NOT NULL,
+                strategy_version INTEGER,
+                strategy_name TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                interval TEXT NOT NULL,
                 start_date TEXT NOT NULL,
                 end_date TEXT NOT NULL,
-                parameters_json TEXT NOT NULL,
-                metrics_json TEXT NOT NULL,
+                strategy_snapshot_json TEXT NOT NULL,
+                result_json TEXT NOT NULL,
                 status TEXT NOT NULL,
                 created_at TEXT NOT NULL,
-                FOREIGN KEY(strategy_id, strategy_version)
+                CHECK(strategy_kind IN ('atomic', 'composite')),
+                CHECK(
+                    (strategy_kind='atomic' AND strategy_version IS NULL)
+                    OR
+                    (strategy_kind='composite' AND strategy_version IS NOT NULL)
+                ),
+                FOREIGN KEY(strategy_key, strategy_version)
                     REFERENCES composite_strategies(strategy_id, version)
                     ON DELETE RESTRICT
             )
             """
         )
+        self.connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_backtest_runs_created "
+            "ON backtest_runs(created_at DESC)"
+        )
+        self.connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_backtest_runs_strategy "
+            "ON backtest_runs(strategy_key, strategy_version)"
+        )
+        for row in legacy_rows:
+            result = {
+                "metadata": {
+                    "symbol": "TMF",
+                    "strategy": row["strategy_id"],
+                    "strategy_key": row["strategy_id"],
+                    "strategy_version": row["strategy_version"],
+                    "interval": "多週期",
+                    "date_range": f"{row['start_date']} ～ {row['end_date']}",
+                },
+                "config": json.loads(row["parameters_json"]),
+                "summary": json.loads(row["metrics_json"]),
+                "trades": [],
+                "equity": [],
+            }
+            self.connection.execute(
+                "INSERT INTO backtest_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    row["run_id"], "composite", row["strategy_id"],
+                    row["strategy_version"], row["strategy_id"], "TMF", "multi",
+                    row["start_date"], row["end_date"],
+                    row["strategy_snapshot_json"],
+                    json.dumps(result, ensure_ascii=False), row["status"],
+                    row["created_at"],
+                ),
+            )
+        if legacy_rows or "strategy_kind" not in columns and columns:
+            self.connection.execute("DROP TABLE IF EXISTS backtest_runs_legacy")
         self.connection.commit()
 
     def save(self, bar: KBar) -> None:
@@ -459,12 +535,13 @@ class SQLiteBarRepository:
                     "只有封存策略可以永久刪除：" + ", ".join(not_archived)
                 )
             reference_rows = self.connection.execute(
-                f"SELECT strategy_id, COUNT(*) AS count FROM backtest_runs "
-                f"WHERE strategy_id IN ({placeholders}) GROUP BY strategy_id",
+                f"SELECT strategy_key, COUNT(*) AS count FROM backtest_runs "
+                f"WHERE strategy_kind='composite' "
+                f"AND strategy_key IN ({placeholders}) GROUP BY strategy_key",
                 ids,
             ).fetchall()
             references = {
-                row["strategy_id"]: int(row["count"]) for row in reference_rows
+                row["strategy_key"]: int(row["count"]) for row in reference_rows
             }
             if references:
                 raise StrategyReferencedError(references)
@@ -500,6 +577,89 @@ class SQLiteBarRepository:
             "deleted_strategies": len(ids),
             "deleted_versions": version_count,
         }
+
+    @staticmethod
+    def _backtest_row(row: sqlite3.Row, *, detail: bool = False) -> dict[str, object]:
+        result = json.loads(row["result_json"])
+        summary = result.get("summary", {})
+        item: dict[str, object] = {
+            "run_id": row["run_id"],
+            "strategy_kind": row["strategy_kind"],
+            "strategy_key": row["strategy_key"],
+            "strategy_version": row["strategy_version"],
+            "strategy_name": row["strategy_name"],
+            "symbol": row["symbol"],
+            "interval": row["interval"],
+            "start_date": row["start_date"],
+            "end_date": row["end_date"],
+            "status": row["status"],
+            "created_at": row["created_at"],
+            "trade_count": len(result.get("trades", [])),
+            "summary": summary,
+        }
+        if detail:
+            item["strategy_snapshot"] = json.loads(row["strategy_snapshot_json"])
+            item["result"] = result
+        return item
+
+    def save_backtest_run(
+        self,
+        result: dict[str, object],
+        strategy_kind: str,
+        strategy_key: str,
+        strategy_version: int | None,
+        strategy_snapshot: dict[str, object],
+    ) -> dict[str, object]:
+        if strategy_kind not in {"atomic", "composite"}:
+            raise ValueError("unsupported strategy kind")
+        metadata = result["metadata"]
+        date_range = str(metadata["date_range"]).split(" ～ ")
+        if len(date_range) != 2:
+            raise ValueError("invalid backtest date range")
+        stored_result = {
+            key: value for key, value in result.items() if key != "bars"
+        }
+        run_id = uuid4().hex
+        created_at = datetime.now().astimezone().isoformat(timespec="seconds")
+        with self.lock:
+            self.connection.execute(
+                "INSERT INTO backtest_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    run_id, strategy_kind, strategy_key, strategy_version,
+                    metadata["strategy"], metadata["symbol"],
+                    metadata.get("interval_key", metadata["interval"]),
+                    date_range[0], date_range[1],
+                    json.dumps(strategy_snapshot, ensure_ascii=False, sort_keys=True),
+                    json.dumps(stored_result, ensure_ascii=False),
+                    "completed", created_at,
+                ),
+            )
+            self.connection.commit()
+            row = self.connection.execute(
+                "SELECT * FROM backtest_runs WHERE run_id=?", (run_id,)
+            ).fetchone()
+        return self._backtest_row(row, detail=True)
+
+    def backtest_runs(
+        self, limit: int, offset: int, strategy_key: str | None = None
+    ) -> list[dict[str, object]]:
+        sql = "SELECT * FROM backtest_runs"
+        parameters: list[object] = []
+        if strategy_key:
+            sql += " WHERE strategy_key=?"
+            parameters.append(strategy_key)
+        sql += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        parameters.extend([limit, offset])
+        with self.lock:
+            rows = self.connection.execute(sql, parameters).fetchall()
+        return [self._backtest_row(row) for row in rows]
+
+    def backtest_run(self, run_id: str) -> dict[str, object] | None:
+        with self.lock:
+            row = self.connection.execute(
+                "SELECT * FROM backtest_runs WHERE run_id=?", (run_id,)
+            ).fetchone()
+        return self._backtest_row(row, detail=True) if row else None
 
     def close(self) -> None:
         with self.lock:
