@@ -1,14 +1,20 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, replace
 from datetime import date
-import os
 
 from ..market_data.settings import MarketDataSettings, normalize_provider
 
 
 def _split_origins(value: str) -> tuple[str, ...]:
     return tuple(item.strip() for item in value.split(",") if item.strip())
+
+
+def _split_emails(value: str) -> tuple[str, ...]:
+    return tuple(
+        item.strip().casefold() for item in value.split(",") if item.strip()
+    )
 
 
 @dataclass(frozen=True, init=False)
@@ -27,6 +33,8 @@ class LiveSettings:
     access_mode: str
     cloudflare_access_team_domain: str | None
     cloudflare_access_audience: str | None
+    authorization_mode: str
+    bootstrap_admin_emails: tuple[str, ...]
 
     def __init__(
         self,
@@ -39,6 +47,8 @@ class LiveSettings:
         access_mode: str = "disabled",
         cloudflare_access_team_domain: str | None = None,
         cloudflare_access_audience: str | None = None,
+        authorization_mode: str = "disabled",
+        bootstrap_admin_emails: tuple[str, ...] = (),
         # Compatibility inputs from the pre-provider settings model.
         mode: str | None = None,
         symbol: str | None = None,
@@ -82,6 +92,10 @@ class LiveSettings:
         object.__setattr__(
             self, "cloudflare_access_audience", cloudflare_access_audience
         )
+        object.__setattr__(self, "authorization_mode", authorization_mode)
+        object.__setattr__(
+            self, "bootstrap_admin_emails", bootstrap_admin_emails
+        )
 
     @classmethod
     def from_env(cls) -> "LiveSettings":
@@ -107,6 +121,12 @@ class LiveSettings:
             access_mode=access_mode,
             cloudflare_access_team_domain=os.getenv("CF_ACCESS_TEAM_DOMAIN"),
             cloudflare_access_audience=os.getenv("CF_ACCESS_AUD"),
+            authorization_mode=os.getenv(
+                "PLATFORM_AUTHORIZATION_MODE", "disabled"
+            ).lower().strip(),
+            bootstrap_admin_emails=_split_emails(
+                os.getenv("PLATFORM_BOOTSTRAP_ADMIN_EMAILS", "")
+            ),
         )
 
     def validate(self) -> None:
@@ -120,6 +140,17 @@ class LiveSettings:
         ):
             raise ValueError(
                 "CF_ACCESS_TEAM_DOMAIN and CF_ACCESS_AUD are required in cloudflare mode"
+            )
+        if self.authorization_mode not in {"disabled", "enforced"}:
+            raise ValueError(
+                "PLATFORM_AUTHORIZATION_MODE must be disabled or enforced"
+            )
+        if self.authorization_mode == "enforced" and not (
+            self.bootstrap_admin_emails
+        ):
+            raise ValueError(
+                "PLATFORM_BOOTSTRAP_ADMIN_EMAILS is required when platform "
+                "authorization is enforced"
             )
 
     # Compatibility properties. New code should use ``settings.market_data``.

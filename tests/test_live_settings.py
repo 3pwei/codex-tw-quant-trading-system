@@ -51,6 +51,28 @@ class LiveSettingsTests(unittest.TestCase):
         self.assertEqual(settings.mode, "mock")
         self.assertEqual(settings.symbol, "TMF")
 
+    def test_authorization_foundation_loads_bootstrap_admins(self):
+        with patch.dict("os.environ", {
+            "PLATFORM_AUTHORIZATION_MODE": "enforced",
+            "PLATFORM_BOOTSTRAP_ADMIN_EMAILS": (
+                "Owner@Example.com, second@example.com"
+            ),
+        }, clear=True):
+            settings = LiveSettings.from_env()
+        settings.validate()
+        self.assertEqual(settings.authorization_mode, "enforced")
+        self.assertEqual(
+            settings.bootstrap_admin_emails,
+            ("owner@example.com", "second@example.com"),
+        )
+
+    def test_enforced_authorization_requires_bootstrap_admin(self):
+        settings = LiveSettings(authorization_mode="enforced")
+        with self.assertRaisesRegex(
+            ValueError, "PLATFORM_BOOTSTRAP_ADMIN_EMAILS"
+        ):
+            settings.validate()
+
 
 if __name__ == "__main__":
     unittest.main()
