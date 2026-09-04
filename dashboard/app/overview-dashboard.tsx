@@ -13,6 +13,7 @@ type Health = {
 };
 type KBar = { close: number; session: "day" | "night"; status: "forming" | "closed"; time: string };
 type Strategy = { key: string; name: string; signals: { event: "entry" | "exit"; direction: "long" | "short"; time: string; price: number }[] };
+type CurrentUser = { role: "researcher" | "trader" | "admin" };
 
 const apiBase = () => (process.env.NEXT_PUBLIC_MARKET_API_URL ?? (typeof window === "undefined" ? "" : window.location.origin)).replace(/\/$/, "");
 const number = new Intl.NumberFormat("zh-TW", { maximumFractionDigits: 2 });
@@ -24,7 +25,8 @@ const modules = [
   { href: "/replay/", code: "PLAY", title: "動態歷史回放", detail: "依時間軸模擬行情逐根推進", ready: false },
   { href: "/history/", code: "LOG", title: "回測／交易歷史", detail: "查看績效、交易明細與策略版本", ready: true },
   { href: "/strategies/", code: "STR", title: "策略管理", detail: "ORB、BNF 規則與風險參數", ready: true },
-  { href: "/settings/", code: "SET", title: "系統設定", detail: "行情、商品、連線與部署設定", ready: true },
+  { href: "/settings/", code: "SET", title: "系統設定", detail: "行情、商品、連線與部署設定", ready: true, admin: true },
+  { href: "/admin/users/", code: "IAM", title: "帳號與權限", detail: "管理研究、交易與管理員帳號", ready: true, admin: true },
 ] as const;
 
 export default function OverviewDashboard() {
@@ -32,20 +34,23 @@ export default function OverviewDashboard() {
   const [bar, setBar] = useState<KBar | null>(null);
   const [strategies, setStrategies] = useState<Strategy[]>([]);
   const [error, setError] = useState("");
+  const [user, setUser] = useState<CurrentUser | null>(null);
 
   const refresh = useCallback(async () => {
     try {
-      const [healthResponse, barsResponse, strategyResponse] = await Promise.all([
+      const [healthResponse, barsResponse, strategyResponse, userResponse] = await Promise.all([
         fetch(`${apiBase()}/api/health`, { cache: "no-store" }),
         fetch(`${apiBase()}/api/kbars?symbol=TMF&interval=1m&limit=1`, { cache: "no-store" }),
         fetch(`${apiBase()}/api/strategy-signals?symbol=TMF&strategies=orb,bnf&limit=500`, { cache: "no-store" }),
+        fetch(`${apiBase()}/api/me`, { cache: "no-store" }),
       ]);
-      if (!healthResponse.ok || !barsResponse.ok || !strategyResponse.ok) throw new Error("系統狀態 API 回應異常");
+      if (!healthResponse.ok || !barsResponse.ok || !strategyResponse.ok || !userResponse.ok) throw new Error("系統狀態 API 回應異常");
       const bars: KBar[] = await barsResponse.json();
       const strategyBody: { strategies: Strategy[] } = await strategyResponse.json();
       setHealth(await healthResponse.json());
       setBar(bars.at(-1) ?? null);
       setStrategies(strategyBody.strategies);
+      setUser(await userResponse.json());
       setError("");
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "無法取得系統狀態");
@@ -72,7 +77,7 @@ export default function OverviewDashboard() {
       </section>
       {error && <div className="live-error">{error}；總覽將自動重試，其他功能仍可由下方進入。</div>}
       <section className="overview-grid">
-        {modules.map(module => <Link key={module.href} href={module.href} className="module-card">
+        {modules.filter(module => !("admin" in module) || user?.role === "admin").map(module => <Link key={module.href} href={module.href} className="module-card">
           <div><b>{module.code}</b><span className={module.ready ? "ready" : "planned"}>{module.ready ? "可使用" : "建置中"}</span></div>
           <h2>{module.title}</h2><p>{module.detail}</p><em>開啟功能 →</em>
         </Link>)}

@@ -13,17 +13,21 @@ from fastapi import (
     WebSocketDisconnect,
 )
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from ..auth import (
     AccessIdentity,
     AccessTokenError,
     AccessValidator,
+    AccountStatus,
     AuthorizationError,
     AuthService,
     CloudflareAccessValidator,
     DisabledAccessValidator,
+    Role,
     SQLiteAuthRepository,
+    TradingMode,
 )
 from ..backtest import (
     MAX_BACKTEST_DAYS,
@@ -87,6 +91,60 @@ class BacktestExecutionRequest(BaseModel):
     version: int | None = None
 
 
+class AdminUserCreate(BaseModel):
+    email: str
+    role: Role = Role.RESEARCHER
+    status: AccountStatus = AccountStatus.ACTIVE
+    trading_mode: TradingMode = TradingMode.DISABLED
+
+
+class AdminUserUpdate(BaseModel):
+    role: Role
+    status: AccountStatus
+    trading_mode: TradingMode
+
+
+def _required_permission(method: str, path: str) -> str | None:
+    """Map HTTP resources to permissions; unknown API routes fail closed."""
+    if path == "/api/me":
+        return None
+    if path == "/api/admin/health":
+        return "admin.providers.read"
+    if path == "/api/admin/audit":
+        return "audit.read"
+    if path.startswith("/api/admin/users"):
+        return "admin.users.manage"
+    if path in {"/api/health", "/api/kbars", "/api/strategy-signals"}:
+        return "market.read"
+    if path.startswith("/api/backtest-runs"):
+        if method == "DELETE":
+            return "backtest_history.delete.own"
+        if method == "POST":
+            return "backtest.run"
+        return "backtest_history.read.own"
+    if path.startswith("/api/backtest") or path == "/api/composite-backtest":
+        return "backtest.run"
+    if path.startswith(("/api/strategies", "/api/composite-strateg")):
+        return (
+            "strategy.read.own"
+            if method == "GET"
+            else "strategy.write.own"
+        )
+    if path.startswith("/api/"):
+        return "__deny_unknown_api__"
+    return None
+
+
+def _page_permission(path: str) -> str | None:
+    if path.startswith("/settings"):
+        return "admin.settings.read"
+    if path.startswith("/admin"):
+        return "admin.users.manage"
+    if path.startswith("/docs") or path == "/openapi.json":
+        return "admin.settings.read"
+    return None
+
+
 def create_app(
     settings: LiveSettings | None = None,
     feed: LiveMarketDataProvider | None = None,
@@ -135,7 +193,7 @@ def create_app(
 
     app = FastAPI(
         title="TMF Live Market API",
-        version="0.6.0",
+        version="0.7.0",
         description="Provider-neutral quote service; no order endpoints.",
         lifespan=lifespan,
     )
@@ -150,6 +208,54 @@ def create_app(
         allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
         allow_headers=["*"],
     )
+
+    def identity_from_headers(headers):
+        token = headers.get("cf-access-jwt-assertion")
+        if token:
+            return validator.authenticate(token)
+        subject = headers.get("x-authenticated-subject")
+        if subject:
+            return AccessIdentity(
+                subject=subject,
+                email=headers.get("x-authenticated-email"),
+            )
+        if config.access_mode == "disabled":
+            return None
+        raise AccessTokenError("missing authenticated request identity")
+
+    def user_from_headers(headers):
+        identity = identity_from_headers(headers)
+        return (
+            auth_service.local_development_user()
+            if identity is None
+            else auth_service.identify(identity)
+        )
+
+    def public_market_status(status: dict[str, object]) -> dict[str, object]:
+        return {
+            key: status[key]
+            for key in (
+                "type", "symbol", "contract", "connection_status",
+                "last_tick_time", "last_heartbeat_time", "server_time",
+                "latency_ms", "tick_age_ms", "history_bars_loaded",
+            )
+        }
+
+    @app.middleware("http")
+    async def authorize_api_requests(request: Request, call_next):
+        permission = _required_permission(request.method, request.url.path)
+        if not request.url.path.startswith("/api/") or request.method == "OPTIONS":
+            return await call_next(request)
+        try:
+            user = user_from_headers(request.headers)
+            if permission:
+                auth_service.require_permission(user, permission)
+            request.state.auth_user = user
+        except AccessTokenError as exc:
+            return JSONResponse({"detail": str(exc)}, status_code=401)
+        except AuthorizationError as exc:
+            return JSONResponse({"detail": str(exc)}, status_code=403)
+        return await call_next(request)
 
     @app.get("/health/live", include_in_schema=False)
     async def liveness():
@@ -170,6 +276,11 @@ def create_app(
             raise HTTPException(status_code=401, detail=str(exc)) from exc
         try:
             user = auth_service.identify(identity)
+            page_permission = _page_permission(
+                request.headers.get("x-original-uri", "/")
+            )
+            if page_permission:
+                auth_service.require_permission(user, page_permission)
         except AuthorizationError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
         headers = {"X-Authenticated-Subject": identity.subject}
@@ -180,38 +291,65 @@ def create_app(
             headers["X-Authenticated-Role"] = user.role.value
         return Response(status_code=204, headers=headers)
 
-    def request_identity(request: Request):
-        token = request.headers.get("cf-access-jwt-assertion")
-        if token:
-            return validator.authenticate(token)
-        subject = request.headers.get("x-authenticated-subject")
-        if subject:
-            return AccessIdentity(
-                subject=subject,
-                email=request.headers.get("x-authenticated-email"),
-            )
-        if config.access_mode == "disabled":
-            return None
-        raise AccessTokenError("missing authenticated request identity")
-
     @app.get("/api/me")
     def current_user(request: Request):
-        try:
-            identity = request_identity(request)
-            user = (
-                auth_service.local_development_user()
-                if identity is None
-                else auth_service.identify(identity)
-            )
-        except AccessTokenError as exc:
-            raise HTTPException(status_code=401, detail=str(exc)) from exc
-        except AuthorizationError as exc:
-            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        user = request.state.auth_user
         return user.to_message(auth_service.enforced)
 
     @app.get("/api/health")
     async def health():
+        return public_market_status(service.status_message())
+
+    @app.get("/api/admin/health")
+    async def admin_health():
         return service.status_message()
+
+    @app.get("/api/admin/users")
+    def admin_users():
+        return {"users": [user.to_message(auth_service.enforced) for user in identity_repo.users()]}
+
+    @app.post("/api/admin/users", status_code=201)
+    def create_admin_user(update: AdminUserCreate, request: Request):
+        try:
+            user = identity_repo.create_user(
+                update.email,
+                role=update.role,
+                status=update.status,
+                trading_mode=update.trading_mode,
+                actor_user_id=request.state.auth_user.user_id,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return user.to_message(auth_service.enforced)
+
+    @app.put("/api/admin/users/{user_id}")
+    def update_admin_user(
+        user_id: str, update: AdminUserUpdate, request: Request
+    ):
+        actor = request.state.auth_user
+        if user_id == actor.user_id and (
+            update.status is not AccountStatus.ACTIVE or update.role is not Role.ADMIN
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="cannot disable or demote your own admin account",
+            )
+        try:
+            user = identity_repo.update_user(
+                user_id,
+                role=update.role,
+                status=update.status,
+                trading_mode=update.trading_mode,
+                actor_user_id=actor.user_id,
+            )
+        except ValueError as exc:
+            status_code = 404 if "not found" in str(exc) else 422
+            raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+        return user.to_message(auth_service.enforced)
+
+    @app.get("/api/admin/audit")
+    def admin_audit(limit: int = Query(200, ge=1, le=1000)):
+        return {"events": identity_repo.audit_events(limit)}
 
     @app.get("/api/kbars")
     async def kbars(
@@ -545,6 +683,12 @@ def create_app(
     async def market_socket(
         websocket: WebSocket, symbol: str, interval: str = "1m"
     ):
+        try:
+            socket_user = user_from_headers(websocket.headers)
+            auth_service.require_permission(socket_user, "market.read")
+        except (AccessTokenError, AuthorizationError) as exc:
+            await websocket.close(code=1008, reason=str(exc))
+            return
         if symbol.upper() != config.symbol:
             await websocket.close(code=1008, reason="unsupported symbol")
             return
@@ -559,12 +703,12 @@ def create_app(
             selected_interval,
             repo.latest(config.symbol, config.history_limit),
         )
-        await websocket.send_json(service.status_message())
+        await websocket.send_json(public_market_status(service.status_message()))
         try:
             while True:
                 message = await queue.get()
                 if message.get("type") != "kbar":
-                    await websocket.send_json(message)
+                    await websocket.send_json(public_market_status(message))
                     continue
                 for bar in transformer.push(kbar_from_message(message)):
                     await websocket.send_json(

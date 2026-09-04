@@ -54,3 +54,19 @@ class AuthService:
             permissions=tuple(sorted(ROLE_PERMISSIONS[Role.ADMIN])),
             registered=False,
         )
+
+    def require_permission(self, user: AuthUser, permission: str) -> None:
+        """Reject access unless the resolved platform account has permission.
+
+        Authorization is deliberately bypassed only while the rollout switch is
+        disabled.  Once enforced, an active, registered account and an explicit
+        role permission are both required.
+        """
+        if not self.enforced:
+            return
+        if not user.registered:
+            raise AuthorizationError("platform account is not registered")
+        if user.status is not AccountStatus.ACTIVE:
+            raise AuthorizationError(f"platform account is {user.status.value}")
+        if permission not in user.permissions:
+            raise AuthorizationError(f"permission denied: {permission}")
