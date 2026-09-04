@@ -281,6 +281,9 @@ SJ_PRODUCTION=true
 
 - `GET /api/health`
 - `GET /api/me`（目前登入身分、角色、帳號／交易狀態與權限）
+- `GET /api/admin/health`（管理員：Provider、Queue、重複／遲到 Tick 診斷）
+- `GET|POST /api/admin/users`、`PUT /api/admin/users/{user_id}`（管理員）
+- `GET /api/admin/audit`（管理員：帳號異動稽核）
 - `GET /api/kbars?symbol=TMF&interval=5m&limit=500`
 - `GET /api/strategy-signals?symbol=TMF&strategies=orb,bnf&interval=5m&limit=500`
 - `GET /api/strategies`
@@ -423,17 +426,31 @@ Cloudflare Access 負責確認 Email 身分；FastAPI 另以 SQLite 的 `app_use
 `permissions`、`role_permissions` 與 `audit_events` 保存平台帳號、角色、交易狀態及
 稽核紀錄。兩層不能互相取代：通過 Cloudflare 不代表已取得平台功能權限。
 
-PR 1 上線時保持：
+首次啟用時保持：
 
 ```dotenv
 PLATFORM_AUTHORIZATION_MODE=disabled
 PLATFORM_BOOTSTRAP_ADMIN_EMAILS=owner@example.com
 ```
 
-這會建立指定的第一位管理員、提供 `GET /api/me`，但不改變既有頁面與 API 的授權
-結果。確認 `/api/me` 回傳 `registered: true`、`role: admin` 後，才可在後續權限 PR
-將模式切換為 `enforced`。此設定不會自動建立其他 Email；未來一般使用者必須先由
-管理員建立平台帳號。
+這會建立指定的第一位管理員、提供 `GET /api/me`，但暫不封鎖既有頁面與 API。
+登入 Dashboard 後，瀏覽器直接開啟 `https://tmf.example.com/api/me`，確認回傳
+`registered: true`、`identity_bound: true`、`role: admin`。接著把伺服器設定改為：
+
+```dotenv
+PLATFORM_AUTHORIZATION_MODE=enforced
+```
+
+重新部署後，只有預先建立且為 `active` 的平台帳號可以使用系統。管理員可從
+`/admin/users/` 新增核准 Email、設定 `researcher`／`trader`／`admin`、暫停或撤銷
+帳號。設定頁、帳號管理、完整 Provider Health、OpenAPI 與文件頁均由 Caddy
+forward-auth 與 FastAPI RBAC 雙重限制；前端隱藏選單不是安全邊界。未知 API route
+在 enforced 模式下預設拒絕，WebSocket 也會在握手時驗證 `market.read`。
+
+一般使用者的 `/api/health` 與 WebSocket heartbeat 不回傳 Provider 名稱、Queue、
+丟棄／重複／遲到 Tick 等內部診斷；完整資訊只由 `/api/admin/health` 提供。
+此設定不會自動建立其他 Email，Cloudflare Access policy 中的 Email 仍須與平台帳號
+名單同步維護。
 
 目前角色資料模型包含：
 

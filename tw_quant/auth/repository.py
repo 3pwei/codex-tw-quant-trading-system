@@ -324,10 +324,13 @@ class SQLiteAuthRepository:
             self.connection.commit()
         return event_id
 
-    def audit_events(self) -> list[dict[str, object]]:
+    def audit_events(self, limit: int = 200) -> list[dict[str, object]]:
         with self.lock:
             rows = self.connection.execute(
-                "SELECT * FROM audit_events ORDER BY created_at, event_id"
+                "SELECT * FROM (SELECT * FROM audit_events "
+                "ORDER BY created_at DESC, event_id DESC LIMIT ?) "
+                "ORDER BY created_at, event_id",
+                (limit,),
             ).fetchall()
         return [
             {

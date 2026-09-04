@@ -42,5 +42,6 @@ class AuthUser:
             "trading_mode": self.trading_mode.value,
             "permissions": list(self.permissions),
             "registered": self.registered,
+            "identity_bound": self.access_subject is not None,
             "authorization_enforced": authorization_enforced,
         }
