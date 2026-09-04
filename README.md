@@ -158,6 +158,10 @@ Setup、Entry 與 Exit 都能加入多條 ORB／BNF 規則，個別選擇 `1m`�
 策略管理清單的「刪除」採封存方式：策略會立即從管理清單與新回測選單移除，
 但不會物理刪除 v1、v2 等既有版本，因此歷史結果仍可依原策略 ID／版本重現。
 已封存策略不可再修改，以免同一個策略 ID 出現不連續或被覆寫的版本歷史。
+封存庫預設收合，並支援勾選多筆永久刪除。永久刪除會移除整條版本鏈且無法
+復原；後端只允許刪除已封存且沒有 `backtest_runs` 引用的策略，只要批次中有
+一個策略被引用就會拒絕整批操作。SQLite 外鍵也使用 `ON DELETE RESTRICT` 作為
+第二層保護。目前回測仍只即時計算，`backtest_runs` 是為後續保存回測紀錄預留。
 
 相關 API：
 
@@ -167,6 +171,7 @@ Setup、Entry 與 Exit 都能加入多條 ORB／BNF 規則，個別選擇 `1m`�
 - `GET /api/composite-strategies/{id}?version=1`
 - `PUT /api/composite-strategies/{id}`（建立新版本）
 - `DELETE /api/composite-strategies/{id}`（封存，不刪除版本）
+- `POST /api/composite-strategies/purge`（批次永久刪除未被引用的封存策略）
 - `GET /api/composite-strategy-signals/{id}?version=1`
 - `GET /api/composite-backtest?strategy_id={id}&version=1&start=2026-08-01&end=2026-08-31`
 

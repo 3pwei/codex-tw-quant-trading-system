@@ -42,7 +42,12 @@ from .access import (
 from .feed import ReplayFeed, ShioajiFeed
 from .service import LiveMarketService
 from .settings import LiveSettings
-from .storage import BarRepository, SQLiteBarRepository
+from .storage import (
+    BarRepository,
+    SQLiteBarRepository,
+    StrategyPurgeError,
+    StrategyReferencedError,
+)
 
 
 class StrategyParametersUpdate(BaseModel):
@@ -51,6 +56,10 @@ class StrategyParametersUpdate(BaseModel):
 
 class CompositeStrategyUpdate(BaseModel):
     definition: dict[str, object]
+
+
+class CompositeStrategyPurge(BaseModel):
+    strategy_ids: list[str]
 
 
 def build_feed(settings: LiveSettings):
@@ -303,6 +312,17 @@ def create_app(
             return repo.archive_composite_strategy(strategy_id)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/api/composite-strategies/purge")
+    def purge_composite_strategies(request: CompositeStrategyPurge):
+        if len(request.strategy_ids) > 100:
+            raise HTTPException(status_code=422, detail="單次最多永久刪除 100 個策略")
+        try:
+            return repo.purge_archived_composite_strategies(request.strategy_ids)
+        except StrategyReferencedError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except StrategyPurgeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.get("/api/backtest/options")
     def backtest_options(symbol: str = "TMF"):

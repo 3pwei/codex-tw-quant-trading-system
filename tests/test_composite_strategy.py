@@ -125,6 +125,44 @@ class CompositeDefinitionTests(unittest.TestCase):
             finally:
                 repo.close()
 
+    def test_permanent_delete_requires_archive_and_rejects_references_atomically(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = SQLiteBarRepository(Path(directory) / "bars.sqlite3")
+            try:
+                definition = validate_composite_definition(orb_composite())
+                repo.save_composite_strategy("referenced", definition)
+                repo.save_composite_strategy("unused", definition)
+                with self.assertRaisesRegex(ValueError, "只有封存策略"):
+                    repo.purge_archived_composite_strategies(["unused"])
+                repo.archive_composite_strategy("referenced")
+                repo.archive_composite_strategy("unused")
+                repo.connection.execute(
+                    "INSERT INTO backtest_runs VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        "run-1", "referenced", 1, "{}", "2026-08-01",
+                        "2026-08-01", "{}", "{}", "completed",
+                        "2026-09-04T00:00:00+08:00",
+                    ),
+                )
+                repo.connection.commit()
+                with self.assertRaisesRegex(ValueError, "回測引用"):
+                    repo.purge_archived_composite_strategies(
+                        ["referenced", "unused"]
+                    )
+                self.assertIsNotNone(repo.composite_strategy("unused", 1))
+                repo.connection.execute(
+                    "DELETE FROM backtest_runs WHERE run_id='run-1'"
+                )
+                repo.connection.commit()
+                result = repo.purge_archived_composite_strategies(
+                    ["referenced", "unused"]
+                )
+                self.assertEqual(result["deleted_strategies"], 2)
+                self.assertEqual(result["deleted_versions"], 2)
+                self.assertIsNone(repo.composite_strategy("unused", 1))
+            finally:
+                repo.close()
+
 
 class CompositeApiTests(unittest.TestCase):
     def test_crud_versions_and_backtest_endpoint(self):
@@ -209,6 +247,37 @@ class CompositeApiTests(unittest.TestCase):
                     option["key"] == f"composite:{item['id']}"
                     for option in options["strategies"]
                 ))
+                repo.connection.execute(
+                    "INSERT INTO backtest_runs VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        "api-run", item["id"], 1, "{}", "2026-08-01",
+                        "2026-08-01", "{}", "{}", "completed",
+                        "2026-09-04T00:00:00+08:00",
+                    ),
+                )
+                repo.connection.commit()
+                blocked = client.post(
+                    "/api/composite-strategies/purge",
+                    json={"strategy_ids": [item["id"]]},
+                )
+                self.assertEqual(blocked.status_code, 409, blocked.text)
+                self.assertIn("回測引用", blocked.json()["detail"])
+                repo.connection.execute(
+                    "DELETE FROM backtest_runs WHERE run_id='api-run'"
+                )
+                repo.connection.commit()
+                purged = client.post(
+                    "/api/composite-strategies/purge",
+                    json={"strategy_ids": [item["id"]]},
+                )
+                self.assertEqual(purged.status_code, 200, purged.text)
+                self.assertEqual(purged.json()["deleted_versions"], 2)
+                self.assertEqual(
+                    client.get(
+                        f"/api/composite-strategies/{item['id']}/versions"
+                    ).status_code,
+                    404,
+                )
 
 
 if __name__ == "__main__":
