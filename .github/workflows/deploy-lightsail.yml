@@ -95,7 +95,7 @@ jobs:
           ssh -i ~/.ssh/lightsail \
             -o BatchMode=yes \
             "${LIGHTSAIL_USER}@${LIGHTSAIL_HOST}" \
-            "sudo /opt/tw-quant/repo/deploy/lightsail/deploy.sh '${DEPLOY_SHA}'"
+            "sudo git -C /opt/tw-quant/repo show '${DEPLOY_SHA}:deploy/lightsail/deploy.sh' | sudo bash -s -- '${DEPLOY_SHA}'"
 
       - name: Verify public health endpoint
         env:
