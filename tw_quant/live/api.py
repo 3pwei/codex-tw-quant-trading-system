@@ -23,6 +23,11 @@ from ..market import (
     source_bar_limit,
     validate_timeframe,
 )
+from ..market_data import (
+    HistoricalMarketDataProvider,
+    LiveMarketDataProvider,
+    build_market_data_provider,
+)
 from ..strategy import (
     SUPPORTED_STRATEGIES,
     analyze_strategies,
@@ -39,7 +44,6 @@ from .access import (
     CloudflareAccessValidator,
     DisabledAccessValidator,
 )
-from .feed import ReplayFeed, ShioajiFeed
 from .service import LiveMarketService
 from .settings import LiveSettings
 from .storage import (
@@ -71,28 +75,21 @@ class BacktestExecutionRequest(BaseModel):
     version: int | None = None
 
 
-def build_feed(settings: LiveSettings):
-    if settings.mode == "mock":
-        return ReplayFeed(settings.replay_csv, settings.replay_speed)
-    return ShioajiFeed(
-        api_key=settings.shioaji_api_key or "",
-        secret_key=settings.shioaji_secret_key or "",
-        contract=settings.contract,
-        production=settings.shioaji_production,
-        history_days=settings.history_days,
-    )
-
-
 def create_app(
     settings: LiveSettings | None = None,
-    feed=None,
+    feed: LiveMarketDataProvider | None = None,
+    history_provider: HistoricalMarketDataProvider | None = None,
     repository: BarRepository | None = None,
     access_validator: AccessValidator | None = None,
 ) -> FastAPI:
     config = settings or LiveSettings.from_env()
     config.validate()
     repo = repository or SQLiteBarRepository(config.db_path)
-    market_feed = feed or build_feed(config)
+    market_feed = feed or build_market_data_provider(config.market_data)
+    if history_provider is None:
+        capabilities = getattr(market_feed, "capabilities", None)
+        if getattr(capabilities, "historical_bars", False):
+            history_provider = market_feed
     validator = access_validator
     if validator is None:
         if config.access_mode == "cloudflare":
@@ -105,6 +102,7 @@ def create_app(
     service = LiveMarketService(
         market_feed, repo, config.symbol, config.heartbeat_seconds,
         TradingCalendar(config.holidays), config.history_limit,
+        history_provider=history_provider,
     )
 
     @asynccontextmanager
@@ -119,7 +117,7 @@ def create_app(
     app = FastAPI(
         title="TMF Live Market API",
         version="0.5.0",
-        description="Quote-only Shioaji/Replay service; no order endpoints.",
+        description="Provider-neutral quote service; no order endpoints.",
         lifespan=lifespan,
     )
     app.state.market_service = service

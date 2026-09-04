@@ -12,7 +12,7 @@ from ..market import (
     isoformat_millis,
 )
 from .aggregator import MinuteBarAggregator
-from .feed import MarketFeed
+from ..market_data import HistoricalMarketDataProvider, LiveMarketDataProvider
 from .hub import BroadcastHub
 from .storage import BarRepository
 
@@ -20,14 +20,18 @@ from .storage import BarRepository
 class LiveMarketService:
     def __init__(
         self,
-        feed: MarketFeed,
+        feed: LiveMarketDataProvider,
         repository: BarRepository,
         symbol: str = "TMF",
         heartbeat_seconds: float = 5.0,
         calendar: TradingCalendar = DEFAULT_CALENDAR,
         history_limit: int = 500,
+        history_provider: HistoricalMarketDataProvider | None = None,
     ):
-        self.feed = feed
+        # ``feed`` remains the constructor name for compatibility. Internally
+        # the service depends on provider-neutral ports.
+        self.market_data_provider = feed
+        self.history_provider = history_provider
         self.repository = repository
         self.symbol = symbol
         self.heartbeat_seconds = heartbeat_seconds
@@ -63,9 +67,15 @@ class LiveMarketService:
         self._heartbeat = asyncio.create_task(
             self._run_heartbeat(), name="tmf-feed-heartbeat"
         )
-        await self.feed.start(self.enqueue_tick, self.set_connection_status)
+        await self.market_data_provider.start(
+            self.enqueue_tick, self.set_connection_status
+        )
         try:
-            history = await self.feed.load_history(self.history_limit)
+            history = (
+                await self.history_provider.load_history(self.history_limit)
+                if self.history_provider is not None
+                else []
+            )
             if history:
                 purge = getattr(self.repository, "purge_backfill", None)
                 if purge is not None:
@@ -79,7 +89,7 @@ class LiveMarketService:
 
     async def stop(self) -> None:
         self._running = False
-        await self.feed.stop()
+        await self.market_data_provider.stop()
         for task in (self._worker, self._heartbeat):
             if task:
                 task.cancel()
@@ -111,7 +121,7 @@ class LiveMarketService:
         while self._running:
             healthy = False
             try:
-                healthy = await self.feed.heartbeat()
+                healthy = await self.market_data_provider.heartbeat()
             except Exception:
                 healthy = False
             self.last_heartbeat_time = datetime.now(TAIPEI)
@@ -132,8 +142,11 @@ class LiveMarketService:
             tick_age_ms = max(0.0, (now - self.last_received_time).total_seconds() * 1000)
         return {
             "type": message_type,
+            "market_data_provider": getattr(
+                self.market_data_provider, "provider_name", "custom"
+            ),
             "symbol": self.symbol,
-            "contract": self.feed.contract,
+            "contract": self.market_data_provider.contract,
             "connection_status": self.connection_status,
             "last_tick_time": isoformat_millis(self.last_tick_time)
             if self.last_tick_time else None,
