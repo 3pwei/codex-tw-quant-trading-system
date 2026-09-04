@@ -84,6 +84,14 @@ jobs:
           LIGHTSAIL_USER: ${{ vars.LIGHTSAIL_USER }}
           DEPLOY_SHA: ${{ needs.verify.outputs.sha }}
         run: |
+          # Run the target revision's host preparation before invoking the
+          # currently checked-out deploy script. This also makes the first
+          # deployment of a host-preparation change safe on small instances.
+          ssh -i ~/.ssh/lightsail \
+            -o BatchMode=yes \
+            "${LIGHTSAIL_USER}@${LIGHTSAIL_HOST}" \
+            "git -C /opt/tw-quant/repo fetch origin --prune && git -C /opt/tw-quant/repo show '${DEPLOY_SHA}:deploy/lightsail/prepare-host.sh' | sudo bash"
+
           ssh -i ~/.ssh/lightsail \
             -o BatchMode=yes \
             "${LIGHTSAIL_USER}@${LIGHTSAIL_HOST}" \
