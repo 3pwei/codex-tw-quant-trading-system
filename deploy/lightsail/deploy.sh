@@ -18,16 +18,16 @@ git -C "${REPOSITORY}" checkout --detach "${COMMIT_SHA}"
 if docker compose --env-file "${COMPOSE_ENV}" -f "${COMPOSE_FILE}" \
   ps --status running --services | grep -qx market-api; then
   docker compose --env-file "${COMPOSE_ENV}" -f "${COMPOSE_FILE}" \
-    exec -T -e DEPLOY_COMMIT_SHA="${COMMIT_SHA}" market-api python -c '
+    exec -T -e DEPLOY_COMMIT_SHA="${COMMIT_SHA}" market-api python - <<'PY'
 import os
 import sqlite3
 from pathlib import Path
 
 source_path = Path(os.environ.get("MARKET_DB_PATH", "/data/live_market.sqlite3"))
 if source_path.exists():
+    revision = os.environ["DEPLOY_COMMIT_SHA"][:12]
     backup_path = source_path.with_name(
-        f"{source_path.stem}.backup-{os.environ[\"DEPLOY_COMMIT_SHA\"][:12]}"
-        f"{source_path.suffix}"
+        f"{source_path.stem}.backup-{revision}{source_path.suffix}"
     )
     source = sqlite3.connect(source_path)
     backup = sqlite3.connect(backup_path)
@@ -36,7 +36,8 @@ if source_path.exists():
     finally:
         backup.close()
         source.close()
-'
+    print(f"SQLite backup created: {backup_path}")
+PY
 fi
 
 "${REPOSITORY}/deploy/lightsail/prepare-host.sh"
