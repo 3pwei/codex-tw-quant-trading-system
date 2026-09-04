@@ -161,7 +161,8 @@ Setup、Entry 與 Exit 都能加入多條 ORB／BNF 規則，個別選擇 `1m`�
 封存庫預設收合，並支援勾選多筆永久刪除。永久刪除會移除整條版本鏈且無法
 復原；後端只允許刪除已封存且沒有 `backtest_runs` 引用的策略，只要批次中有
 一個策略被引用就會拒絕整批操作。SQLite 外鍵也使用 `ON DELETE RESTRICT` 作為
-第二層保護。目前回測仍只即時計算，`backtest_runs` 是為後續保存回測紀錄預留。
+第二層保護。使用者在 `/backtest/` 主動執行的回測會保存至 `backtest_runs`；頁面
+首次載入的預覽不保存，避免產生沒有決策價值的重複紀錄。
 
 相關 API：
 
@@ -174,6 +175,21 @@ Setup、Entry 與 Exit 都能加入多條 ORB／BNF 規則，個別選擇 `1m`�
 - `POST /api/composite-strategies/purge`（批次永久刪除未被引用的封存策略）
 - `GET /api/composite-strategy-signals/{id}?version=1`
 - `GET /api/composite-backtest?strategy_id={id}&version=1&start=2026-08-01&end=2026-08-31`
+
+### 回測執行紀錄
+
+`POST /api/backtest-runs` 是前端正式執行回測的統一入口，支援基本策略及組合
+策略。每一筆紀錄保存策略／參數快照、績效摘要、交易明細及權益曲線；行情 K 棒
+不重複寫入結果，仍由 `minute_bars` 管理。組合策略另外以 SQLite 外鍵固定引用
+`strategy_id + strategy_version`，因此有回測紀錄的版本不能被永久刪除。
+
+`/history/` 提供策略搜尋、基本／組合類型篩選、績效摘要與逐筆交易明細。
+
+相關 API：
+
+- `POST /api/backtest-runs`（執行並保存）
+- `GET /api/backtest-runs?limit=100&offset=0`
+- `GET /api/backtest-runs/{run_id}`
 
 目前仍是研究與行情觀察階段：組合策略可在 Live／Replay 資料上呼叫相同訊號
 核心，也可執行歷史回測，但不會連接 Broker 下單。
@@ -212,6 +228,7 @@ Windows PowerShell 可先執行 `$env:NEXT_PUBLIC_MARKET_API_URL="http://localho
 
 - 系統總覽：<http://localhost:3000/>
 - 回測 Dashboard：<http://localhost:3000/backtest/>
+- 回測執行紀錄：<http://localhost:3000/history/>
 - 即時 1 分 K：<http://localhost:3000/live/>
 - API 文件：<http://localhost:8000/docs>
 

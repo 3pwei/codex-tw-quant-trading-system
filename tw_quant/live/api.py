@@ -62,6 +62,15 @@ class CompositeStrategyPurge(BaseModel):
     strategy_ids: list[str]
 
 
+class BacktestExecutionRequest(BaseModel):
+    symbol: str = "TMF"
+    strategy: str
+    interval: str = "1m"
+    start: date
+    end: date
+    version: int | None = None
+
+
 def build_feed(settings: LiveSettings):
     if settings.mode == "mock":
         return ReplayFeed(settings.replay_csv, settings.replay_speed)
@@ -408,6 +417,62 @@ def create_app(
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/backtest-runs", status_code=201)
+    def create_backtest_run(request: BacktestExecutionRequest):
+        if request.strategy.startswith("composite:"):
+            strategy_id = request.strategy.removeprefix("composite:")
+            item = repo.composite_strategy(strategy_id, request.version)
+            if item is None:
+                raise HTTPException(status_code=404, detail="找不到組合策略版本")
+            result = composite_backtest(
+                strategy_id=strategy_id,
+                version=int(item["version"]),
+                symbol=request.symbol,
+                start=request.start,
+                end=request.end,
+            )
+            saved = repo.save_backtest_run(
+                result, "composite", strategy_id, int(item["version"]),
+                item["definition"],
+            )
+        else:
+            key = request.strategy.lower()
+            result = backtest(
+                symbol=request.symbol,
+                strategy=key,
+                interval=request.interval,
+                start=request.start,
+                end=request.end,
+            )
+            snapshot = validate_strategy_parameters(
+                key, repo.strategy_parameters().get(key)
+            )
+            saved = repo.save_backtest_run(
+                result, "atomic", key, None, snapshot,
+            )
+        result["history_run_id"] = saved["run_id"]
+        result["history_created_at"] = saved["created_at"]
+        return result
+
+    @app.get("/api/backtest-runs")
+    def backtest_runs(
+        limit: int = Query(100, ge=1, le=500),
+        offset: int = Query(0, ge=0),
+        strategy_key: str | None = None,
+    ):
+        return {
+            "runs": repo.backtest_runs(limit, offset, strategy_key),
+            "limit": limit,
+            "offset": offset,
+        }
+
+    @app.get("/api/backtest-runs/{run_id}")
+    def backtest_run(run_id: str):
+        item = repo.backtest_run(run_id)
+        if item is None:
+            raise HTTPException(status_code=404, detail="找不到回測紀錄")
+        return item
 
     @app.websocket("/ws/market/{symbol}")
     async def market_socket(
