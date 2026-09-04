@@ -452,6 +452,20 @@ forward-auth 與 FastAPI RBAC 雙重限制；前端隱藏選單不是安全邊�
 此設定不會自動建立其他 Email，Cloudflare Access policy 中的 Email 仍須與平台帳號
 名單同步維護。
 
+### 使用者資料所有權
+
+行情資料是平台共用資源，不會為每個帳號重複保存；策略參數、組合策略及其不可變
+版本、封存狀態與回測紀錄則全部以後端解析出的 `owner_user_id` 隔離。API 不接受
+瀏覽器傳入 owner，使用者即使猜到其他人的 strategy ID 或 run ID，查詢、更新、
+封存與刪除也只會得到 404。管理員預設同樣只能管理自己的研究資料，不能因為具有
+系統管理權就讀取其他人的策略或回測。
+
+升級既有 SQLite 時會自動加入 ownership 欄位，並將升級前的策略及回測資料一次歸屬
+給 `PLATFORM_BOOTSTRAP_ADMIN_EMAILS` 中第一個管理員。資料遷移不會更改策略版本、
+回測快照或 K 棒；重啟後再次執行也不會把資料轉交給另一位管理員。Lightsail 部署腳本
+會在換版前使用 SQLite Online Backup API，於同一個 named volume 建立帶 commit SHA
+的資料庫備份，避免 schema 遷移失敗時沒有可回復的快照。
+
 目前角色資料模型包含：
 
 - `researcher`：行情、策略與回測研究。
