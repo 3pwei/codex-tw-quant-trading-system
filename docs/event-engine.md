@@ -29,8 +29,9 @@ MarketEvent / BarClosedEvent
 - `closing` 與換月事件以舊契約最後已知收盤價強制平倉，仍套用滑價與成本。
 - 重複 Fill ID 不會再次改變部位。
 
-`PassThroughRiskGate` 僅是帳戶風控完成前的模擬預設值；它不能將核准數量放大，
-且可透過 `RiskGate` 介面替換。正式 Paper Trading 不得使用此預設閘門。
+管線預設使用 `DisabledRiskGate`，新增曝險會 fail closed；測試若要略過帳戶規則，
+必須明確注入 `PassThroughRiskGate`。正式 Paper Trading 必須注入
+`AccountRiskGate`，且任何風控都不能將核准數量放大。
 
 ## 確定性規則
 
@@ -59,7 +60,7 @@ MarketEvent / BarClosedEvent
 ## 遷移順序
 
 - 模擬成交與部位引擎已消費 `OrderIntent`／`RiskDecision`。
-- 下一階段由帳戶層風控取代預設閘門，並記錄核准或拒絕原因。
+- 帳戶層風控已能取代預設閘門，並記錄核准或拒絕原因。
 - Backtest 與 Replay 最後改由相同事件流驅動。
 - Paper Trading 只接已收盤 K 棒，並保存事件與狀態快照以支援重啟。
 

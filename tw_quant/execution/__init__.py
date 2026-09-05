@@ -2,6 +2,7 @@
 
 from .simulator import simulate_signals
 from .event_simulator import (
+    DisabledRiskGate,
     OrderRecord,
     PassThroughRiskGate,
     PositionKey,
@@ -17,6 +18,7 @@ from .event_simulator import (
 
 __all__ = [
     "OrderRecord",
+    "DisabledRiskGate",
     "PassThroughRiskGate",
     "PositionKey",
     "PositionLedger",

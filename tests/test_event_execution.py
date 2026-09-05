@@ -12,7 +12,12 @@ from tw_quant.events import (
     SessionEvent,
     SignalEvent,
 )
-from tw_quant.execution import PositionLedger, SimulatedBroker, SimulatedExecutionPipeline
+from tw_quant.execution import (
+    PassThroughRiskGate,
+    PositionLedger,
+    SimulatedBroker,
+    SimulatedExecutionPipeline,
+)
 from tw_quant.futures_costs import FuturesCostConfig
 
 
@@ -72,7 +77,10 @@ def signal(minute, action, direction, key, *, owner="owner-1", contract="TMFU6")
 class SimulatedExecutionPipelineTests(unittest.TestCase):
     def setUp(self):
         self.engine = DeterministicEventEngine()
-        self.pipeline = SimulatedExecutionPipeline(costs=ZERO_TAX_COSTS)
+        self.pipeline = SimulatedExecutionPipeline(
+            costs=ZERO_TAX_COSTS,
+            risk_gate=PassThroughRiskGate(),
+        )
         self.pipeline.install(self.engine)
 
     def open_long(self):
