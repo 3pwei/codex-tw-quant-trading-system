@@ -84,7 +84,8 @@ CSV 1 分 K
 | `tw_quant/futures.py` | 期交所逐筆 CSV 匯入與標準 KBar 轉換 |
 | `tw_quant/futures_costs.py` | 各 TMF 回測入口共用的契約乘數、手續費、稅與滑價 |
 | `dashboard/app/live/` | 即時 K 線、成交量、狀態與自動重連前端 |
-| `dashboard/app/strategies/` | 策略參數輸入、驗證訊息與儲存介面 |
+| `dashboard/app/strategies/` | 基本策略參數輸入、驗證訊息與儲存介面 |
+| `dashboard/app/composite-strategies/` | 組合策略清單、版本管理與獨立編輯流程 |
 
 ## 安裝
 
@@ -156,7 +157,7 @@ K 棒使用 Tick 的交易所時間（`Asia/Taipei`）分桶，不使用瀏覽�
 
 ### 多週期策略組合器
 
-`/strategies/` 下方可用結構式編輯器建立自己的組合策略，不需要也不允許輸入
+`/composite-strategies/` 可管理組合策略，新增與編輯會進入獨立編輯頁，不需要也不允許輸入
 Python 程式碼。每個組合策略由四段構成：
 
 - `Setup`：市場背景或高週期啟動條件；可留空。
