@@ -126,6 +126,7 @@ class DeterministicEventEngineTests(unittest.TestCase):
                 strategy_id="strategy-a",
                 strategy_version=1,
                 symbol="TMF",
+                contract="TMFU6",
                 direction="long",
                 action="enter",
                 reference_price=event.close,

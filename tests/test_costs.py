@@ -2,6 +2,7 @@ import unittest
 
 from tw_quant.config import CostConfig
 from tw_quant.costs import TaiwanStockCostModel
+from tw_quant.futures_costs import FuturesCostConfig
 
 
 class CostModelTests(unittest.TestCase):
@@ -20,7 +21,14 @@ class CostModelTests(unittest.TestCase):
         model = TaiwanStockCostModel(CostConfig(slippage_bps=0))
         self.assertEqual(model.order_cost(10, 1, "buy").commission, 20)
 
+    def test_futures_cost_configuration_rejects_invalid_values(self):
+        with self.assertRaisesRegex(ValueError, "multiplier"):
+            FuturesCostConfig(multiplier=0)
+        with self.assertRaisesRegex(ValueError, "slippage_points"):
+            FuturesCostConfig(slippage_points=-1)
+        with self.assertRaisesRegex(ValueError, "price and contracts"):
+            FuturesCostConfig().side_cost(0, 1)
+
 
 if __name__ == "__main__":
     unittest.main()
-
