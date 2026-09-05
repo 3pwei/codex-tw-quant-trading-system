@@ -24,6 +24,7 @@ class FakeAccessValidator:
         identities = {
             "admin-token": AccessIdentity("cf-admin", "admin@example.com"),
             "reader-token": AccessIdentity("cf-reader", "reader@example.com"),
+            "guest-token": AccessIdentity("cf-guest", "guest@example.com"),
         }
         try:
             return identities[token]
@@ -70,6 +71,29 @@ class AuthorizationApiTests(unittest.TestCase):
             "X-Authenticated-Subject": subject,
             "X-Authenticated-Email": email,
         }
+
+    def test_unregistered_identity_is_rejected_for_pages_and_api(self):
+        denied_page = self.client.get(
+            "/internal/auth/cloudflare",
+            headers={
+                "Cf-Access-Jwt-Assertion": "guest-token",
+                "X-Original-Uri": "/backtest/",
+            },
+        )
+        self.assertEqual(denied_page.status_code, 403)
+        self.assertIn("text/html", denied_page.headers["content-type"])
+        self.assertIn("帳號尚未開通", denied_page.text)
+        self.assertIn("/cdn-cgi/access/logout", denied_page.text)
+        self.assertEqual(denied_page.headers["cache-control"], "no-store")
+
+        denied_api = self.client.get(
+            "/api/me",
+            headers=self.headers("cf-guest", "guest@example.com"),
+        )
+        self.assertEqual(denied_api.status_code, 403)
+        self.assertEqual(
+            denied_api.json()["detail"], "platform account is not registered"
+        )
 
     def test_role_blocks_admin_api_and_protected_static_route(self):
         reader = self.headers("cf-reader", "reader@example.com")
