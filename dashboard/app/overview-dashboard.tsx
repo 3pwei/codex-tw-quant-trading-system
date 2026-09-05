@@ -24,7 +24,7 @@ const modules = [
   { href: "/backtest/", code: "TEST", title: "歷史回測", detail: "選擇策略與最長 31 天的歷史範圍", ready: true },
   { href: "/replay/", code: "PLAY", title: "動態歷史回放", detail: "依時間軸模擬行情逐根推進", ready: false },
   { href: "/history/", code: "LOG", title: "回測／交易歷史", detail: "查看績效、交易明細與策略版本", ready: true },
-  { href: "/strategies/", code: "ATOM", title: "基本策略", detail: "ORB、BNF 規則與共用風險參數", ready: true },
+  { href: "/strategies/", code: "ATOM", title: "基本策略", detail: "趨勢、突破、均值回歸與動能策略", ready: true },
   { href: "/composite-strategies/", code: "COMP", title: "組合策略", detail: "多週期、版本化與巢狀策略編排", ready: true },
   { href: "/settings/", code: "SET", title: "系統設定", detail: "行情、商品、連線與部署設定", ready: true, admin: true },
   { href: "/admin/users/", code: "IAM", title: "帳號與權限", detail: "管理研究、交易與管理員帳號", ready: true, admin: true },
@@ -90,7 +90,7 @@ export default function OverviewDashboard() {
             const latest = strategy.signals.at(-1);
             return <article key={strategy.key}><span>{strategy.key.toUpperCase()}</span><strong>{strategy.name}</strong><b>{latest ? `${latest.event === "entry" ? "進場" : "出場"} · ${latest.direction === "long" ? "做多" : "做空"}` : "目前無訊號"}</b><small>{latest ? `${time(latest.time)} · ${number.format(latest.price)}` : "等待符合條件"}</small></article>;
           })}
-          {!strategies.length && <p className="muted-copy">正在讀取 ORB／BNF 策略狀態…</p>}
+          {!strategies.length && <p className="muted-copy">正在讀取主要策略狀態…</p>}
         </div>
       </section>
     </SectionShell>

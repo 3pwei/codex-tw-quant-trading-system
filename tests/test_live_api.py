@@ -13,6 +13,7 @@ from tw_quant.live.feed import ReplayFeed, ShioajiFeed
 from tw_quant.live.service import LiveMarketService
 from tw_quant.live.settings import LiveSettings
 from tw_quant.live.storage import SQLiteBarRepository
+from tw_quant.strategy import SUPPORTED_STRATEGIES
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -87,7 +88,7 @@ class LiveApiTests(unittest.TestCase):
                 self.assertEqual(catalog.status_code, 200)
                 self.assertEqual(
                     [item["key"] for item in catalog.json()["strategies"]],
-                    ["orb", "bnf"],
+                    list(SUPPORTED_STRATEGIES),
                 )
                 saved = client.put(
                     "/api/strategies/orb",
@@ -124,7 +125,7 @@ class LiveApiTests(unittest.TestCase):
                 )
                 self.assertEqual(
                     [item["key"] for item in options.json()["strategies"]],
-                    ["orb", "bnf"],
+                    list(SUPPORTED_STRATEGIES),
                 )
                 available_end = options.json()["available_end"]
                 if available_end:

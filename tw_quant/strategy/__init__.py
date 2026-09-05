@@ -1,4 +1,4 @@
-"""Feed-independent ORB and BNF strategy definitions and engine."""
+"""Feed-independent atomic and composite strategy definitions and engine."""
 
 from .definitions import (
     BNFMeanReversion,
