@@ -22,7 +22,7 @@ const time = (value: string | null | undefined) => value ? new Intl.DateTimeForm
 const modules = [
   { href: "/live/", code: "LIVE", title: "即時交易／1 分 K", detail: "WebSocket 行情、形成中 K 棒與策略訊號", ready: true },
   { href: "/backtest/", code: "TEST", title: "歷史回測", detail: "選擇策略與最長 31 天的歷史範圍", ready: true },
-  { href: "/replay/", code: "PLAY", title: "動態歷史回放", detail: "依時間軸模擬行情逐根推進", ready: false },
+  { href: "/replay/", code: "PLAY", title: "動態歷史回放", detail: "依時間軸模擬行情逐根推進", ready: true },
   { href: "/history/", code: "LOG", title: "回測／交易歷史", detail: "查看績效、交易明細與策略版本", ready: true },
   { href: "/strategies/", code: "ATOM", title: "基本策略", detail: "趨勢、突破、均值回歸與動能策略", ready: true },
   { href: "/composite-strategies/", code: "COMP", title: "組合策略", detail: "多週期、版本化與巢狀策略編排", ready: true },
