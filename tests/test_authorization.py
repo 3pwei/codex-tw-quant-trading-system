@@ -25,6 +25,9 @@ class FakeAccessValidator:
             "admin-token": AccessIdentity("cf-admin", "admin@example.com"),
             "reader-token": AccessIdentity("cf-reader", "reader@example.com"),
             "guest-token": AccessIdentity("cf-guest", "guest@example.com"),
+            "second-guest-token": AccessIdentity(
+                "cf-second-guest", "second@example.com"
+            ),
         }
         try:
             return identities[token]
@@ -83,6 +86,8 @@ class AuthorizationApiTests(unittest.TestCase):
         self.assertEqual(denied_page.status_code, 403)
         self.assertIn("text/html", denied_page.headers["content-type"])
         self.assertIn("帳號尚未開通", denied_page.text)
+        self.assertIn("申請開通", denied_page.text)
+        self.assertIn("/api/access-requests", denied_page.text)
         self.assertIn("/cdn-cgi/access/logout", denied_page.text)
         self.assertEqual(denied_page.headers["cache-control"], "no-store")
 
@@ -94,6 +99,75 @@ class AuthorizationApiTests(unittest.TestCase):
         self.assertEqual(
             denied_api.json()["detail"], "platform account is not registered"
         )
+
+    def test_verified_guest_can_request_and_admin_can_approve(self):
+        guest = self.headers("cf-guest", "guest@example.com")
+        submitted = self.client.post("/api/access-requests", headers=guest)
+        self.assertEqual(submitted.status_code, 201)
+        request_id = submitted.json()["request"]["request_id"]
+        self.assertEqual(submitted.json()["request"]["status"], "pending")
+
+        repeated = self.client.post("/api/access-requests", headers=guest)
+        self.assertEqual(repeated.status_code, 201)
+        self.assertEqual(
+            repeated.json()["request"]["request_id"], request_id
+        )
+
+        reader = self.headers("cf-reader", "reader@example.com")
+        denied = self.client.get(
+            "/api/admin/access-requests", headers=reader
+        )
+        self.assertEqual(denied.status_code, 403)
+
+        admin = self.headers("cf-admin", "admin@example.com")
+        pending = self.client.get(
+            "/api/admin/access-requests", headers=admin
+        )
+        self.assertEqual(pending.status_code, 200)
+        self.assertEqual(len(pending.json()["requests"]), 1)
+        self.assertEqual(
+            pending.json()["requests"][0]["email"], "guest@example.com"
+        )
+
+        approved = self.client.post(
+            f"/api/admin/access-requests/{request_id}/approve",
+            headers=admin,
+        )
+        self.assertEqual(approved.status_code, 200)
+        self.assertEqual(approved.json()["user"]["role"], "researcher")
+        self.assertEqual(
+            approved.json()["user"]["trading_mode"], "disabled"
+        )
+
+        admitted = self.client.get("/api/me", headers=guest)
+        self.assertEqual(admitted.status_code, 200)
+        self.assertEqual(admitted.json()["email"], "guest@example.com")
+        self.assertTrue(admitted.json()["registered"])
+
+        remaining = self.client.get(
+            "/api/admin/access-requests", headers=admin
+        )
+        self.assertEqual(remaining.json()["requests"], [])
+
+    def test_admin_can_reject_an_access_request(self):
+        guest = self.headers("cf-second-guest", "second@example.com")
+        submitted = self.client.post("/api/access-requests", headers=guest)
+        request_id = submitted.json()["request"]["request_id"]
+        admin = self.headers("cf-admin", "admin@example.com")
+
+        rejected = self.client.post(
+            f"/api/admin/access-requests/{request_id}/reject",
+            headers=admin,
+        )
+        self.assertEqual(rejected.status_code, 200)
+        self.assertEqual(rejected.json()["request"]["status"], "rejected")
+        self.assertEqual(
+            self.client.get(
+                "/api/admin/access-requests", headers=admin
+            ).json()["requests"],
+            [],
+        )
+        self.assertEqual(self.client.get("/api/me", headers=guest).status_code, 403)
 
     def test_role_blocks_admin_api_and_protected_static_route(self):
         reader = self.headers("cf-reader", "reader@example.com")
