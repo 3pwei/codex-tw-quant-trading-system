@@ -23,6 +23,7 @@
 - 11 套基本策略的 Multi-select 策略圖層與即時訊號標記
 - 策略管理頁可調整各策略與停損停利參數，SQLite 持久化後供即時與回測共用
 - 無程式碼多週期策略組合器：Setup／Entry／Exit／Risk、ALL／ANY 與版本追蹤
+- 具型別的統一事件模型、可重現事件 ID、虛擬時鐘與確定性事件迴圈
 
 ## 架構
 
@@ -33,7 +34,9 @@ WebSocket 與 Dashboard 只依賴標準 `TickEvent`／`KBar`，不依賴 Shioaji
 Shioaji / Replay / future provider
   → MarketDataProvider
   → Tick Queue → 1m KBar → SQLite
-  → Strategy / Backtest / REST / WebSocket / Dashboard
+  → Typed Events → Strategy / Risk / Execution / Position
+  → Backtest / Replay / Paper（分階段接入）
+  → REST / WebSocket / Dashboard
 
 TradeSignal → Risk → ExecutionSimulator
                          └→ BrokerAccount / OrderExecutor（未來，現在 Disabled）
@@ -64,6 +67,7 @@ CSV 1 分 K
 | `tw_quant/metrics.py` | 勝率、淨利、PF、回撤與日頻 Sharpe |
 | `tw_quant/report.py` | 儲存 CSV、JSON 與權益曲線圖 |
 | `tw_quant/market/` | Live、Replay、CSV 共用的 Tick／KBar 與交易時段模型 |
+| `tw_quant/events/` | 統一事件契約、虛擬時鐘、去重與確定性執行迴圈 |
 | `tw_quant/strategy/engine.py` | 與資料來源無關的基本策略分析器 |
 | `tw_quant/strategy/parameters.py` | 共用參數規格、預設值與後端驗證 |
 | `tw_quant/strategy/composite.py` | 多週期規則驗證、原子訊號組合與共用執行核心 |
@@ -238,6 +242,10 @@ Setup、Entry 與 Exit 都能加入多條基本策略規則，個別選擇 `1m`�
 
 目前仍是研究與行情觀察階段：組合策略可在 Live／Replay 資料上呼叫相同訊號
 核心，也可執行歷史回測，但不會連接 Broker 下單。
+
+`tw_quant/events/` 是 Level 2 遷移的事件骨幹；現有 Live、Replay 與 Backtest 會在
+後續階段逐一接入。在遷移完成前，加入此模組本身不會建立訂單、變更持倉或改變
+目前 API／Dashboard 的輸出。
 
 ### Mock／Replay 本機啟動
 
