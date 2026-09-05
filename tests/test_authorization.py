@@ -102,6 +102,19 @@ class AuthorizationApiTests(unittest.TestCase):
 
     def test_verified_guest_can_request_and_admin_can_approve(self):
         guest = self.headers("cf-guest", "guest@example.com")
+        forward_auth = self.client.get(
+            "/internal/auth/cloudflare",
+            headers={
+                "Cf-Access-Jwt-Assertion": "guest-token",
+                "X-Original-Uri": "/api/access-requests",
+            },
+        )
+        self.assertEqual(forward_auth.status_code, 204)
+        self.assertEqual(
+            forward_auth.headers["x-authenticated-email"],
+            "guest@example.com",
+        )
+
         submitted = self.client.post("/api/access-requests", headers=guest)
         self.assertEqual(submitted.status_code, 201)
         request_id = submitted.json()["request"]["request_id"]
@@ -167,7 +180,8 @@ class AuthorizationApiTests(unittest.TestCase):
             ).json()["requests"],
             [],
         )
-        self.assertEqual(self.client.get("/api/me", headers=guest).status_code, 403)
+        denied = self.client.get("/api/me", headers=guest)
+        self.assertEqual(denied.status_code, 403)
 
     def test_role_blocks_admin_api_and_protected_static_route(self):
         reader = self.headers("cf-reader", "reader@example.com")
