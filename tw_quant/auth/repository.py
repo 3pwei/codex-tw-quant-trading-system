@@ -8,7 +8,14 @@ from threading import Lock
 from uuid import uuid4
 
 from .access import AccessIdentity
-from .models import AccountStatus, AuthUser, Role, TradingMode
+from .models import (
+    AccessRequest,
+    AccessRequestStatus,
+    AccountStatus,
+    AuthUser,
+    Role,
+    TradingMode,
+)
 from .permissions import PERMISSIONS, ROLE_PERMISSIONS
 
 
@@ -91,10 +98,31 @@ class SQLiteAuthRepository:
                     ON audit_events(created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_audit_events_actor
                     ON audit_events(actor_user_id, created_at DESC);
+
+                CREATE TABLE IF NOT EXISTS app_user_requests (
+                    request_id TEXT PRIMARY KEY,
+                    access_subject TEXT NOT NULL,
+                    email TEXT NOT NULL COLLATE NOCASE UNIQUE,
+                    status TEXT NOT NULL
+                        CHECK(status IN ('pending','approved','rejected')),
+                    requested_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    resolved_at TEXT,
+                    resolved_by_user_id TEXT,
+                    FOREIGN KEY(resolved_by_user_id) REFERENCES app_users(user_id)
+                        ON DELETE SET NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_app_user_requests_status
+                    ON app_user_requests(status, requested_at DESC);
                 """
             )
             self.connection.execute(
                 "INSERT OR IGNORE INTO auth_schema_migrations VALUES (1, ?)",
+                (_now(),),
+            )
+            self.connection.execute(
+                "INSERT OR IGNORE INTO auth_schema_migrations VALUES (2, ?)",
                 (_now(),),
             )
             self.connection.executemany(
@@ -152,6 +180,7 @@ class SQLiteAuthRepository:
             raise ValueError("only trader accounts can enable trading modes")
         user_id = str(uuid4())
         now = _now()
+        approved_request_id = None
         with self.lock:
             try:
                 self.connection.execute(
@@ -171,6 +200,19 @@ class SQLiteAuthRepository:
                         now,
                     ),
                 )
+                request = self.connection.execute(
+                    "SELECT request_id FROM app_user_requests "
+                    "WHERE email=? AND status='pending'",
+                    (normalized,),
+                ).fetchone()
+                if request is not None:
+                    approved_request_id = request["request_id"]
+                    self.connection.execute(
+                        "UPDATE app_user_requests SET status='approved', "
+                        "updated_at=?, resolved_at=?, resolved_by_user_id=? "
+                        "WHERE request_id=?",
+                        (now, now, actor_user_id, approved_request_id),
+                    )
                 self.connection.commit()
             except sqlite3.IntegrityError as exc:
                 raise ValueError("email is already registered") from exc
@@ -187,6 +229,14 @@ class SQLiteAuthRepository:
                 "trading_mode": trading_mode.value,
             },
         )
+        if approved_request_id is not None:
+            self.append_audit_event(
+                "access_request.approved",
+                "access_request",
+                actor_user_id=actor_user_id,
+                resource_id=approved_request_id,
+                details={"email": normalized, "source": "manual_user_creation"},
+            )
         user = self.user_by_email(normalized)
         if user is None:  # pragma: no cover - guarded by the successful insert
             raise RuntimeError("created user could not be loaded")
@@ -287,6 +337,179 @@ class SQLiteAuthRepository:
             ).fetchall()
         return [self._to_user(row) for row in rows]
 
+
+    def submit_access_request(
+        self, identity: AccessIdentity
+    ) -> AccessRequest:
+        email = normalize_email(identity.email or "")
+        if not email or "@" not in email:
+            raise ValueError("a verified email is required")
+        now = _now()
+        request_id = str(uuid4())
+        with self.lock:
+            registered = self.connection.execute(
+                "SELECT 1 FROM app_users WHERE email=?", (email,)
+            ).fetchone()
+            if registered is not None:
+                raise ValueError("email is already registered")
+            existing = self.connection.execute(
+                "SELECT * FROM app_user_requests WHERE email=?", (email,)
+            ).fetchone()
+            if existing is None:
+                self.connection.execute(
+                    """
+                    INSERT INTO app_user_requests(
+                        request_id, access_subject, email, status,
+                        requested_at, updated_at, resolved_at,
+                        resolved_by_user_id
+                    ) VALUES (?, ?, ?, 'pending', ?, ?, NULL, NULL)
+                    """,
+                    (request_id, identity.subject, email, now, now),
+                )
+            else:
+                request_id = existing["request_id"]
+                self.connection.execute(
+                    "UPDATE app_user_requests SET access_subject=?, "
+                    "status='pending', updated_at=?, resolved_at=NULL, "
+                    "resolved_by_user_id=NULL WHERE request_id=?",
+                    (identity.subject, now, request_id),
+                )
+            self.connection.commit()
+            row = self.connection.execute(
+                "SELECT * FROM app_user_requests WHERE request_id=?",
+                (request_id,),
+            ).fetchone()
+        self.append_audit_event(
+            "access_request.submitted",
+            "access_request",
+            resource_id=request_id,
+            details={"email": email},
+        )
+        return self._to_access_request(row)
+
+    def access_requests(
+        self, status: AccessRequestStatus | None = None
+    ) -> list[AccessRequest]:
+        with self.lock:
+            if status is None:
+                rows = self.connection.execute(
+                    "SELECT * FROM app_user_requests "
+                    "ORDER BY requested_at DESC, request_id"
+                ).fetchall()
+            else:
+                rows = self.connection.execute(
+                    "SELECT * FROM app_user_requests WHERE status=? "
+                    "ORDER BY requested_at DESC, request_id",
+                    (status.value,),
+                ).fetchall()
+        return [self._to_access_request(row) for row in rows]
+
+    def approve_access_request(
+        self, request_id: str, *, actor_user_id: str
+    ) -> tuple[AccessRequest, AuthUser]:
+        now = _now()
+        user_id = str(uuid4())
+        with self.lock:
+            row = self.connection.execute(
+                "SELECT * FROM app_user_requests WHERE request_id=?",
+                (request_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError("access request was not found")
+            if row["status"] != AccessRequestStatus.PENDING.value:
+                raise ValueError("access request is no longer pending")
+            try:
+                self.connection.execute(
+                    """
+                    INSERT INTO app_users(
+                        user_id, access_subject, email, role, status,
+                        trading_mode, created_at, updated_at, last_seen_at
+                    ) VALUES (?, ?, ?, 'researcher', 'active', 'disabled',
+                              ?, ?, ?)
+                    """,
+                    (
+                        user_id,
+                        row["access_subject"],
+                        row["email"],
+                        now,
+                        now,
+                        now,
+                    ),
+                )
+                self.connection.execute(
+                    "UPDATE app_user_requests SET status='approved', "
+                    "updated_at=?, resolved_at=?, resolved_by_user_id=? "
+                    "WHERE request_id=?",
+                    (now, now, actor_user_id, request_id),
+                )
+                self.connection.commit()
+            except sqlite3.IntegrityError as exc:
+                self.connection.rollback()
+                raise ValueError("email is already registered") from exc
+            request_row = self.connection.execute(
+                "SELECT * FROM app_user_requests WHERE request_id=?",
+                (request_id,),
+            ).fetchone()
+            user_row = self.connection.execute(
+                "SELECT * FROM app_users WHERE user_id=?", (user_id,)
+            ).fetchone()
+        self.append_audit_event(
+            "user.created",
+            "user",
+            actor_user_id=actor_user_id,
+            subject_user_id=user_id,
+            resource_id=user_id,
+            details={
+                "email": row["email"],
+                "role": Role.RESEARCHER.value,
+                "status": AccountStatus.ACTIVE.value,
+                "trading_mode": TradingMode.DISABLED.value,
+                "source": "access_request",
+            },
+        )
+        self.append_audit_event(
+            "access_request.approved",
+            "access_request",
+            actor_user_id=actor_user_id,
+            subject_user_id=user_id,
+            resource_id=request_id,
+            details={"email": row["email"]},
+        )
+        return self._to_access_request(request_row), self._to_user(user_row)
+
+    def reject_access_request(
+        self, request_id: str, *, actor_user_id: str
+    ) -> AccessRequest:
+        now = _now()
+        with self.lock:
+            row = self.connection.execute(
+                "SELECT * FROM app_user_requests WHERE request_id=?",
+                (request_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError("access request was not found")
+            if row["status"] != AccessRequestStatus.PENDING.value:
+                raise ValueError("access request is no longer pending")
+            self.connection.execute(
+                "UPDATE app_user_requests SET status='rejected', "
+                "updated_at=?, resolved_at=?, resolved_by_user_id=? "
+                "WHERE request_id=?",
+                (now, now, actor_user_id, request_id),
+            )
+            self.connection.commit()
+            updated = self.connection.execute(
+                "SELECT * FROM app_user_requests WHERE request_id=?",
+                (request_id,),
+            ).fetchone()
+        self.append_audit_event(
+            "access_request.rejected",
+            "access_request",
+            actor_user_id=actor_user_id,
+            resource_id=request_id,
+            details={"email": row["email"]},
+        )
+        return self._to_access_request(updated)
+
     def permissions_for_role(self, role: Role) -> tuple[str, ...]:
         with self.lock:
             rows = self.connection.execute(
@@ -339,6 +562,19 @@ class SQLiteAuthRepository:
             }
             for row in rows
         ]
+
+    @staticmethod
+    def _to_access_request(row: sqlite3.Row) -> AccessRequest:
+        return AccessRequest(
+            request_id=row["request_id"],
+            access_subject=row["access_subject"],
+            email=row["email"],
+            status=AccessRequestStatus(row["status"]),
+            requested_at=row["requested_at"],
+            updated_at=row["updated_at"],
+            resolved_at=row["resolved_at"],
+            resolved_by_user_id=row["resolved_by_user_id"],
+        )
 
     def _to_user(self, row: sqlite3.Row) -> AuthUser:
         role = Role(row["role"])
