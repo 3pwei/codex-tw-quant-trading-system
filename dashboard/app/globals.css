@@ -72,3 +72,20 @@ footer{display:flex;justify-content:space-between;gap:24px;padding:20px 2px 0;co
 @media(max-width:900px){.admin-user-create{grid-template-columns:1fr 1fr}.admin-user-create>div{grid-column:1/-1}}@media(max-width:620px){.admin-user-create{grid-template-columns:1fr}}
 
 @media(max-width:620px){.system-account>span{display:none}.system-account{padding-left:5px}.system-nav .logout-link{padding-inline:10px}}
+
+
+/* Verified-user access request review. */
+.access-requests{margin-top:18px;padding:20px}
+.access-requests .panel-head>small{color:var(--amber);font:10px ui-monospace,monospace}
+.access-request-empty{margin:0;padding:22px;color:var(--muted);border:1px dashed var(--line2);font-size:11px;text-align:center}
+.access-request-list{display:grid;gap:8px}
+.access-request-list article{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:14px;border:1px solid var(--line);background:#07120f}
+.access-request-list strong,.access-request-list time{display:block}
+.access-request-list strong{font:700 12px ui-monospace,monospace}
+.access-request-list time{margin-top:6px;color:var(--muted);font:9px ui-monospace,monospace}
+.access-request-actions{display:flex;gap:7px}
+.access-request-actions button{height:34px;padding:0 11px;cursor:pointer;font:800 9px ui-monospace,monospace}
+.access-request-actions .approve{color:#06110e;border:1px solid var(--green);background:var(--green)}
+.access-request-actions .reject{color:var(--red);border:1px solid rgba(255,107,114,.35);background:transparent}
+.access-request-actions button:disabled{opacity:.45;cursor:wait}
+@media(max-width:620px){.access-request-list article{align-items:flex-start;flex-direction:column}.access-request-actions{width:100%}.access-request-actions button{flex:1}}
