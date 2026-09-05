@@ -392,8 +392,8 @@ Cloudflare Access 的核准 Email 與一次性驗證碼。先在 Cloudflare Zero
 
 1. `Access controls` → `Applications` → `Create new application`。
 2. 類型選 `Self-hosted and private`，Public hostname 填 `tmf.example.com`。
-3. 建立 `Allow` policy，Selector 選 `Emails`，只加入核准的完整 Email。
-4. 啟用 One-time PIN 登入方式；不要用 `Emails ending in` 開放整個公共信箱網域。
+3. Bootstrap 階段先建立 `Allow` policy，Selector 選 `Emails`，只加入平台擁有者的完整 Email。
+4. 啟用 One-time PIN；在平台授權切換為 enforced 前，不要先放寬 Access policy。
 5. 複製 Team domain（例如 `team.cloudflareaccess.com`）與應用程式的
    `Application Audience (AUD) Tag`。
 
@@ -449,8 +449,24 @@ forward-auth 與 FastAPI RBAC 雙重限制；前端隱藏選單不是安全邊�
 
 一般使用者的 `/api/health` 與 WebSocket heartbeat 不回傳 Provider 名稱、Queue、
 丟棄／重複／遲到 Tick 等內部診斷；完整資訊只由 `/api/admin/health` 提供。
-此設定不會自動建立其他 Email，Cloudflare Access policy 中的 Email 仍須與平台帳號
-名單同步維護。
+
+### 單一平台使用者名單
+
+確認 `/api/me` 回傳 `authorization_enforced: true`，並完成未註冊、停權及角色權限
+測試後，Cloudflare Access 只負責證明 Email 由登入者持有，`app_users` 則是唯一的
+平台授權名單。將 TMF Dashboard Access application 設為只提供 One-time PIN，並將
+policy 調整為：
+
+- Action：`Allow`
+- Include：`Everyone`
+- Require：Login Methods = `One-time PIN`
+
+不可在 `PLATFORM_AUTHORIZATION_MODE=disabled` 時使用此 policy。切換後，任何 Email
+都可向 Cloudflare 申請 OTP，但 Caddy 仍會對除 `/healthz` 外的每個頁面與 API 呼叫
+FastAPI forward-auth。未存在於 `app_users`、不是 `active` 或缺少所需 permission
+的帳號會收到 403；一般頁面顯示帳號尚未開通或沒有權限，並提供登出及切換 Email，
+API 則保留 JSON 錯誤。管理員日後只需在 `/admin/users/` 新增或停用帳號，不再同步
+維護 Cloudflare Email 清單。
 
 ### 使用者資料所有權
 
