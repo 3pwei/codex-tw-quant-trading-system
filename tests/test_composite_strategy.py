@@ -14,6 +14,8 @@ from tw_quant.live.storage import SQLiteBarRepository
 from tw_quant.market import KBar
 from tw_quant.strategy import (
     default_composite_definition,
+    generate_composite_signals,
+    validate_composite_dependencies,
     validate_composite_definition,
 )
 
@@ -71,6 +73,23 @@ def orb_composite() -> dict[str, object]:
     }
 
 
+def referencing_composite(
+    name: str, child_id: str, child_version: int = 1
+) -> dict[str, object]:
+    definition = orb_composite()
+    definition["name"] = name
+    definition["entry"] = {
+        "operator": "all",
+        "confirmation_window_minutes": 15,
+        "rules": [{
+            "source": "composite",
+            "strategy_id": child_id,
+            "version": child_version,
+        }],
+    }
+    return definition
+
+
 def minimal_backtest_result(strategy_id: str) -> dict[str, object]:
     return {
         "metadata": {
@@ -110,6 +129,55 @@ class CompositeDefinitionTests(unittest.TestCase):
         self.assertEqual(result["trades"][0]["entry_time"], bars[4].time.isoformat(timespec="milliseconds"))
         self.assertEqual(result["trades"][0]["stop_loss_price"], 102.96)
         self.assertTrue(result["trace"])
+
+    def test_nested_composite_uses_pinned_child_entry_signal(self):
+        bars = [make_bar(0, 100), make_bar(1, 100)]
+        bars += [make_bar(2, 102, 500), make_bar(3, 103)]
+        bars += [make_bar(4, 104), make_bar(5, 105), make_bar(6, 106)]
+        child = validate_composite_definition(orb_composite())
+        parent_raw = referencing_composite("父組合", "child", 1)
+        parent = validate_composite_definition(
+            parent_raw,
+            composite_resolver=lambda strategy_id, version: {
+                "id": strategy_id,
+                "version": version,
+                "name": child["name"],
+                "definition": child,
+            },
+        )
+        validate_composite_dependencies(parent, "parent")
+        child_signals, _ = generate_composite_signals(bars, child)
+        parent_signals, trace = generate_composite_signals(bars, parent)
+        child_entry = next(
+            item for item in child_signals if item["event"] == "entry"
+        )
+        parent_entry = next(
+            item for item in parent_signals if item["event"] == "entry"
+        )
+        self.assertGreater(parent_entry["time"], child_entry["time"])
+        self.assertTrue(trace)
+
+    def test_dependency_validation_rejects_cycle_and_fourth_level(self):
+        atomic = validate_composite_definition(orb_composite())
+
+        def embedded(child_id: str, child: dict[str, object]):
+            definition = referencing_composite("包裝", child_id)
+            definition["entry"]["rules"][0].update({
+                "name": child["name"], "definition": child,
+            })
+            return definition
+
+        level_two = embedded("level-1", atomic)
+        level_three = embedded("level-2", level_two)
+        validate_composite_dependencies(level_three, "level-3")
+        level_four = embedded("level-3", level_three)
+        with self.assertRaisesRegex(ValueError, "最多支援 3 層"):
+            validate_composite_dependencies(level_four, "level-4")
+
+        cycle = embedded("child", atomic)
+        cycle["entry"]["rules"][0]["definition"] = embedded("root", atomic)
+        with self.assertRaisesRegex(ValueError, "循環引用"):
+            validate_composite_dependencies(cycle, "root")
 
     def test_repository_keeps_immutable_versions(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -351,6 +419,137 @@ class CompositeApiTests(unittest.TestCase):
                 )
                 self.assertEqual(duplicate_archived.status_code, 409)
                 self.assertIn("包含封存策略", duplicate_archived.json()["detail"])
+
+    def test_nested_versions_archive_rules_and_dependency_protection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "nested.sqlite3"
+            settings = LiveSettings(
+                mode="mock", db_path=str(path),
+                replay_csv=str(ROOT / "data/mock_tmf_ticks.csv"),
+                replay_speed=1000, heartbeat_seconds=0.05,
+            )
+            app = create_app(settings)
+            with TestClient(app) as client:
+                child = client.post(
+                    "/api/composite-strategies",
+                    json={"definition": orb_composite()},
+                ).json()
+                parent_response = client.post(
+                    "/api/composite-strategies",
+                    json={"definition": referencing_composite(
+                        "父組合", child["id"], child["version"]
+                    )},
+                )
+                self.assertEqual(parent_response.status_code, 201)
+                parent = parent_response.json()
+                rule = parent["definition"]["entry"]["rules"][0]
+                self.assertEqual(rule["strategy_id"], child["id"])
+                self.assertEqual(rule["version"], 1)
+                self.assertEqual(rule["definition"]["name"], child["name"])
+
+                updated_child = orb_composite()
+                updated_child["description"] = "child v2"
+                child_v2 = client.put(
+                    f"/api/composite-strategies/{child['id']}",
+                    json={"definition": updated_child},
+                ).json()
+                self.assertEqual(child_v2["version"], 2)
+                reference_options = client.get(
+                    "/api/composite-strategies"
+                ).json()["reference_strategies"]
+                child_option = next(
+                    item for item in reference_options
+                    if item["id"] == child["id"]
+                )
+                self.assertEqual(
+                    [item["version"] for item in child_option["versions"]],
+                    [2, 1],
+                )
+                stored_parent = client.get(
+                    f"/api/composite-strategies/{parent['id']}?version=1"
+                ).json()
+                self.assertEqual(
+                    stored_parent["definition"]["entry"]["rules"][0]["version"],
+                    1,
+                )
+
+                self.assertEqual(client.delete(
+                    f"/api/composite-strategies/{child['id']}"
+                ).status_code, 200)
+                reference_options = client.get(
+                    "/api/composite-strategies"
+                ).json()["reference_strategies"]
+                self.assertFalse(any(
+                    item["id"] == child["id"] for item in reference_options
+                ))
+                archived_reference = client.post(
+                    "/api/composite-strategies",
+                    json={"definition": referencing_composite(
+                        "不可建立", child["id"], 1
+                    )},
+                )
+                self.assertEqual(archived_reference.status_code, 422)
+                self.assertIn("封存策略不可加入", archived_reference.json()["detail"])
+
+                blocked = client.post(
+                    "/api/composite-strategies/purge",
+                    json={"strategy_ids": [child["id"]]},
+                )
+                self.assertEqual(blocked.status_code, 409)
+                self.assertIn("其他組合策略引用", blocked.json()["detail"])
+
+                self.assertEqual(client.delete(
+                    f"/api/composite-strategies/{parent['id']}"
+                ).status_code, 200)
+                purged = client.post(
+                    "/api/composite-strategies/purge",
+                    json={"strategy_ids": [parent["id"], child["id"]]},
+                )
+                self.assertEqual(purged.status_code, 200, purged.text)
+                self.assertEqual(purged.json()["deleted_strategies"], 2)
+
+    def test_nested_api_rejects_cycle_and_more_than_three_levels(self):
+        with tempfile.TemporaryDirectory() as directory:
+            settings = LiveSettings(
+                mode="mock", db_path=str(Path(directory) / "depth.sqlite3"),
+                replay_csv=str(ROOT / "data/mock_tmf_ticks.csv"),
+                replay_speed=1000, heartbeat_seconds=0.05,
+            )
+            app = create_app(settings)
+            with TestClient(app) as client:
+                first = client.post(
+                    "/api/composite-strategies",
+                    json={"definition": orb_composite()},
+                ).json()
+                second = client.post(
+                    "/api/composite-strategies",
+                    json={"definition": referencing_composite(
+                        "第二層", first["id"]
+                    )},
+                ).json()
+                third = client.post(
+                    "/api/composite-strategies",
+                    json={"definition": referencing_composite(
+                        "第三層", second["id"]
+                    )},
+                ).json()
+                too_deep = client.post(
+                    "/api/composite-strategies",
+                    json={"definition": referencing_composite(
+                        "第四層", third["id"]
+                    )},
+                )
+                self.assertEqual(too_deep.status_code, 422)
+                self.assertIn("最多支援 3 層", too_deep.json()["detail"])
+
+                cycle = client.put(
+                    f"/api/composite-strategies/{first['id']}",
+                    json={"definition": referencing_composite(
+                        first["name"], third["id"]
+                    )},
+                )
+                self.assertEqual(cycle.status_code, 422)
+                self.assertIn("循環引用", cycle.json()["detail"])
 
 
 if __name__ == "__main__":

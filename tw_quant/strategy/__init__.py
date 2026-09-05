@@ -17,6 +17,7 @@ from .composite import (
     default_composite_definition,
     generate_composite_signals,
     new_composite_id,
+    validate_composite_dependencies,
     validate_composite_definition,
 )
 
@@ -33,5 +34,6 @@ __all__ = [
     "default_composite_definition",
     "generate_composite_signals",
     "new_composite_id",
+    "validate_composite_dependencies",
     "validate_composite_definition",
 ]

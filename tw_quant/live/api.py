@@ -58,6 +58,7 @@ from ..strategy import (
     generate_composite_signals,
     new_composite_id,
     strategy_catalog,
+    validate_composite_dependencies,
     validate_composite_definition,
     validate_strategy_parameters,
 )
@@ -342,6 +343,31 @@ def create_app(
         user = request.state.auth_user
         return user.user_id if user.registered else DEFAULT_OWNER_ID
 
+    def validated_composite_for_save(
+        raw: dict[str, object], owner_id: str, strategy_id: str
+    ) -> dict[str, object]:
+        def resolve_child(
+            child_id: str, child_version: int
+        ) -> dict[str, object] | None:
+            child = repo.composite_strategy(
+                child_id, child_version, owner_user_id=owner_id
+            )
+            if child is None:
+                return None
+            if repo.composite_strategy_archived(child_id, owner_id):
+                raise ValueError(
+                    f"封存策略不可加入新的組合：{child['name']} v{child_version}"
+                )
+            return child
+
+        definition = validate_composite_definition(
+            raw,
+            repo.strategy_parameters(owner_id),
+            composite_resolver=resolve_child,
+        )
+        validate_composite_dependencies(definition, strategy_id)
+        return definition
+
     @app.middleware("http")
     async def authorize_api_requests(request: Request, call_next):
         permission = _required_permission(request.method, request.url.path)
@@ -608,10 +634,24 @@ def create_app(
     @app.get("/api/composite-strategies")
     def composite_strategies(request: Request):
         owner_id = request_owner_id(request)
+        active = repo.composite_strategies(owner_id)
         return {
             "template": default_composite_definition(),
-            "strategies": repo.composite_strategies(owner_id),
+            "strategies": active,
             "archived_strategies": repo.archived_composite_strategies(owner_id),
+            "reference_strategies": [
+                {
+                    "id": item["id"],
+                    "name": item["name"],
+                    "versions": [
+                        {"version": version["version"], "name": version["name"]}
+                        for version in repo.composite_strategy_versions(
+                            str(item["id"]), owner_id
+                        )
+                    ],
+                }
+                for item in active
+            ],
         }
 
     @app.get("/api/composite-strategies/{strategy_id}/versions")
@@ -668,15 +708,16 @@ def create_app(
         update: CompositeStrategyUpdate, request: Request
     ):
         owner_id = request_owner_id(request)
+        strategy_id = new_composite_id()
         try:
-            definition = validate_composite_definition(
-                update.definition, repo.strategy_parameters(owner_id)
+            definition = validated_composite_for_save(
+                update.definition, owner_id, strategy_id
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         try:
             return repo.save_composite_strategy(
-                new_composite_id(), definition, owner_id
+                strategy_id, definition, owner_id
             )
         except StrategyNameConflictError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -691,17 +732,18 @@ def create_app(
             raise HTTPException(status_code=404, detail="找不到組合策略")
         if repo.composite_strategy_archived(strategy_id, owner_id):
             raise HTTPException(status_code=410, detail="組合策略已封存")
+        candidate_name = str(update.definition.get("name", "")).strip()
+        target_id = (
+            new_composite_id()
+            if candidate_name != current["name"]
+            else strategy_id
+        )
         try:
-            definition = validate_composite_definition(
-                update.definition, repo.strategy_parameters(owner_id)
+            definition = validated_composite_for_save(
+                update.definition, owner_id, target_id
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        target_id = (
-            new_composite_id()
-            if definition["name"] != current["name"]
-            else strategy_id
-        )
         try:
             saved = repo.save_composite_strategy(target_id, definition, owner_id)
         except StrategyNameConflictError as exc:
