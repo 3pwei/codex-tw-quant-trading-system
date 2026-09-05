@@ -146,7 +146,6 @@ def _page_permission(path: str) -> str | None:
     return None
 
 
-
 def _authorization_denied_response(
     original_uri: str, error: AuthorizationError
 ) -> Response:
@@ -199,6 +198,7 @@ def _authorization_denied_response(
         status_code=403,
         headers={"Cache-Control": "no-store"},
     )
+
 
 def create_app(
     settings: LiveSettings | None = None,
