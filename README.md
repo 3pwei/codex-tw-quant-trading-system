@@ -24,6 +24,7 @@
 - 策略管理頁可調整各策略與停損停利參數，SQLite 持久化後供即時與回測共用
 - 無程式碼多週期策略組合器：Setup／Entry／Exit／Risk、ALL／ANY 與版本追蹤
 - 具型別的統一事件模型、可重現事件 ID、虛擬時鐘與確定性事件迴圈
+- 事件式模擬成交與部位帳本：下一根開盤、期貨成本、多空、PnL、時段／換月平倉
 
 ## 架構
 
@@ -73,6 +74,7 @@ CSV 1 分 K
 | `tw_quant/strategy/composite.py` | 多週期規則驗證、原子訊號組合與共用執行核心 |
 | `tw_quant/risk/engine.py` | 共用停損、停利價格與觸發優先序 |
 | `tw_quant/execution/simulator.py` | 下一根開盤、風險出場與時段平倉模擬 |
+| `tw_quant/execution/event_simulator.py` | 統一事件引擎的模擬券商、訂單狀態與部位／PnL 帳本 |
 | `tw_quant/backtest/runner.py` | 成本、交易、權益與績效報表 |
 | `tw_quant/market_data/ports.py` | 即時／歷史行情 Provider 介面與能力宣告 |
 | `tw_quant/market_data/factory.py` | Provider 組裝點；FastAPI 不認識供應商實作 |
@@ -243,9 +245,10 @@ Setup、Entry 與 Exit 都能加入多條基本策略規則，個別選擇 `1m`�
 目前仍是研究與行情觀察階段：組合策略可在 Live／Replay 資料上呼叫相同訊號
 核心，也可執行歷史回測，但不會連接 Broker 下單。
 
-`tw_quant/events/` 是 Level 2 遷移的事件骨幹；現有 Live、Replay 與 Backtest 會在
-後續階段逐一接入。在遷移完成前，加入此模組本身不會建立訂單、變更持倉或改變
-目前 API／Dashboard 的輸出。
+`tw_quant/events/` 是 Level 2 遷移的事件骨幹，`SimulatedExecutionPipeline` 已能在
+記憶體內完成 Signal → Order → Risk → Fill → Position/PnL；預設風控閘門只供測試，
+帳戶級風控會在下一階段接入。現有 Live、Replay 與 Backtest 尚未切換到此管線，
+因此目前 API／Dashboard 輸出不變，也不會呼叫真實券商。
 
 ### Mock／Replay 本機啟動
 

@@ -127,6 +127,7 @@ class SignalEvent:
     strategy_id: str
     strategy_version: int
     symbol: str
+    contract: str
     direction: Direction
     action: Literal["enter", "exit"]
     reference_price: float
@@ -134,7 +135,9 @@ class SignalEvent:
     kind: Literal["signal"] = field(default="signal", init=False)
 
     def __post_init__(self) -> None:
-        if not self.strategy_id or self.strategy_version < 1:
+        if not self.strategy_id or not self.symbol or not self.contract:
+            raise ValueError("strategy_id, symbol, and contract are required")
+        if self.strategy_version < 1:
             raise ValueError("strategy_id and positive strategy_version are required")
         if self.reference_price <= 0:
             raise ValueError("reference_price must be positive")
@@ -151,13 +154,19 @@ class OrderIntent:
     side: OrderSide
     quantity: int
     order_type: Literal["market"] = "market"
+    purpose: Literal["entry", "exit", "liquidation"] = "entry"
+    execution_timing: Literal["next_bar_open", "current_close"] = "next_bar_open"
+    reduce_only: bool = False
+    reason: str = "strategy_signal"
     kind: Literal["order_intent"] = field(default="order_intent", init=False)
 
     def __post_init__(self) -> None:
-        if not self.order_id or not self.strategy_id:
-            raise ValueError("order_id and strategy_id are required")
+        if not self.order_id or not self.strategy_id or not self.symbol or not self.contract:
+            raise ValueError("order_id, strategy_id, symbol, and contract are required")
         if self.strategy_version < 1 or self.quantity <= 0:
             raise ValueError("strategy_version and quantity must be positive")
+        if not self.reason:
+            raise ValueError("reason is required")
 
 
 @dataclass(frozen=True)
@@ -185,6 +194,8 @@ class FillEvent:
     meta: EventMetadata
     fill_id: str
     order_id: str
+    strategy_id: str
+    strategy_version: int
     symbol: str
     contract: str
     side: OrderSide
@@ -193,11 +204,15 @@ class FillEvent:
     commission: float = 0.0
     tax: float = 0.0
     slippage: float = 0.0
+    purpose: Literal["entry", "exit", "liquidation"] = "entry"
+    reason: str = "simulated_fill"
     kind: Literal["fill"] = field(default="fill", init=False)
 
     def __post_init__(self) -> None:
-        if not self.fill_id or not self.order_id:
-            raise ValueError("fill_id and order_id are required")
+        if not self.fill_id or not self.order_id or not self.strategy_id:
+            raise ValueError("fill_id, order_id, and strategy_id are required")
+        if self.strategy_version < 1:
+            raise ValueError("strategy_version must be positive")
         if self.quantity <= 0 or self.price <= 0:
             raise ValueError("quantity and price must be positive")
         if min(self.commission, self.tax, self.slippage) < 0:
@@ -207,21 +222,28 @@ class FillEvent:
 @dataclass(frozen=True)
 class PositionEvent:
     meta: EventMetadata
+    strategy_id: str
+    strategy_version: int
     symbol: str
     contract: str
     quantity: int
     average_price: float
     realized_pnl: float
     unrealized_pnl: float
+    total_cost: float = 0.0
     kind: Literal["position"] = field(default="position", init=False)
 
     def __post_init__(self) -> None:
-        if not self.symbol or not self.contract:
-            raise ValueError("symbol and contract are required")
+        if not self.strategy_id or not self.symbol or not self.contract:
+            raise ValueError("strategy_id, symbol, and contract are required")
+        if self.strategy_version < 1:
+            raise ValueError("strategy_version must be positive")
         if self.quantity != 0 and self.average_price <= 0:
             raise ValueError("open positions require a positive average_price")
         if self.quantity == 0 and self.average_price != 0:
             raise ValueError("flat positions must have zero average_price")
+        if self.total_cost < 0:
+            raise ValueError("total_cost cannot be negative")
 
 
 @dataclass(frozen=True)
