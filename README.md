@@ -282,8 +282,11 @@ SJ_PRODUCTION=true
 - `GET /api/health`
 - `GET /api/me`（目前登入身分、角色、帳號／交易狀態與權限）
 - `GET /api/admin/health`（管理員：Provider、Queue、重複／遲到 Tick 診斷）
+- `POST /api/access-requests`（Cloudflare 已驗證、尚未開通的 Email）
 - `GET|POST /api/admin/users`、`PUT /api/admin/users/{user_id}`（管理員）
-- `GET /api/admin/audit`（管理員：帳號異動稽核）
+- `GET /api/admin/access-requests`（管理員：待審核申請）
+- `POST /api/admin/access-requests/{request_id}/approve|reject`（管理員）
+- `GET /api/admin/audit`（管理員：帳號及申請異動稽核）
 - `GET /api/kbars?symbol=TMF&interval=5m&limit=500`
 - `GET /api/strategy-signals?symbol=TMF&strategies=orb,bnf&interval=5m&limit=500`
 - `GET /api/strategies`
@@ -465,8 +468,11 @@ policy 調整為：
 都可向 Cloudflare 申請 OTP，但 Caddy 仍會對除 `/healthz` 外的每個頁面與 API 呼叫
 FastAPI forward-auth。未存在於 `app_users`、不是 `active` 或缺少所需 permission
 的帳號會收到 403；一般頁面顯示帳號尚未開通或沒有權限，並提供登出及切換 Email，
-API 則保留 JSON 錯誤。管理員日後只需在 `/admin/users/` 新增或停用帳號，不再同步
-維護 Cloudflare Email 清單。
+API 則保留 JSON 錯誤。未註冊使用者可在拒絕頁按「申請開通」；系統只接受
+Cloudflare 已驗證的 Email，並以 Email 去重保存至 `app_user_requests`。管理員可在
+`/admin/users/` 的待審核清單核准或拒絕。核准會建立 `researcher / active /
+disabled` 帳號並直接綁定該 Cloudflare 身分，之後可再調整角色；拒絕與重新申請
+也會保存稽核事件。管理員不再需要同步維護 Cloudflare Email 清單。
 
 ### 使用者資料所有權
 

@@ -16,6 +16,12 @@ class AccountStatus(str, Enum):
     REVOKED = "revoked"
 
 
+class AccessRequestStatus(str, Enum):
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+
+
 class TradingMode(str, Enum):
     DISABLED = "disabled"
     PAPER = "paper"
@@ -44,4 +50,27 @@ class AuthUser:
             "registered": self.registered,
             "identity_bound": self.access_subject is not None,
             "authorization_enforced": authorization_enforced,
+        }
+
+
+@dataclass(frozen=True)
+class AccessRequest:
+    request_id: str
+    access_subject: str
+    email: str
+    status: AccessRequestStatus
+    requested_at: str
+    updated_at: str
+    resolved_at: str | None = None
+    resolved_by_user_id: str | None = None
+
+    def to_message(self) -> dict[str, object]:
+        return {
+            "request_id": self.request_id,
+            "email": self.email,
+            "status": self.status.value,
+            "requested_at": self.requested_at,
+            "updated_at": self.updated_at,
+            "resolved_at": self.resolved_at,
+            "resolved_by_user_id": self.resolved_by_user_id,
         }

@@ -18,6 +18,7 @@ from pydantic import BaseModel
 
 from ..auth import (
     AccessIdentity,
+    AccessRequestStatus,
     AccessTokenError,
     AccessValidator,
     AccountStatus,
@@ -107,13 +108,13 @@ class AdminUserUpdate(BaseModel):
 
 def _required_permission(method: str, path: str) -> str | None:
     """Map HTTP resources to permissions; unknown API routes fail closed."""
-    if path == "/api/me":
+    if path in {"/api/me", "/api/access-requests"}:
         return None
     if path == "/api/admin/health":
         return "admin.providers.read"
     if path == "/api/admin/audit":
         return "audit.read"
-    if path.startswith("/api/admin/users"):
+    if path.startswith(("/api/admin/users", "/api/admin/access-requests")):
         return "admin.users.manage"
     if path in {"/api/health", "/api/kbars", "/api/strategy-signals"}:
         return "market.read"
@@ -156,9 +157,38 @@ def _authorization_denied_response(
             status_code=403,
             headers={"Cache-Control": "no-store"},
         )
+    request_action = ""
     if "not registered" in detail:
         title = "帳號尚未開通"
         message = "Email 已完成驗證，但尚未列入平台使用者名單。"
+        request_action = """
+    <button id="request-access" type="button">申請開通</button>
+    <p id="request-status" role="status"></p>
+    <script>
+      const button = document.getElementById("request-access");
+      const status = document.getElementById("request-status");
+      button.addEventListener("click", async () => {
+        button.disabled = true;
+        status.textContent = "正在送出申請…";
+        try {
+          const response = await fetch("/api/access-requests", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"}
+          });
+          const body = await response.json();
+          if (!response.ok) throw new Error(body.detail || "申請送出失敗");
+          button.hidden = true;
+          status.className = "success";
+          status.textContent = "申請已送出，請等待平台管理員審核。";
+        } catch (error) {
+          button.disabled = false;
+          status.className = "error";
+          status.textContent = error instanceof Error
+            ? error.message : "申請送出失敗，請稍後再試。";
+        }
+      });
+    </script>
+"""
     elif "suspended" in detail or "revoked" in detail:
         title = "帳號目前無法使用"
         message = "此帳號已被暫停或撤銷，請聯絡平台管理員。"
@@ -182,8 +212,12 @@ def _authorization_denied_response(
       background:#0c1815;box-shadow:0 24px 80px rgba(0,0,0,.35)}}
     small{{color:#42d6a4;font:700 10px ui-monospace,monospace;letter-spacing:.18em}}
     h1{{margin:14px 0 0;font-size:28px}}p{{margin:16px 0;color:#9bb0aa;line-height:1.7}}
-    a{{display:inline-block;margin-top:12px;padding:11px 15px;color:#07110f;
-      background:#42d6a4;text-decoration:none;font-weight:800}}
+    button,a{{display:inline-block;margin-top:12px;padding:11px 15px;border:0;color:#07110f;
+      background:#42d6a4;text-decoration:none;font-weight:800;cursor:pointer}}
+    button:disabled{{opacity:.55;cursor:wait}}a{{margin-left:8px;background:transparent;
+      color:#9bb0aa;border:1px solid rgba(157,197,184,.3)}}
+    #request-status{{min-height:20px;margin:14px 0 0;font-size:13px}}
+    #request-status.success{{color:#42d6a4}}#request-status.error{{color:#ff6b72}}
   </style>
 </head>
 <body>
@@ -191,6 +225,7 @@ def _authorization_denied_response(
     <small>ACCESS CONTROL</small>
     <h1>{title}</h1>
     <p>{message}</p>
+    {request_action}
     <a href="/cdn-cgi/access/logout">登出並改用其他 Email</a>
   </main>
 </body>
@@ -312,6 +347,17 @@ def create_app(
         if not request.url.path.startswith("/api/") or request.method == "OPTIONS":
             return await call_next(request)
         try:
+            if (
+                request.url.path == "/api/access-requests"
+                and request.method == "POST"
+            ):
+                identity = identity_from_headers(request.headers)
+                if identity is None:
+                    raise AccessTokenError(
+                        "missing authenticated request identity"
+                    )
+                request.state.access_identity = identity
+                return await call_next(request)
             user = user_from_headers(request.headers)
             if permission:
                 auth_service.require_permission(user, permission)
@@ -340,20 +386,34 @@ def create_app(
         except AccessTokenError as exc:
             raise HTTPException(status_code=401, detail=str(exc)) from exc
         original_uri = request.headers.get("x-original-uri", "/")
+        original_path = original_uri.split("?", 1)[0]
+        headers = {"X-Authenticated-Subject": identity.subject}
+        if identity.email:
+            headers["X-Authenticated-Email"] = identity.email
+        if original_path == "/api/access-requests":
+            return Response(status_code=204, headers=headers)
         try:
             user = auth_service.identify(identity)
-            page_permission = _page_permission(original_uri)
+            page_permission = _page_permission(original_path)
             if page_permission:
                 auth_service.require_permission(user, page_permission)
         except AuthorizationError as exc:
             return _authorization_denied_response(original_uri, exc)
-        headers = {"X-Authenticated-Subject": identity.subject}
-        if identity.email:
-            headers["X-Authenticated-Email"] = identity.email
         if user.registered:
             headers["X-Authenticated-User-ID"] = user.user_id
             headers["X-Authenticated-Role"] = user.role.value
         return Response(status_code=204, headers=headers)
+
+    @app.post("/api/access-requests", status_code=201)
+    def submit_access_request(request: Request):
+        try:
+            access_request = identity_repo.submit_access_request(
+                request.state.access_identity
+            )
+        except ValueError as exc:
+            status_code = 409 if "already registered" in str(exc) else 422
+            raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+        return {"request": access_request.to_message()}
 
     @app.get("/api/me")
     def current_user(request: Request):
@@ -368,9 +428,50 @@ def create_app(
     async def admin_health():
         return service.status_message()
 
+    @app.get("/api/admin/access-requests")
+    def admin_access_requests(
+        status: AccessRequestStatus | None = AccessRequestStatus.PENDING,
+    ):
+        return {
+            "requests": [
+                access_request.to_message()
+                for access_request in identity_repo.access_requests(status)
+            ]
+        }
+
+    @app.post("/api/admin/access-requests/{request_id}/approve")
+    def approve_access_request(request_id: str, request: Request):
+        try:
+            access_request, user = identity_repo.approve_access_request(
+                request_id, actor_user_id=request.state.auth_user.user_id
+            )
+        except ValueError as exc:
+            status_code = 404 if "not found" in str(exc) else 409
+            raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+        return {
+            "request": access_request.to_message(),
+            "user": user.to_message(auth_service.enforced),
+        }
+
+    @app.post("/api/admin/access-requests/{request_id}/reject")
+    def reject_access_request(request_id: str, request: Request):
+        try:
+            access_request = identity_repo.reject_access_request(
+                request_id, actor_user_id=request.state.auth_user.user_id
+            )
+        except ValueError as exc:
+            status_code = 404 if "not found" in str(exc) else 409
+            raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+        return {"request": access_request.to_message()}
+
     @app.get("/api/admin/users")
     def admin_users():
-        return {"users": [user.to_message(auth_service.enforced) for user in identity_repo.users()]}
+        return {
+            "users": [
+                user.to_message(auth_service.enforced)
+                for user in identity_repo.users()
+            ]
+        }
 
     @app.post("/api/admin/users", status_code=201)
     def create_admin_user(update: AdminUserCreate, request: Request):
