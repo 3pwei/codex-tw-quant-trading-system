@@ -17,6 +17,7 @@ type ParameterField = {
 type Strategy = {
   key: string;
   name: string;
+  category: string;
   description: string;
   color: string;
   parameters: Record<string, ParameterField>;
@@ -125,7 +126,7 @@ export default function StrategyManager() {
       {strategies.map(strategy => <article className="panel" key={strategy.key}>
         <div className="strategy-editor-head">
           <div><span style={{ color: strategy.color }}>{strategy.key.toUpperCase()}</span><h2>{strategy.name}</h2></div>
-          <b>即時／回測共用</b>
+          <b>{strategy.category} · 即時／回測共用</b>
         </div>
         <p>{strategy.description}</p>
         <div className="strategy-fields">

@@ -20,8 +20,8 @@
 - 即時 1 分 K、SQLite、FastAPI REST/WebSocket 與獨立 heartbeat
 - 無憑證可執行的 Mock/Replay 模式
 - Next.js + TradingView Lightweight Charts 即時 K 線頁面
-- ORB／BNF Multi-select 策略圖層與即時訊號標記
-- 策略管理頁可調整 ORB／BNF 與停損停利參數，SQLite 持久化後供即時與回測共用
+- 11 套基本策略的 Multi-select 策略圖層與即時訊號標記
+- 策略管理頁可調整各策略與停損停利參數，SQLite 持久化後供即時與回測共用
 - 無程式碼多週期策略組合器：Setup／Entry／Exit／Risk、ALL／ANY 與版本追蹤
 
 ## 架構
@@ -64,7 +64,7 @@ CSV 1 分 K
 | `tw_quant/metrics.py` | 勝率、淨利、PF、回撤與日頻 Sharpe |
 | `tw_quant/report.py` | 儲存 CSV、JSON 與權益曲線圖 |
 | `tw_quant/market/` | Live、Replay、CSV 共用的 Tick／KBar 與交易時段模型 |
-| `tw_quant/strategy/engine.py` | 與資料來源無關的 ORB／BNF 策略分析器 |
+| `tw_quant/strategy/engine.py` | 與資料來源無關的基本策略分析器 |
 | `tw_quant/strategy/parameters.py` | 共用參數規格、預設值與後端驗證 |
 | `tw_quant/strategy/composite.py` | 多週期規則驗證、原子訊號組合與共用執行核心 |
 | `tw_quant/risk/engine.py` | 共用停損、停利價格與觸發優先序 |
@@ -137,7 +137,19 @@ K 棒使用 Tick 的交易所時間（`Asia/Taipei`）分桶，不使用瀏覽�
 
 ### 交易策略圖層
 
-即時頁右上角的 Multi-select Dropdown 可以同時顯示或隱藏：
+即時頁右上角的 Multi-select Dropdown 可以同時顯示或隱藏 11 套基本策略。
+除既有 BNF 外，策略類型包含：
+
+| 類型 | 策略 |
+|---|---|
+| Trend | MA Crossover、EMA Trend |
+| Breakout | Donchian Breakout、Opening Range Breakout（ORB） |
+| Mean Reversion | RSI Mean Reversion、Bollinger Mean Reversion、BNF |
+| Momentum | MACD Momentum、Volume Breakout |
+| Intraday | VWAP Reversion |
+| Volatility | ATR Breakout |
+
+其中既有策略的規則為：
 
 - `ORB 開盤突破`：每個日／夜盤以前 15 分鐘建立區間，收盤突破區間且
   當根量達前 5 根均量的 1.2 倍時確認訊號。
@@ -145,7 +157,7 @@ K 棒使用 Tick 的交易所時間（`Asia/Taipei`）分桶，不使用瀏覽�
   RSI(14) 不高於 30 時做多，向上穿越 `+2` 且 RSI 不低於 70 時做空；
   回到 `±0.5Z` 內產生均值回歸出場訊號。
 
-兩套策略只使用已收盤 K 棒確認，並在下一根 K 棒開盤建立訊號標記，
+所有策略只使用已收盤 K 棒確認，並在下一根 K 棒開盤建立訊號標記，
 不使用形成中 K 棒偷看結果。風控預設為停損 0.6%、停利 1.2%；標記
 只供研究與觀察，不會觸發模擬或真實訂單。
 
@@ -165,7 +177,7 @@ Python 程式碼。每個組合策略由四段構成：
 - `Exit`：策略出場條件；可留空，仍會受風控與時段結束平倉。
 - `Risk`：1 分 K 停損、停利與最長持有時間；必填。
 
-Setup、Entry 與 Exit 都能加入多條 ORB／BNF 規則，個別選擇 `1m`、`5m`、
+Setup、Entry 與 Exit 都能加入多條基本策略規則，個別選擇 `1m`、`5m`、
 `10m`、`15m`、`30m`、`1h`、`1d` 或 `1w`，並設定 `ALL`／`ANY` 及條件確認
 視窗。每個規則積木預設繼承策略管理頁上方已保存的原子策略參數，也可在積木內
 個別覆寫（例如 Entry BNF 與 Exit BNF 使用不同門檻）；後端保存時會把完整解析後
@@ -310,10 +322,10 @@ SQLite 仍只保存唯一一份 1 分 K；REST、WebSocket、策略訊號與回�
 Live／Backtest 各寫一套。分鐘與小時 K 以日盤 08:45、夜盤 15:00 為分桶起點；
 日 K 依期交所 `trading_date` 合併前一晚夜盤與當日日盤，週 K 依交易日週次聚合，
 且合約換月時絕不合併不同契約。日／週 K 可顯示的長度取決於 1 分 K 實際保留範圍。
-ORB 是日內開盤區間策略，因此日／週 K 不產生 ORB 訊號；BNF 在日／週 K 會依
-契約連續累積指標視窗，仍使用相同的策略與風控函式。
+ORB 與 VWAP Reversion 是日內策略；ORB 在日／週 K 不產生訊號。其他技術策略
+在日／週 K 會依契約連續累積指標視窗，仍使用相同的策略與風控函式。
 
-回測 Dashboard 與即時頁共用 ORB／BNF 訊號分析器，只使用 SQLite 內的
+回測 Dashboard 與即時頁共用同一套基本策略訊號分析器，只使用 SQLite 內的
 1 分 K 作為來源。畫面可選 K 棒週期、策略與起訖交易日，單次最多 31 個日曆日；FastAPI 也會驗證
 相同上限，不能只靠瀏覽器繞過。夜盤跨日依 `trading_date` 查詢，而非日曆時間。
 既有 Lightsail 若仍使用舊版 `/opt/tw-quant/config/market.env`，需把
@@ -615,7 +627,7 @@ python -m tw_quant backtest \
 
 `tw_quant/futures.py` 只負責讀取期交所逐筆成交 CSV、篩選商品／契約及轉換
 OHLCV。`futures-night` 會把資料聚合成 1 分 K，再轉成與即時系統相同的
-`KBar` 模型，最後呼叫 `run_strategy_backtest()`。ORB、BNF、停損與停利
+`KBar` 模型，最後呼叫 `run_strategy_backtest()`。基本策略、停損與停利
 不在 CSV 匯入模組重複實作。
 
 2026/8/24 夜盤使用 `TMF 202609`，時段為 2026/8/24 15:00 至

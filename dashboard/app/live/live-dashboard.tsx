@@ -51,7 +51,7 @@ type StatusMessage = {
 };
 type FeedMessage = KBar | StatusMessage;
 type Ohlc = Pick<KBar, "open" | "high" | "low" | "close"> | null;
-type StrategyKey = "orb" | "bnf";
+type StrategyKey = string;
 type Timeframe = "1m" | "5m" | "10m" | "15m" | "30m" | "1h" | "1d" | "1w";
 type StrategySignal = {
   strategy: StrategyKey;
@@ -70,6 +70,13 @@ type StrategyResult = {
   parameters: Record<string, number>;
   signals: StrategySignal[];
 };
+type StrategyOption = {
+  key: StrategyKey;
+  name: string;
+  category: string;
+  description: string;
+  color: string;
+};
 
 const CONFIGURED_API_BASE = process.env.NEXT_PUBLIC_MARKET_API_URL?.replace(/\/$/, "");
 const apiBase = () => CONFIGURED_API_BASE
@@ -87,10 +94,6 @@ const chartTimeFormatter = new Intl.DateTimeFormat("zh-TW", {
 const formatChartTime = (value: Time) => chartTimeFormatter.format(chartDate(value));
 const fmt = (value?: number | null) => value == null ? "—" : new Intl.NumberFormat("zh-TW", { maximumFractionDigits: 2 }).format(value);
 const fmtTime = (value?: string | null) => value ? new Date(value).toLocaleString("zh-TW", { hour12: false, timeZone: "Asia/Taipei" }) : "尚未收到";
-const STRATEGY_OPTIONS: { key: StrategyKey; name: string; detail: string; color: string }[] = [
-  { key: "orb", name: "ORB 開盤突破", detail: "15 分鐘區間＋量能 · SL 0.6%／TP 1.2%", color: "#38bdf8" },
-  { key: "bnf", name: "BNF 均值回歸", detail: "20MA／2Z＋RSI · SL 0.6%／TP 1.2%", color: "#a78bfa" },
-];
 const TIMEFRAME_OPTIONS: { key: Timeframe; name: string }[] = [
   { key: "1m", name: "1 分 K" }, { key: "5m", name: "5 分 K" },
   { key: "10m", name: "10 分 K" }, { key: "15m", name: "15 分 K" },
@@ -151,7 +154,20 @@ export default function LiveDashboard() {
   const [historyCount, setHistoryCount] = useState(0);
   const [selectedInterval, setSelectedInterval] = useState<Timeframe>("1m");
   const [selectedStrategies, setSelectedStrategies] = useState<StrategyKey[]>(["orb", "bnf"]);
+  const [strategyOptions, setStrategyOptions] = useState<StrategyOption[]>([]);
   const [strategyResults, setStrategyResults] = useState<StrategyResult[]>([]);
+
+  useEffect(() => {
+    let active = true;
+    fetch(`${apiBase()}/api/strategies`, { cache: "no-store" })
+      .then(async response => {
+        const body = await response.json();
+        if (!response.ok) throw new Error(body.detail ?? "策略清單載入失敗");
+        if (active) setStrategyOptions(body.strategies);
+      })
+      .catch(reason => { if (active) setError(reason instanceof Error ? reason.message : "策略清單載入失敗"); });
+    return () => { active = false; };
+  }, []);
 
   const loadHistory = useCallback(async () => {
     const response = await fetch(`${apiBase()}/api/kbars?symbol=TMF&interval=${selectedInterval}&limit=500`, { cache: "no-store" });
@@ -186,7 +202,7 @@ export default function LiveDashboard() {
         position: signal.direction === "long"
           ? signal.event === "entry" ? "belowBar" : "aboveBar"
           : signal.event === "entry" ? "aboveBar" : "belowBar",
-        color: signal.event === "entry" ? strategy.color : strategy.key === "orb" ? "#f59e0b" : "#f472b6",
+        color: signal.event === "entry" ? strategy.color : "#f59e0b",
         shape: signal.event === "entry"
           ? signal.direction === "long" ? "arrowUp" : "arrowDown"
           : "circle",
@@ -324,10 +340,10 @@ export default function LiveDashboard() {
           <summary>交易策略 <b>{selectedStrategies.length}</b></summary>
           <div className="strategy-menu">
             <span>MULTI-SELECT · 訊號分開疊加</span>
-            {STRATEGY_OPTIONS.map(option => <label key={option.key}>
+            {strategyOptions.map(option => <label key={option.key}>
               <input type="checkbox" checked={selectedStrategies.includes(option.key)} onChange={() => toggleStrategy(option.key)} />
               <i style={{ background: option.color }} />
-              <span><b>{option.name}</b><small>{option.detail}</small></span>
+              <span><b>{option.name}</b><small>{option.category} · {option.description}</small></span>
             </label>)}
           </div>
         </details>
@@ -354,7 +370,7 @@ export default function LiveDashboard() {
         <div className={`bar-state ${latest?.status ?? "forming"}`}>{latest?.status === "closed" ? "已收盤" : "形成中"}</div>
       </div>
       <div ref={hostRef} className="live-chart" />
-      <div className="chart-legend"><span><i className="legend-forming" />形成中 K 棒</span><span><i className="legend-closed" />已收盤 K 棒</span>{STRATEGY_OPTIONS.filter(option => selectedStrategies.includes(option.key)).map(option => <span key={option.key}><i style={{ background: option.color }} />{option.name}</span>)}</div>
+      <div className="chart-legend"><span><i className="legend-forming" />形成中 K 棒</span><span><i className="legend-closed" />已收盤 K 棒</span>{strategyOptions.filter(option => selectedStrategies.includes(option.key)).map(option => <span key={option.key}><i style={{ background: option.color }} />{option.name}</span>)}</div>
     </section>
     {error && <div className="live-error">{error}；系統將以指數退避自動重連。</div>}
     <footer className="live-footer">行情模式由後端設定。Mock 資料僅供工程驗證；正式 Shioaji 模式僅訂閱行情，不含下單功能。</footer>

@@ -10,7 +10,7 @@ export const metadata: Metadata = {
   description: "TMF 即時行情、歷史回測、策略與系統狀態儀表板。",
   openGraph: {
     title: "微型臺指期貨 1 分 K 與策略回測",
-    description: "TMF 即時行情、歷史回測、ORB／BNF 策略與系統狀態一站管理。",
+    description: "TMF 即時行情、歷史回測、基本與組合策略及系統狀態一站管理。",
     url: ".",
     siteName: "Wade Quant Lab",
     locale: "zh_TW",
@@ -27,7 +27,7 @@ export const metadata: Metadata = {
   twitter: {
     card: "summary_large_image",
     title: "微型臺指期貨 1 分 K 與策略回測",
-    description: "TMF 即時行情、歷史回測、ORB／BNF 策略與系統狀態一站管理。",
+    description: "TMF 即時行情、歷史回測、基本與組合策略及系統狀態一站管理。",
     images: ["og.png"],
   },
   icons: {

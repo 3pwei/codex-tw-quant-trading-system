@@ -9,7 +9,7 @@ Dashboard 採功能導向 URL：
 | `/backtest/` | 動態歷史回測 | 可使用 |
 | `/replay/` | 動態歷史回放 | 路由已保留，功能建置中 |
 | `/history/` | 回測／交易執行紀錄 | 查詢、篩選、明細與永久刪除 |
-| `/strategies/` | ORB／BNF 策略與風險規則 | 可輸入並儲存參數 |
+| `/strategies/` | 11 套基本策略與風險規則 | 可輸入並儲存參數 |
 | `/composite-strategies/` | 組合策略清單、版本與封存管理 | 可新增、搜尋、編輯與回測 |
 | `/composite-strategies/new/` | 新增組合策略 | 可從基本策略或歷史版本開始 |
 | `/composite-strategies/editor/` | 組合策略編輯器 | 以 `strategy_id` 查詢參數指定策略 |
@@ -17,7 +17,7 @@ Dashboard 採功能導向 URL：
 
 `/live/`、未來 `/replay/` 與 `/backtest/` 共用
 `tw_quant.strategy.analyze_strategies()`；資料來源先轉成標準 `KBar`，再進入
-同一套 ORB／BNF、停損／停利與模擬成交流程，避免不同模式的規則漂移。
+同一套基本策略、停損／停利與模擬成交流程，避免不同模式的規則漂移。
 策略管理頁透過 `GET /api/strategies` 載入欄位規格，並以
 `PUT /api/strategies/{strategy}` 儲存到後端 SQLite；Live、Replay 與 Backtest
 下一次分析時都會使用這份共用設定。
