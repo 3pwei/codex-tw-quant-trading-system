@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal, Protocol
 
 from ..events import (
@@ -67,6 +67,7 @@ class RealizedTrade:
     net_pnl: float
     exit_reason: str
     exit_order_id: str
+    trading_date: date | None
 
 
 @dataclass
@@ -236,6 +237,7 @@ class PositionLedger:
                 net_pnl=net_pnl,
                 exit_reason=event.reason,
                 exit_order_id=event.order_id,
+                trading_date=event.trading_date,
             )
         )
         state.realized_pnl += net_pnl
@@ -290,6 +292,33 @@ class PassThroughRiskGate:
             reason="simulation_default_approved",
         )
         return [decision]
+
+
+class DisabledRiskGate:
+    """Fail closed for new exposure while still permitting risk reduction."""
+
+    def on_order(self, event: DomainEvent) -> list[RiskDecision]:
+        if not isinstance(event, OrderIntent):
+            raise TypeError("DisabledRiskGate.on_order requires OrderIntent")
+        approved = event.reduce_only
+        reason = "risk_reducing_approved" if approved else "risk_gate_not_configured"
+        return [
+            RiskDecision(
+                meta=EventMetadata.create(
+                    kind="risk_decision",
+                    occurred_at=event.meta.occurred_at,
+                    source="disabled_risk",
+                    source_key=event.order_id,
+                    causation_id=event.meta.event_id,
+                    correlation_id=event.meta.correlation_id,
+                    owner_id=event.meta.owner_id,
+                ),
+                order_id=event.order_id,
+                approved=approved,
+                approved_quantity=event.quantity if approved else 0,
+                reason=reason,
+            )
+        ]
 
 
 class SignalOrderRouter:
@@ -347,6 +376,9 @@ class SignalOrderRouter:
                 purpose=purpose,
                 reduce_only=reduce_only,
                 reason=event.reason,
+                reference_price=event.reference_price,
+                stop_loss_price=event.stop_loss_price,
+                trading_date=event.trading_date,
             )
         ]
 
@@ -372,8 +404,6 @@ class SimulatedBroker:
         PositionLedger._owner(event)
         existing = self.orders.get(event.order_id)
         if existing is not None:
-            if existing.intent != event:
-                raise ValueError(f"conflicting duplicate order_id: {event.order_id}")
             return None
         self.orders[event.order_id] = OrderRecord(event)
         self._order_sequence.append(event.order_id)
@@ -418,6 +448,7 @@ class SimulatedBroker:
             slippage=self.costs.slippage_points,
             purpose=order.purpose,
             reason=order.reason,
+            trading_date=order.trading_date,
         )
         record.status = "filled"
         record.status_reason = "simulated_fill"
@@ -534,6 +565,23 @@ class SimulatedBroker:
             self._bars_with_fills.add(event.meta.event_id)
         return fills or None
 
+    def on_session(self, event: DomainEvent) -> None:
+        if not isinstance(event, SessionEvent):
+            raise TypeError("SimulatedBroker.on_session requires SessionEvent")
+        if event.action not in {"closing", "closed"}:
+            return None
+        for record in self.orders.values():
+            order = record.intent
+            if (
+                record.status == "approved"
+                and order.execution_timing == "next_bar_open"
+                and order.symbol == event.symbol
+                and order.contract == event.contract
+            ):
+                record.status = "rejected"
+                record.status_reason = "session_closed_before_fill"
+        return None
+
     def bar_emitted_fill(self, event_id: str) -> bool:
         return event_id in self._bars_with_fills
 
@@ -567,6 +615,11 @@ class PositionLiquidator:
             execution_timing="current_close",
             reduce_only=True,
             reason=reason,
+            trading_date=(
+                cause.trading_date
+                if isinstance(cause, (BarClosedEvent, SessionEvent))
+                else None
+            ),
         )
 
     def _intents(
@@ -633,11 +686,12 @@ class SimulatedExecutionPipeline:
         costs: FuturesCostConfig | None = None,
         default_quantity: int = 1,
         risk_gate: RiskGate | None = None,
+        ledger: PositionLedger | None = None,
     ):
         resolved_costs = costs or FuturesCostConfig()
-        self.ledger = PositionLedger(multiplier=resolved_costs.multiplier)
+        self.ledger = ledger or PositionLedger(multiplier=resolved_costs.multiplier)
         self.broker = SimulatedBroker(resolved_costs, self.ledger)
-        self.risk = risk_gate or PassThroughRiskGate()
+        self.risk = risk_gate or DisabledRiskGate()
         self.router = SignalOrderRouter(self.ledger, default_quantity=default_quantity)
         self.liquidator = PositionLiquidator(self.ledger)
 
@@ -651,7 +705,14 @@ class SimulatedExecutionPipeline:
         engine.subscribe("bar_closed", self.liquidator.on_bar)
         engine.subscribe("fill", self.ledger.on_fill)
         engine.subscribe("fill", self.liquidator.on_fill)
+        risk_fill_handler = getattr(self.risk, "on_fill", None)
+        if callable(risk_fill_handler):
+            engine.subscribe("fill", risk_fill_handler)
+        engine.subscribe("session", self.broker.on_session)
         engine.subscribe("session", self.liquidator.on_session)
+        risk_session_handler = getattr(self.risk, "on_session", None)
+        if callable(risk_session_handler):
+            engine.subscribe("session", risk_session_handler)
 
     def _mark_after_bar(self, event: DomainEvent) -> list[PositionEvent] | None:
         if not isinstance(event, BarClosedEvent):

@@ -132,6 +132,8 @@ class SignalEvent:
     action: Literal["enter", "exit"]
     reference_price: float
     reason: str
+    stop_loss_price: float | None = None
+    trading_date: date | None = None
     kind: Literal["signal"] = field(default="signal", init=False)
 
     def __post_init__(self) -> None:
@@ -141,6 +143,8 @@ class SignalEvent:
             raise ValueError("strategy_id and positive strategy_version are required")
         if self.reference_price <= 0:
             raise ValueError("reference_price must be positive")
+        if self.stop_loss_price is not None and self.stop_loss_price <= 0:
+            raise ValueError("stop_loss_price must be positive when provided")
 
 
 @dataclass(frozen=True)
@@ -158,6 +162,9 @@ class OrderIntent:
     execution_timing: Literal["next_bar_open", "current_close"] = "next_bar_open"
     reduce_only: bool = False
     reason: str = "strategy_signal"
+    reference_price: float = 0.0
+    stop_loss_price: float | None = None
+    trading_date: date | None = None
     kind: Literal["order_intent"] = field(default="order_intent", init=False)
 
     def __post_init__(self) -> None:
@@ -167,6 +174,10 @@ class OrderIntent:
             raise ValueError("strategy_version and quantity must be positive")
         if not self.reason:
             raise ValueError("reason is required")
+        if self.reference_price < 0:
+            raise ValueError("reference_price cannot be negative")
+        if self.stop_loss_price is not None and self.stop_loss_price <= 0:
+            raise ValueError("stop_loss_price must be positive when provided")
 
 
 @dataclass(frozen=True)
@@ -206,6 +217,7 @@ class FillEvent:
     slippage: float = 0.0
     purpose: Literal["entry", "exit", "liquidation"] = "entry"
     reason: str = "simulated_fill"
+    trading_date: date | None = None
     kind: Literal["fill"] = field(default="fill", init=False)
 
     def __post_init__(self) -> None:
@@ -273,13 +285,23 @@ DomainEvent: TypeAlias = (
 )
 
 
+def _json_compatible(value: object) -> object:
+    if isinstance(value, datetime):
+        return value.isoformat(timespec="microseconds")
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {key: _json_compatible(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_compatible(item) for item in value]
+    return value
+
+
 def event_to_dict(event: DomainEvent) -> dict[str, object]:
     """Serialize an event to JSON-compatible primitives for audit storage/APIs."""
-    payload = asdict(event)
+    payload = _json_compatible(asdict(event))
+    assert isinstance(payload, dict)
     payload["kind"] = event.kind
-    payload["meta"]["occurred_at"] = event.meta.occurred_at.isoformat(timespec="microseconds")
-    if isinstance(event, (BarClosedEvent, SessionEvent)):
-        payload["trading_date"] = event.trading_date.isoformat()
     # Fail early if a future event adds a value that is not audit-log serializable.
     json.dumps(payload, sort_keys=True)
     return payload

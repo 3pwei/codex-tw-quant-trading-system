@@ -25,6 +25,7 @@
 - 無程式碼多週期策略組合器：Setup／Entry／Exit／Risk、ALL／ANY 與版本追蹤
 - 具型別的統一事件模型、可重現事件 ID、虛擬時鐘與確定性事件迴圈
 - 事件式模擬成交與部位帳本：下一根開盤、期貨成本、多空、PnL、時段／換月平倉
+- Paper-only 帳戶風控：權限、部位／單筆／每日限制、連敗冷卻與 Kill Switch
 
 ## 架構
 
@@ -73,6 +74,7 @@ CSV 1 分 K
 | `tw_quant/strategy/parameters.py` | 共用參數規格、預設值與後端驗證 |
 | `tw_quant/strategy/composite.py` | 多週期規則驗證、原子訊號組合與共用執行核心 |
 | `tw_quant/risk/engine.py` | 共用停損、停利價格與觸發優先序 |
+| `tw_quant/risk/account.py` | Paper 權限、帳戶級限制、Kill Switch 與風控稽核 |
 | `tw_quant/execution/simulator.py` | 下一根開盤、風險出場與時段平倉模擬 |
 | `tw_quant/execution/event_simulator.py` | 統一事件引擎的模擬券商、訂單狀態與部位／PnL 帳本 |
 | `tw_quant/backtest/runner.py` | 成本、交易、權益與績效報表 |
@@ -246,9 +248,10 @@ Setup、Entry 與 Exit 都能加入多條基本策略規則，個別選擇 `1m`�
 核心，也可執行歷史回測，但不會連接 Broker 下單。
 
 `tw_quant/events/` 是 Level 2 遷移的事件骨幹，`SimulatedExecutionPipeline` 已能在
-記憶體內完成 Signal → Order → Risk → Fill → Position/PnL；預設風控閘門只供測試，
-帳戶級風控會在下一階段接入。現有 Live、Replay 與 Backtest 尚未切換到此管線，
-因此目前 API／Dashboard 輸出不變，也不會呼叫真實券商。
+記憶體內完成 Signal → Order → Risk → Fill → Position/PnL。管線預設拒絕新增曝險；
+只有明確注入 `AccountRiskGate`，且帳號為 active、paper 模式並具有 `orders.paper`
+權限時才會核准。現有 Live、Replay 與 Backtest 尚未切換到此管線，因此目前
+API／Dashboard 輸出不變，也不會呼叫真實券商。
 
 ### Mock／Replay 本機啟動
 
