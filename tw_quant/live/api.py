@@ -13,7 +13,7 @@ from fastapi import (
     WebSocketDisconnect,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
 from ..auth import (
@@ -145,6 +145,60 @@ def _page_permission(path: str) -> str | None:
         return "admin.settings.read"
     return None
 
+
+
+def _authorization_denied_response(
+    original_uri: str, error: AuthorizationError
+) -> Response:
+    detail = str(error)
+    if original_uri.startswith(("/api/", "/ws/")):
+        return JSONResponse(
+            {"detail": detail},
+            status_code=403,
+            headers={"Cache-Control": "no-store"},
+        )
+    if "not registered" in detail:
+        title = "帳號尚未開通"
+        message = "Email 已完成驗證，但尚未列入平台使用者名單。"
+    elif "suspended" in detail or "revoked" in detail:
+        title = "帳號目前無法使用"
+        message = "此帳號已被暫停或撤銷，請聯絡平台管理員。"
+    else:
+        title = "你沒有此頁面的權限"
+        message = "帳號已登入，但目前角色不允許使用這項管理功能。"
+    return HTMLResponse(
+        f"""<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="robots" content="noindex,nofollow">
+  <title>{title}｜Wade Quant Lab</title>
+  <style>
+    :root{{color-scheme:dark;font-family:Inter,"Noto Sans TC",sans-serif}}
+    *{{box-sizing:border-box}}
+    body{{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;
+      color:#edf7f3;background:#07110f}}
+    main{{width:min(520px,100%);padding:36px;border:1px solid rgba(157,197,184,.25);
+      background:#0c1815;box-shadow:0 24px 80px rgba(0,0,0,.35)}}
+    small{{color:#42d6a4;font:700 10px ui-monospace,monospace;letter-spacing:.18em}}
+    h1{{margin:14px 0 0;font-size:28px}}p{{margin:16px 0;color:#9bb0aa;line-height:1.7}}
+    a{{display:inline-block;margin-top:12px;padding:11px 15px;color:#07110f;
+      background:#42d6a4;text-decoration:none;font-weight:800}}
+  </style>
+</head>
+<body>
+  <main>
+    <small>ACCESS CONTROL</small>
+    <h1>{title}</h1>
+    <p>{message}</p>
+    <a href="/cdn-cgi/access/logout">登出並改用其他 Email</a>
+  </main>
+</body>
+</html>""",
+        status_code=403,
+        headers={"Cache-Control": "no-store"},
+    )
 
 def create_app(
     settings: LiveSettings | None = None,
@@ -285,15 +339,14 @@ def create_app(
             )
         except AccessTokenError as exc:
             raise HTTPException(status_code=401, detail=str(exc)) from exc
+        original_uri = request.headers.get("x-original-uri", "/")
         try:
             user = auth_service.identify(identity)
-            page_permission = _page_permission(
-                request.headers.get("x-original-uri", "/")
-            )
+            page_permission = _page_permission(original_uri)
             if page_permission:
                 auth_service.require_permission(user, page_permission)
         except AuthorizationError as exc:
-            raise HTTPException(status_code=403, detail=str(exc)) from exc
+            return _authorization_denied_response(original_uri, exc)
         headers = {"X-Authenticated-Subject": identity.subject}
         if identity.email:
             headers["X-Authenticated-Email"] = identity.email
