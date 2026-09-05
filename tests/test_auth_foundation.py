@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 from tw_quant.auth import (
     AccessIdentity,
+    AccessRequestStatus,
     AccessTokenError,
     AccountStatus,
     AuthorizationError,
@@ -88,7 +89,9 @@ class AuthRepositoryTests(unittest.TestCase):
         self.assertEqual(user.role, Role.RESEARCHER)
         self.assertEqual(user.trading_mode, TradingMode.DISABLED)
         self.assertEqual(user.access_subject, "cf-applicant")
-        self.assertEqual(self.repository.access_requests(), [])
+        self.assertEqual(
+            self.repository.access_requests(AccessRequestStatus.PENDING), []
+        )
         self.assertEqual(
             self.repository.resolve_identity(identity).user_id, user.user_id
         )
