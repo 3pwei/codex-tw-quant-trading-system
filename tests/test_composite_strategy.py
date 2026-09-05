@@ -117,7 +117,7 @@ class CompositeDefinitionTests(unittest.TestCase):
             try:
                 definition = validate_composite_definition(orb_composite())
                 first = repo.save_composite_strategy("combo", definition)
-                changed = {**definition, "name": "新版"}
+                changed = {**definition, "description": "新版內容"}
                 second = repo.save_composite_strategy("combo", changed)
                 self.assertEqual((first["version"], second["version"]), (1, 2))
                 self.assertEqual(
@@ -125,7 +125,12 @@ class CompositeDefinitionTests(unittest.TestCase):
                     [2, 1],
                 )
                 self.assertEqual(repo.composite_strategy("combo", 1)["name"], "ORB 低週期進場")
-                self.assertEqual(repo.composite_strategies()[0]["name"], "新版")
+                self.assertEqual(
+                    repo.composite_strategies()[0]["name"], "ORB 低週期進場"
+                )
+                renamed = {**definition, "name": "新版"}
+                with self.assertRaisesRegex(ValueError, "另存為新策略"):
+                    repo.save_composite_strategy("combo", renamed)
                 archived = repo.archive_composite_strategy("combo")
                 self.assertEqual(archived["id"], "combo")
                 self.assertTrue(repo.composite_strategy_archived("combo"))
@@ -144,7 +149,8 @@ class CompositeDefinitionTests(unittest.TestCase):
             try:
                 definition = validate_composite_definition(orb_composite())
                 repo.save_composite_strategy("referenced", definition)
-                repo.save_composite_strategy("unused", definition)
+                unused_definition = {**definition, "name": "未引用策略"}
+                repo.save_composite_strategy("unused", unused_definition)
                 with self.assertRaisesRegex(ValueError, "只有封存策略"):
                     repo.purge_archived_composite_strategies(["unused"])
                 repo.archive_composite_strategy("referenced")
@@ -196,7 +202,7 @@ class CompositeApiTests(unittest.TestCase):
                 item = created.json()
                 self.assertEqual(item["version"], 1)
                 updated_definition = orb_composite()
-                updated_definition["name"] = "ORB v2"
+                updated_definition["description"] = "第二版"
                 updated = client.put(
                     f"/api/composite-strategies/{item['id']}",
                     json={"definition": updated_definition},
@@ -294,6 +300,57 @@ class CompositeApiTests(unittest.TestCase):
                     ).status_code,
                     404,
                 )
+
+    def test_rename_starts_new_lineage_and_name_is_reserved_when_archived(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "bars.sqlite3"
+            settings = LiveSettings(
+                mode="mock", db_path=str(path),
+                replay_csv=str(ROOT / "data/mock_tmf_ticks.csv"),
+                replay_speed=1000, heartbeat_seconds=0.05,
+            )
+            app = create_app(settings)
+            with TestClient(app) as client:
+                created = client.post(
+                    "/api/composite-strategies",
+                    json={"definition": orb_composite()},
+                ).json()
+                renamed_definition = {**orb_composite(), "name": "全新名稱"}
+                renamed_response = client.put(
+                    f"/api/composite-strategies/{created['id']}",
+                    json={"definition": renamed_definition},
+                )
+                self.assertEqual(renamed_response.status_code, 200)
+                renamed = renamed_response.json()
+                self.assertNotEqual(renamed["id"], created["id"])
+                self.assertEqual(renamed["version"], 1)
+                self.assertEqual(
+                    renamed["created_from_strategy_id"], created["id"]
+                )
+                self.assertEqual(
+                    {item["name"] for item in client.get(
+                        "/api/composite-strategies"
+                    ).json()["strategies"]},
+                    {"ORB 低週期進場", "全新名稱"},
+                )
+
+                duplicate_active = client.post(
+                    "/api/composite-strategies",
+                    json={"definition": renamed_definition},
+                )
+                self.assertEqual(duplicate_active.status_code, 409)
+                self.assertIn("已存在", duplicate_active.json()["detail"])
+
+                archived = client.delete(
+                    f"/api/composite-strategies/{renamed['id']}"
+                )
+                self.assertEqual(archived.status_code, 200)
+                duplicate_archived = client.post(
+                    "/api/composite-strategies",
+                    json={"definition": renamed_definition},
+                )
+                self.assertEqual(duplicate_archived.status_code, 409)
+                self.assertIn("包含封存策略", duplicate_archived.json()["detail"])
 
 
 if __name__ == "__main__":
