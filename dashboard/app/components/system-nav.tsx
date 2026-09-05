@@ -9,7 +9,8 @@ const routes = [
   { href: "/backtest/", label: "歷史回測" },
   { href: "/replay/", label: "行情回放" },
   { href: "/history/", label: "執行紀錄" },
-  { href: "/strategies/", label: "策略管理" },
+  { href: "/strategies/", label: "基本策略" },
+  { href: "/composite-strategies/", label: "組合策略" },
   { href: "/settings/", label: "系統設定", admin: true },
   { href: "/admin/users/", label: "帳號權限", admin: true },
 ] as const;

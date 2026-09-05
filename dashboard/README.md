@@ -10,6 +10,9 @@ Dashboard 採功能導向 URL：
 | `/replay/` | 動態歷史回放 | 路由已保留，功能建置中 |
 | `/history/` | 回測／交易執行紀錄 | 查詢、篩選、明細與永久刪除 |
 | `/strategies/` | ORB／BNF 策略與風險規則 | 可輸入並儲存參數 |
+| `/composite-strategies/` | 組合策略清單、版本與封存管理 | 可新增、搜尋、編輯與回測 |
+| `/composite-strategies/new/` | 新增組合策略 | 可從基本策略或歷史版本開始 |
+| `/composite-strategies/editor/` | 組合策略編輯器 | 以 `strategy_id` 查詢參數指定策略 |
 | `/settings/` | 行情、商品與部署設定摘要 | 唯讀摘要可使用 |
 
 `/live/`、未來 `/replay/` 與 `/backtest/` 共用

@@ -1,7 +1,7 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
-import CompositeBuilder from "./composite-builder";
 
 type ParameterField = {
   label: string;
@@ -154,13 +154,13 @@ export default function StrategyManager() {
         </div>
         <div className="strategy-actions">
           <button className="secondary" type="button" onClick={() => resetDraft(strategy)}>恢復預設</button>
+          <Link href={`/composite-strategies/new/?strategy=${strategy.key}`}>用此策略建立組合</Link>
           <button type="button" disabled={saving === strategy.key} onClick={() => save(strategy)}>
             {saving === strategy.key ? "儲存中…" : "儲存參數"}
           </button>
         </div>
       </article>)}
     </section>
-    <CompositeBuilder strategies={strategies.map(({ key, name, parameters }) => ({ key, name, parameters }))} />
     <p className="page-note">參數儲存在伺服器 SQLite，不會送入 GitHub；新設定會同步套用於 Live、Replay 與 Backtest 的共用策略核心。正式下單功能仍未啟用。</p>
   </>;
 }
