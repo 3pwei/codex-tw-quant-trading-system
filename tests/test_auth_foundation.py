@@ -55,6 +55,51 @@ class AuthRepositoryTests(unittest.TestCase):
         self.assertIsNone(user)
         self.assertEqual(self.repository.users(), [])
 
+    def test_access_request_is_deduplicated_and_can_be_reviewed(self):
+        admin = self.repository.create_user(
+            "admin@example.com", role=Role.ADMIN
+        )
+        identity = AccessIdentity(
+            subject="cf-applicant", email="Applicant@Example.com"
+        )
+
+        first = self.repository.submit_access_request(identity)
+        repeated = self.repository.submit_access_request(identity)
+
+        self.assertEqual(first.request_id, repeated.request_id)
+        self.assertEqual(repeated.email, "applicant@example.com")
+        self.assertEqual(repeated.status.value, "pending")
+        self.assertEqual(len(self.repository.access_requests()), 1)
+
+        rejected = self.repository.reject_access_request(
+            first.request_id, actor_user_id=admin.user_id
+        )
+        self.assertEqual(rejected.status.value, "rejected")
+
+        resubmitted = self.repository.submit_access_request(identity)
+        self.assertEqual(resubmitted.request_id, first.request_id)
+        self.assertEqual(resubmitted.status.value, "pending")
+
+        approved, user = self.repository.approve_access_request(
+            first.request_id, actor_user_id=admin.user_id
+        )
+        self.assertEqual(approved.status.value, "approved")
+        self.assertEqual(user.email, "applicant@example.com")
+        self.assertEqual(user.role, Role.RESEARCHER)
+        self.assertEqual(user.trading_mode, TradingMode.DISABLED)
+        self.assertEqual(user.access_subject, "cf-applicant")
+        self.assertEqual(self.repository.access_requests(), [])
+        self.assertEqual(
+            self.repository.resolve_identity(identity).user_id, user.user_id
+        )
+
+        actions = [
+            event["action"] for event in self.repository.audit_events()
+        ]
+        self.assertIn("access_request.submitted", actions)
+        self.assertIn("access_request.rejected", actions)
+        self.assertIn("access_request.approved", actions)
+
     def test_user_changes_are_audited_and_non_trader_cannot_trade(self):
         admin = self.repository.create_user(
             "admin@example.com", role=Role.ADMIN
