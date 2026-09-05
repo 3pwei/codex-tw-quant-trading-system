@@ -21,6 +21,10 @@ class StrategyNameConflictError(ValueError):
     """Raised when an owner already has a composite strategy with this name."""
 
 
+class StrategyDependencyError(StrategyPurgeError):
+    """Raised when another composite strategy references a strategy version."""
+
+
 class StrategyReferencedError(StrategyPurgeError):
     def __init__(self, references: dict[str, int]):
         self.references = references
@@ -184,6 +188,7 @@ class SQLiteBarRepository:
         self.connection.commit()
         self._ensure_backtest_schema()
         self._ensure_ownership_schema()
+        self._ensure_composite_dependency_schema()
 
     def _ensure_backtest_schema(self) -> None:
         columns = {
@@ -331,6 +336,35 @@ class SQLiteBarRepository:
         )
         self.connection.commit()
 
+    def _ensure_composite_dependency_schema(self) -> None:
+        self.connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS composite_strategy_dependencies (
+                owner_user_id TEXT NOT NULL,
+                parent_strategy_id TEXT NOT NULL,
+                parent_version INTEGER NOT NULL,
+                child_strategy_id TEXT NOT NULL,
+                child_version INTEGER NOT NULL,
+                PRIMARY KEY(
+                    parent_strategy_id, parent_version,
+                    child_strategy_id, child_version
+                ),
+                FOREIGN KEY(parent_strategy_id, parent_version)
+                    REFERENCES composite_strategies(strategy_id, version)
+                    ON DELETE CASCADE,
+                FOREIGN KEY(child_strategy_id, child_version)
+                    REFERENCES composite_strategies(strategy_id, version)
+                    ON DELETE RESTRICT
+            )
+            """
+        )
+        self.connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_composite_dependency_child "
+            "ON composite_strategy_dependencies("
+            "owner_user_id, child_strategy_id, child_version)"
+        )
+        self.connection.commit()
+
     def claim_legacy_ownership(self, owner_user_id: str) -> None:
         if not owner_user_id or owner_user_id == DEFAULT_OWNER_ID:
             raise ValueError("a real owner user id is required")
@@ -340,6 +374,7 @@ class SQLiteBarRepository:
                 "composite_strategies",
                 "archived_composite_strategies",
                 "backtest_runs",
+                "composite_strategy_dependencies",
             ):
                 self.connection.execute(
                     f"UPDATE {table} SET owner_user_id=? WHERE owner_user_id=?",
@@ -665,16 +700,40 @@ class SQLiteBarRepository:
                 (strategy_id, owner),
             ).fetchone()
             version = int(row["version"]) + 1
-            self.connection.execute(
-                "INSERT INTO composite_strategies("
-                "strategy_id,version,name,definition_json,created_at,owner_user_id"
-                ") VALUES (?, ?, ?, ?, ?, ?)",
-                (
-                    strategy_id, version, definition["name"], payload,
-                    created_at, owner,
-                ),
-            )
-            self.connection.commit()
+            dependencies: set[tuple[str, int]] = set()
+            for role in ("setup", "entry", "exit"):
+                group = definition.get(role, {})
+                if not isinstance(group, dict):
+                    continue
+                for rule in group.get("rules", []):
+                    if isinstance(rule, dict) and rule.get("source") == "composite":
+                        dependencies.add((
+                            str(rule["strategy_id"]), int(rule["version"])
+                        ))
+            try:
+                self.connection.execute("BEGIN IMMEDIATE")
+                self.connection.execute(
+                    "INSERT INTO composite_strategies("
+                    "strategy_id,version,name,definition_json,created_at,"
+                    "owner_user_id) VALUES (?, ?, ?, ?, ?, ?)",
+                    (
+                        strategy_id, version, definition["name"], payload,
+                        created_at, owner,
+                    ),
+                )
+                self.connection.executemany(
+                    "INSERT INTO composite_strategy_dependencies("
+                    "owner_user_id,parent_strategy_id,parent_version,"
+                    "child_strategy_id,child_version) VALUES (?,?,?,?,?)",
+                    [
+                        (owner, strategy_id, version, child_id, child_version)
+                        for child_id, child_version in dependencies
+                    ],
+                )
+                self.connection.commit()
+            except Exception:
+                self.connection.rollback()
+                raise
         return {
             "id": strategy_id,
             "version": version,
@@ -751,6 +810,22 @@ class SQLiteBarRepository:
             }
             if references:
                 raise StrategyReferencedError(references)
+            dependency_rows = self.connection.execute(
+                f"SELECT child_strategy_id, parent_strategy_id "
+                f"FROM composite_strategy_dependencies "
+                f"WHERE child_strategy_id IN ({placeholders}) "
+                f"AND parent_strategy_id NOT IN ({placeholders}) "
+                f"AND owner_user_id=?",
+                [*ids, *ids, owner],
+            ).fetchall()
+            if dependency_rows:
+                labels = ", ".join(sorted({
+                    f"{row['child_strategy_id']} ← {row['parent_strategy_id']}"
+                    for row in dependency_rows
+                }))
+                raise StrategyDependencyError(
+                    f"策略仍被其他組合策略引用，禁止永久刪除：{labels}"
+                )
             version_rows = self.connection.execute(
                 f"SELECT strategy_id, COUNT(*) AS count FROM composite_strategies "
                 f"WHERE strategy_id IN ({placeholders}) AND owner_user_id=? "
@@ -760,6 +835,12 @@ class SQLiteBarRepository:
             version_count = sum(int(row["count"]) for row in version_rows)
             try:
                 self.connection.execute("BEGIN IMMEDIATE")
+                self.connection.execute(
+                    f"DELETE FROM composite_strategy_dependencies "
+                    f"WHERE parent_strategy_id IN ({placeholders}) "
+                    f"AND owner_user_id=?",
+                    [*ids, owner],
+                )
                 self.connection.execute(
                     f"DELETE FROM archived_composite_strategies "
                     f"WHERE strategy_id IN ({placeholders}) AND owner_user_id=?",

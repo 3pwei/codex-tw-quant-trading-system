@@ -253,6 +253,24 @@ class OwnershipApiTests(unittest.TestCase):
                     ).status_code,
                     404,
                 )
+                cross_owner_definition = default_composite_definition()
+                cross_owner_definition["name"] = "跨帳號引用"
+                cross_owner_definition["entry"] = {
+                    "operator": "all",
+                    "confirmation_window_minutes": 15,
+                    "rules": [{
+                        "source": "composite",
+                        "strategy_id": strategy_id,
+                        "version": 1,
+                    }],
+                }
+                cross_owner = client.post(
+                    "/api/composite-strategies",
+                    headers=admin,
+                    json={"definition": cross_owner_definition},
+                )
+                self.assertEqual(cross_owner.status_code, 422)
+                self.assertIn("找不到被引用", cross_owner.json()["detail"])
                 self.assertEqual(
                     client.delete(
                         f"/api/composite-strategies/{strategy_id}",

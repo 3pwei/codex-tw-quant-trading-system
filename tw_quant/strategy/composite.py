@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import date, datetime
-from typing import Mapping
+from typing import Callable, Mapping
 from uuid import uuid4
 
 from ..market import SUPPORTED_TIMEFRAMES, KBar, aggregate_kbars, validate_timeframe
@@ -14,6 +14,8 @@ from .parameters import SUPPORTED_STRATEGIES, validate_strategy_parameters
 ROLES = ("setup", "entry", "exit")
 OPERATORS = ("all", "any")
 DIRECTIONS = ("both", "long", "short")
+MAX_COMPOSITE_DEPTH = 3
+CompositeResolver = Callable[[str, int], Mapping[str, object] | None]
 
 
 def default_composite_definition() -> dict[str, object]:
@@ -59,6 +61,7 @@ def _validate_group(
     role: str,
     raw: object,
     atomic_parameters: Mapping[str, Mapping[str, object]],
+    composite_resolver: CompositeResolver | None = None,
 ) -> dict[str, object]:
     if not isinstance(raw, Mapping):
         raise ValueError(f"{role} 必須是規則群組")
@@ -80,6 +83,34 @@ def _validate_group(
     for index, item in enumerate(raw_rules):
         if not isinstance(item, Mapping):
             raise ValueError(f"{role} 第 {index + 1} 條規則格式錯誤")
+        source = str(item.get("source", "atomic")).lower()
+        if source == "composite":
+            if composite_resolver is None:
+                raise ValueError("組合策略引用需要版本解析器")
+            strategy_id = str(item.get("strategy_id", "")).strip()
+            try:
+                version = int(item.get("version", 0))
+            except (TypeError, ValueError) as exc:
+                raise ValueError("組合策略引用版本必須是正整數") from exc
+            if not strategy_id or version < 1:
+                raise ValueError("組合策略引用必須包含 strategy_id 與 version")
+            resolved = composite_resolver(strategy_id, version)
+            if resolved is None:
+                raise ValueError(f"找不到被引用的組合策略版本：{strategy_id} v{version}")
+            child_definition = resolved.get("definition")
+            if not isinstance(child_definition, Mapping):
+                raise ValueError("被引用的組合策略版本內容無效")
+            rules.append({
+                "id": str(item.get("id") or f"{role}-{index + 1}"),
+                "source": "composite",
+                "strategy_id": strategy_id,
+                "version": version,
+                "name": str(resolved.get("name", child_definition.get("name", ""))),
+                "definition": deepcopy(dict(child_definition)),
+            })
+            continue
+        if source != "atomic":
+            raise ValueError(f"{role} 第 {index + 1} 條規則來源無效")
         strategy = str(item.get("strategy", "")).lower()
         if strategy not in SUPPORTED_STRATEGIES:
             raise ValueError(f"{role} 使用不支援的策略：{strategy}")
@@ -91,6 +122,7 @@ def _validate_group(
         merged.update(dict(overrides or {}))
         rules.append({
             "id": str(item.get("id") or f"{role}-{index + 1}"),
+            "source": "atomic",
             "strategy": strategy,
             "interval": interval,
             "parameters": validate_strategy_parameters(strategy, merged),
@@ -105,6 +137,7 @@ def _validate_group(
 def validate_composite_definition(
     raw: Mapping[str, object],
     atomic_parameters: Mapping[str, Mapping[str, object]] | None = None,
+    composite_resolver: CompositeResolver | None = None,
 ) -> dict[str, object]:
     defaults = default_composite_definition()
     name = str(raw.get("name", "")).strip()
@@ -131,9 +164,17 @@ def validate_composite_definition(
         "description": str(raw.get("description", "")).strip()[:500],
         "enabled": bool(raw.get("enabled", True)),
         "direction": direction,
-        "setup": _validate_group("setup", raw.get("setup", defaults["setup"]), saved),
-        "entry": _validate_group("entry", raw.get("entry"), saved),
-        "exit": _validate_group("exit", raw.get("exit", defaults["exit"]), saved),
+        "setup": _validate_group(
+            "setup", raw.get("setup", defaults["setup"]), saved,
+            composite_resolver,
+        ),
+        "entry": _validate_group(
+            "entry", raw.get("entry"), saved, composite_resolver,
+        ),
+        "exit": _validate_group(
+            "exit", raw.get("exit", defaults["exit"]), saved,
+            composite_resolver,
+        ),
         "risk": {
             "monitor_interval": monitor_interval,
             "stop_loss_pct": stop,
@@ -144,26 +185,70 @@ def validate_composite_definition(
     return result
 
 
+def validate_composite_dependencies(
+    definition: Mapping[str, object],
+    strategy_id: str,
+    max_depth: int = MAX_COMPOSITE_DEPTH,
+) -> None:
+    """Reject self/cyclic references and excessively deep composite trees."""
+
+    def walk(
+        current: Mapping[str, object], path: tuple[str, ...], depth: int
+    ) -> None:
+        if depth > max_depth:
+            raise ValueError(f"組合策略最多支援 {max_depth} 層引用")
+        for role in ROLES:
+            group = current.get(role)
+            if not isinstance(group, Mapping):
+                continue
+            rules = group.get("rules", [])
+            if not isinstance(rules, list):
+                continue
+            for rule in rules:
+                if not isinstance(rule, Mapping) or rule.get("source") != "composite":
+                    continue
+                child_id = str(rule.get("strategy_id", ""))
+                if child_id in path:
+                    raise ValueError("組合策略不可循環引用或引用自己")
+                child = rule.get("definition")
+                if isinstance(child, Mapping):
+                    walk(child, (*path, child_id), depth + 1)
+
+    walk(definition, (strategy_id,), 1)
+
+
 def new_composite_id() -> str:
     return uuid4().hex
 
 
 def _rule_events(
-    bars: list[KBar], role: str, group: Mapping[str, object]
+    bars: list[KBar],
+    role: str,
+    group: Mapping[str, object],
+    cache: dict[tuple[str, int], tuple[list[dict[str, object]], list[dict[str, object]]]],
 ) -> list[dict[str, object]]:
     events: list[dict[str, object]] = []
     for rule in group["rules"]:  # type: ignore[index]
-        interval = str(rule["interval"])
-        strategy = str(rule["strategy"])
-        analysis = analyze_strategies(
-            aggregate_kbars(bars, interval),
-            [strategy],
-            force_close_last=False,
-            parameters={strategy: rule["parameters"]},
-            interval=interval,
-        )["strategies"][0]
+        if rule.get("source") == "composite":
+            key = (str(rule["strategy_id"]), int(rule["version"]))
+            if key not in cache:
+                cache[key] = generate_composite_signals(
+                    bars, rule["definition"], _cache=cache
+                )
+            signals = cache[key][0]
+            interval = "multi"
+        else:
+            interval = str(rule["interval"])
+            strategy = str(rule["strategy"])
+            signals = analyze_strategies(
+                aggregate_kbars(bars, interval),
+                [strategy],
+                force_close_last=False,
+                parameters={strategy: rule["parameters"]},
+                interval=interval,
+            )["strategies"][0]["signals"]
         wanted = "exit" if role == "exit" else "entry"
-        for signal in analysis["signals"]:
+        for signal in signals:
             if signal["event"] == wanted:
                 events.append({
                     **signal,
@@ -199,7 +284,13 @@ def _group_match(
 
 
 def generate_composite_signals(
-    source_bars: list[KBar], definition: Mapping[str, object]
+    source_bars: list[KBar],
+    definition: Mapping[str, object],
+    *,
+    _cache: dict[
+        tuple[str, int],
+        tuple[list[dict[str, object]], list[dict[str, object]]],
+    ] | None = None,
 ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
     """Run one composite definition on canonical closed 1-minute bars.
 
@@ -210,9 +301,12 @@ def generate_composite_signals(
     bars = sorted((bar for bar in source_bars if bar.status == "closed"), key=lambda b: b.time)
     if not bars:
         return [], []
+    cache = _cache if _cache is not None else {}
     events = []
     for role in ROLES:
-        events.extend(_rule_events(bars, role, definition[role]))  # type: ignore[index]
+        events.extend(
+            _rule_events(bars, role, definition[role], cache)  # type: ignore[index]
+        )
     events.sort(key=lambda item: str(item["time"]))
     by_time: dict[datetime, list[dict[str, object]]] = {}
     for event in events:
