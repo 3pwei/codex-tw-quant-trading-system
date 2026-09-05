@@ -90,11 +90,15 @@ export default function CompositeBuilder({ strategies }: { strategies: AtomicStr
   const save = async () => {
     setSaving(true); setError(""); setNotice("");
     try {
+      const renamed = Boolean(editing && draft.name.trim() !== editing.name);
       const url = editingId ? `${apiBase()}/api/composite-strategies/${editingId}` : `${apiBase()}/api/composite-strategies`;
       const response = await fetch(url, { method: editingId ? "PUT" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ definition: draft }) });
       const body = await response.json();
       if (!response.ok) throw new Error(body.detail ?? "組合策略儲存失敗");
-      setEditingId(body.id); await load(); setNotice(`${body.name} v${body.version} 已儲存，可到歷史回測選取。`);
+      setEditingId(body.id); await load();
+      setNotice(renamed
+        ? `${body.name} 已另存為全新策略 v1；原策略仍保留。`
+        : `${body.name} v${body.version} 已儲存，可到歷史回測選取。`);
     } catch (reason) { setError(reason instanceof Error ? reason.message : "組合策略儲存失敗"); }
     finally { setSaving(false); }
   };
@@ -149,7 +153,7 @@ export default function CompositeBuilder({ strategies }: { strategies: AtomicStr
         <RuleGroupEditor title="2 · ENTRY" hint="真正觸發進場，至少一條" value={draft.entry} strategies={strategies} required onChange={value => setGroup("entry", value)} />
         <RuleGroupEditor title="3 · EXIT" hint="策略出場條件；ANY 適合先到先出" value={draft.exit} strategies={strategies} onChange={value => setGroup("exit", value)} />
         <section className="composer-stage risk"><header><div><b>4 · RISK</b><span>必填；永遠用 1 分 K 監控價格風險</span></div></header><div className="composer-risk-grid"><label>停損 <input type="number" min={0.01} max={20} step={0.01} value={draft.risk.stop_loss_pct * 100} onChange={event => setDraft({ ...draft, risk: { ...draft.risk, stop_loss_pct: event.target.valueAsNumber / 100 } })} /> %</label><label>停利 <input type="number" min={0.01} max={50} step={0.01} value={draft.risk.take_profit_pct * 100} onChange={event => setDraft({ ...draft, risk: { ...draft.risk, take_profit_pct: event.target.valueAsNumber / 100 } })} /> %</label><label>最長持有 <input type="number" min={1} max={10080} value={draft.risk.max_holding_minutes} onChange={event => setDraft({ ...draft, risk: { ...draft.risk, max_holding_minutes: event.target.valueAsNumber } })} /> 分</label></div></section>
-        <div className="composer-save"><span>{editing ? `基於 ${editing.name} v${editing.version} 建立下一版` : "建立全新組合策略 v1"}</span><button type="button" disabled={saving} onClick={save}>{saving ? "儲存中…" : editingId ? "儲存為新版本" : "建立策略"}</button></div>
+        <div className="composer-save"><span>{editing ? (draft.name.trim() !== editing.name ? `名稱已變更；將另存為全新策略 v1，並保留 ${editing.name}` : `基於 ${editing.name} v${editing.version} 建立下一版`) : "建立全新組合策略 v1"}</span><button type="button" disabled={saving} onClick={save}>{saving ? "儲存中…" : editingId ? (editing && draft.name.trim() !== editing.name ? "另存為新策略" : "儲存為新版本") : "建立策略"}</button></div>
       </div>
     </div>
   </section>;

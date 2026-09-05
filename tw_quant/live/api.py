@@ -67,6 +67,7 @@ from .storage import (
     DEFAULT_OWNER_ID,
     BarRepository,
     SQLiteBarRepository,
+    StrategyNameConflictError,
     StrategyPurgeError,
     StrategyReferencedError,
 )
@@ -673,16 +674,20 @@ def create_app(
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        return repo.save_composite_strategy(
-            new_composite_id(), definition, owner_id
-        )
+        try:
+            return repo.save_composite_strategy(
+                new_composite_id(), definition, owner_id
+            )
+        except StrategyNameConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.put("/api/composite-strategies/{strategy_id}")
     def update_composite_strategy(
         strategy_id: str, update: CompositeStrategyUpdate, request: Request
     ):
         owner_id = request_owner_id(request)
-        if repo.composite_strategy(strategy_id, owner_user_id=owner_id) is None:
+        current = repo.composite_strategy(strategy_id, owner_user_id=owner_id)
+        if current is None:
             raise HTTPException(status_code=404, detail="找不到組合策略")
         if repo.composite_strategy_archived(strategy_id, owner_id):
             raise HTTPException(status_code=410, detail="組合策略已封存")
@@ -692,7 +697,18 @@ def create_app(
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        return repo.save_composite_strategy(strategy_id, definition, owner_id)
+        target_id = (
+            new_composite_id()
+            if definition["name"] != current["name"]
+            else strategy_id
+        )
+        try:
+            saved = repo.save_composite_strategy(target_id, definition, owner_id)
+        except StrategyNameConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if target_id != strategy_id:
+            saved["created_from_strategy_id"] = strategy_id
+        return saved
 
     @app.delete("/api/composite-strategies/{strategy_id}")
     def archive_composite_strategy(strategy_id: str, request: Request):

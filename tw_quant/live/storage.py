@@ -17,6 +17,10 @@ class StrategyPurgeError(ValueError):
     """Raised when a composite strategy cannot be permanently deleted."""
 
 
+class StrategyNameConflictError(ValueError):
+    """Raised when an owner already has a composite strategy with this name."""
+
+
 class StrategyReferencedError(StrategyPurgeError):
     def __init__(self, references: dict[str, int]):
         self.references = references
@@ -629,6 +633,32 @@ class SQLiteBarRepository:
             ).fetchone()
             if archived:
                 raise ValueError("已封存的組合策略不可修改")
+            latest = self.connection.execute(
+                "SELECT name FROM composite_strategies WHERE strategy_id=? "
+                "AND owner_user_id=? ORDER BY version DESC LIMIT 1",
+                (strategy_id, owner),
+            ).fetchone()
+            if latest is not None and latest["name"] != definition["name"]:
+                raise ValueError("變更策略名稱必須另存為新策略")
+            names = self.connection.execute(
+                """
+                SELECT item.strategy_id, item.name
+                FROM composite_strategies item
+                JOIN (
+                    SELECT strategy_id, MAX(version) AS version
+                    FROM composite_strategies WHERE owner_user_id=?
+                    GROUP BY strategy_id
+                ) latest ON latest.strategy_id=item.strategy_id
+                    AND latest.version=item.version
+                WHERE item.owner_user_id=? AND item.strategy_id<>?
+                """,
+                (owner, owner, strategy_id),
+            ).fetchall()
+            wanted_name = str(definition["name"]).casefold()
+            if any(str(item["name"]).casefold() == wanted_name for item in names):
+                raise StrategyNameConflictError(
+                    f"策略名稱「{definition['name']}」已存在（包含封存策略）"
+                )
             row = self.connection.execute(
                 "SELECT COALESCE(MAX(version), 0) AS version "
                 "FROM composite_strategies WHERE strategy_id=? AND owner_user_id=?",
