@@ -6,6 +6,8 @@ from .access import (
     DisabledAccessValidator,
 )
 from .models import (
+    AccessRequest,
+    AccessRequestStatus,
     AccountStatus,
     AuthUser,
     Role,
@@ -16,6 +18,8 @@ from .service import AuthorizationError, AuthService
 
 __all__ = [
     "AccessIdentity",
+    "AccessRequest",
+    "AccessRequestStatus",
     "AccessTokenError",
     "AccessValidator",
     "AccountStatus",
