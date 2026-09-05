@@ -40,6 +40,7 @@ class BarRepository(Protocol):
     def latest(self, symbol: str, limit: int) -> list[KBar]: ...
     def latest_forming(self, symbol: str) -> KBar | None: ...
     def date_bounds(self, symbol: str) -> tuple[date | None, date | None]: ...
+    def replay_availability(self, symbol: str) -> list[dict[str, object]]: ...
     def between_trading_dates(
         self, symbol: str, start: date, end: date
     ) -> list[KBar]: ...
@@ -453,6 +454,25 @@ class SQLiteBarRepository:
         first = date.fromisoformat(row["first_date"]) if row["first_date"] else None
         last = date.fromisoformat(row["last_date"]) if row["last_date"] else None
         return first, last
+
+    def replay_availability(self, symbol: str) -> list[dict[str, object]]:
+        with self.lock:
+            rows = self.connection.execute(
+                "SELECT trading_date, session, COUNT(*) AS bar_count "
+                "FROM minute_bars WHERE symbol=? AND status='closed' "
+                "GROUP BY trading_date, session ORDER BY trading_date, session",
+                (symbol,),
+            ).fetchall()
+        dates: dict[str, dict[str, object]] = {}
+        for row in rows:
+            item = dates.setdefault(
+                row["trading_date"],
+                {"date": row["trading_date"], "sessions": []},
+            )
+            item["sessions"].append({
+                "key": row["session"], "bar_count": row["bar_count"]
+            })
+        return list(dates.values())
 
     def between_trading_dates(
         self, symbol: str, start: date, end: date

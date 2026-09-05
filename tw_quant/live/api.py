@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from datetime import date
+from datetime import date, datetime
+from typing import Literal
+from uuid import uuid4
 
 from fastapi import (
     FastAPI,
@@ -95,6 +97,14 @@ class BacktestExecutionRequest(BaseModel):
     version: int | None = None
 
 
+class ReplayPrepareRequest(BaseModel):
+    symbol: str = "TMF"
+    trading_date: date
+    session: Literal["day", "night"] = "day"
+    interval: str = "1m"
+    strategies: list[str]
+
+
 class AdminUserCreate(BaseModel):
     email: str
     role: Role = Role.RESEARCHER
@@ -120,6 +130,8 @@ def _required_permission(method: str, path: str) -> str | None:
         return "admin.users.manage"
     if path in {"/api/health", "/api/kbars", "/api/strategy-signals"}:
         return "market.read"
+    if path.startswith("/api/replay"):
+        return "backtest.run"
     if path.startswith("/api/backtest-runs"):
         if method == "DELETE":
             return "backtest_history.delete.own"
@@ -804,6 +816,136 @@ def create_app(
                 }
                 for item in repo.composite_strategies(request_owner_id(request))
             ],
+        }
+
+    @app.get("/api/replay/options")
+    def replay_options(request: Request, symbol: str = "TMF"):
+        if symbol.upper() != config.symbol:
+            raise HTTPException(status_code=404, detail="unsupported symbol")
+        first, last = repo.date_bounds(config.symbol)
+        owner_id = request_owner_id(request)
+        catalog = strategy_catalog(repo.strategy_parameters(owner_id))
+        return {
+            "symbol": config.symbol,
+            "available_start": first.isoformat() if first else None,
+            "available_end": last.isoformat() if last else None,
+            "available_dates": repo.replay_availability(config.symbol),
+            "intervals": [
+                {"key": key, "name": TIMEFRAME_LABELS[key]}
+                for key in SUPPORTED_TIMEFRAMES
+                if key not in {"1d", "1w"}
+            ],
+            "strategies": [
+                {
+                    "key": item["key"],
+                    "name": item["name"],
+                    "kind": "atomic",
+                    "color": item["color"],
+                }
+                for item in catalog
+            ] + [
+                {
+                    "key": f"composite:{item['id']}",
+                    "name": f"{item['name']} · v{item['version']}",
+                    "kind": "composite",
+                    "color": "#a78bfa",
+                }
+                for item in repo.composite_strategies(owner_id)
+            ],
+            "max_strategies": 3,
+            "sessions": [
+                {"key": "day", "name": "日盤"},
+                {"key": "night", "name": "夜盤"},
+            ],
+        }
+
+    @app.post("/api/replay/prepare")
+    def prepare_replay(payload: ReplayPrepareRequest, request: Request):
+        if payload.symbol.upper() != config.symbol:
+            raise HTTPException(status_code=404, detail="unsupported symbol")
+        selected = list(dict.fromkeys(
+            value.strip().lower() for value in payload.strategies if value.strip()
+        ))
+        if not selected:
+            raise HTTPException(status_code=422, detail="至少選擇一個策略")
+        if len(selected) > 3:
+            raise HTTPException(status_code=422, detail="回放最多同時顯示 3 個策略")
+        try:
+            interval = validate_timeframe(payload.interval)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if interval in {"1d", "1w"}:
+            raise HTTPException(status_code=400, detail="回放僅支援 1 分鐘至 1 小時 K")
+
+        owner_id = request_owner_id(request)
+        source_bars = [
+            bar for bar in repo.between_trading_dates(
+                config.symbol, payload.trading_date, payload.trading_date
+            )
+            if bar.session == payload.session
+        ]
+        if not source_bars:
+            raise HTTPException(status_code=404, detail="所選交易日與時段沒有歷史 K 棒")
+        display_bars = aggregate_kbars(source_bars, interval)
+        atomic = [key for key in selected if not key.startswith("composite:")]
+        unsupported = sorted(set(atomic) - set(SUPPORTED_STRATEGIES))
+        if unsupported:
+            raise HTTPException(
+                status_code=400,
+                detail=f"unsupported strategies: {', '.join(unsupported)}",
+            )
+        results = analyze_strategies(
+            display_bars,
+            atomic,
+            parameters=repo.strategy_parameters(owner_id),
+            interval=interval,
+        )["strategies"]
+        by_key = {str(item["key"]): item for item in results}
+        for key in selected:
+            if not key.startswith("composite:"):
+                continue
+            strategy_id = key.removeprefix("composite:")
+            item = repo.composite_strategy(strategy_id, owner_user_id=owner_id)
+            if item is None or repo.composite_strategy_archived(strategy_id, owner_id):
+                raise HTTPException(status_code=404, detail="找不到可用的組合策略")
+            signals, _trace = generate_composite_signals(
+                source_bars, item["definition"]
+            )
+            by_key[key] = {
+                "key": key,
+                "name": f"{item['name']} · v{item['version']}",
+                "color": "#a78bfa",
+                "parameters": {},
+                "signals": signals,
+                "kind": "composite",
+                "version": item["version"],
+            }
+
+        return {
+            "snapshot_id": uuid4().hex,
+            "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "symbol": config.symbol,
+            "trading_date": payload.trading_date.isoformat(),
+            "session": payload.session,
+            "interval": interval,
+            "interval_name": TIMEFRAME_LABELS[interval],
+            "bars": [
+                {
+                    "time": bar.time.isoformat(timespec="milliseconds"),
+                    "end_time": bar.exchange_time.isoformat(timespec="milliseconds"),
+                    "open": bar.open,
+                    "high": bar.high,
+                    "low": bar.low,
+                    "close": bar.close,
+                    "volume": bar.volume,
+                    "contract": bar.contract,
+                    "session": bar.session,
+                    "trading_date": bar.trading_date.isoformat(),
+                    "no_trade": bar.no_trade,
+                }
+                for bar in display_bars
+            ],
+            "strategies": [by_key[key] for key in selected],
         }
 
     @app.get("/api/backtest")

@@ -153,6 +153,80 @@ class LiveApiTests(unittest.TestCase):
         finally:
             temp.cleanup()
 
+    def test_prepare_history_replay_snapshot(self):
+        temp = tempfile.TemporaryDirectory()
+        db_path = Path(temp.name) / "replay.sqlite3"
+        repository = SQLiteBarRepository(db_path)
+        taipei = ZoneInfo("Asia/Taipei")
+        trading_date = datetime(2024, 5, 6, tzinfo=taipei).date()
+        for minute in range(30):
+            at = datetime(2024, 5, 6, 8, 45, tzinfo=taipei) + timedelta(
+                minutes=minute
+            )
+            price = 20000 + minute
+            repository.save(KBar(
+                symbol="TMF", contract="TMF202405", time=at,
+                open=price, high=price + 4, low=price - 2, close=price + 2,
+                volume=10 + minute, status="closed", session="day",
+                trading_date=trading_date, first_tick_time=at,
+                last_tick_time=at + timedelta(seconds=59), exchange_time=at,
+                received_time=at, latency_ms=0,
+            ))
+        settings = LiveSettings(
+            mode="mock", db_path=str(db_path),
+            replay_csv=str(ROOT / "data/mock_tmf_ticks.csv"), replay_speed=1000,
+            heartbeat_seconds=0.05,
+        )
+        feed = ReplayFeed(settings.replay_csv, speed=1000, loop=False)
+        try:
+            with TestClient(create_app(
+                settings, feed=feed, repository=repository
+            )) as client:
+                options = client.get("/api/replay/options?symbol=TMF")
+                self.assertEqual(options.status_code, 200)
+                self.assertEqual(options.json()["max_strategies"], 3)
+                self.assertEqual(options.json()["available_dates"], [{
+                    "date": "2024-05-06",
+                    "sessions": [{"key": "day", "bar_count": 30}],
+                }])
+                self.assertNotIn(
+                    "1d", [item["key"] for item in options.json()["intervals"]]
+                )
+
+                prepared = client.post("/api/replay/prepare", json={
+                    "symbol": "TMF", "trading_date": "2024-05-06",
+                    "session": "day", "interval": "5m",
+                    "strategies": ["ma_crossover", "rsi_mean_reversion"],
+                })
+                self.assertEqual(prepared.status_code, 200, prepared.text)
+                snapshot = prepared.json()
+                self.assertEqual(snapshot["interval"], "5m")
+                self.assertEqual(len(snapshot["bars"]), 6)
+                self.assertEqual(
+                    snapshot["bars"][0]["end_time"],
+                    "2024-05-06T08:49:00.000+08:00",
+                )
+                self.assertEqual(
+                    [item["key"] for item in snapshot["strategies"]],
+                    ["ma_crossover", "rsi_mean_reversion"],
+                )
+                self.assertTrue(snapshot["snapshot_id"])
+
+                missing = client.post("/api/replay/prepare", json={
+                    "trading_date": "2024-05-06", "session": "night",
+                    "interval": "1m", "strategies": ["orb"],
+                })
+                self.assertEqual(missing.status_code, 404)
+
+                too_many = client.post("/api/replay/prepare", json={
+                    "trading_date": "2024-05-06", "session": "day",
+                    "interval": "1m",
+                    "strategies": ["orb", "bnf", "ma_crossover", "ema_trend"],
+                })
+                self.assertEqual(too_many.status_code, 422)
+        finally:
+            temp.cleanup()
+
     def test_websocket_message_schema_and_replay_updates_forming_bar(self):
         temp, client = self.make_client()
         required = {
