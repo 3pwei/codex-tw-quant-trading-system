@@ -19,7 +19,7 @@ type Account = {
   recovery_status: "healthy" | "degraded";
   recovery_issues: string[];
 };
-type Position = {
+export type PaperPosition = {
   strategy_id: string;
   strategy_version: number;
   symbol: string;
@@ -31,7 +31,7 @@ type Position = {
   unrealized_pnl: number;
   total_cost: number;
 };
-type Order = {
+export type PaperOrder = {
   order_id: string;
   submitted_at: string;
   strategy_id: string;
@@ -45,9 +45,12 @@ type Order = {
   status: "pending_risk" | "approved" | "rejected" | "filled";
   status_reason: string;
 };
-type Fill = {
+export type PaperFill = {
   fill_id: string;
   order_id: string;
+  strategy_id: string;
+  strategy_version: number;
+  symbol: string;
   contract: string;
   side: "buy" | "sell";
   quantity: number;
@@ -55,6 +58,7 @@ type Fill = {
   commission: number;
   tax: number;
   slippage: number;
+  purpose: "entry" | "exit" | "liquidation";
   meta: { occurred_at: string };
 };
 export type PaperQuote = {
@@ -72,11 +76,18 @@ export type MarketHealth = {
   last_tick_time: string | null;
 };
 
+export type PaperOverlaySnapshot = {
+  positions: PaperPosition[];
+  orders: PaperOrder[];
+  fills: PaperFill[];
+};
+
 type PaperTradingDashboardProps = {
   marketPanel: ReactNode;
   quote: PaperQuote | null;
   quoteFresh: boolean;
   marketHealth: MarketHealth | null;
+  onOverlayChange: (snapshot: PaperOverlaySnapshot) => void;
 };
 
 const apiBase = () => (process.env.NEXT_PUBLIC_MARKET_API_URL
@@ -111,12 +122,13 @@ export default function PaperTradingDashboard({
   quote,
   quoteFresh,
   marketHealth,
+  onOverlayChange,
 }: PaperTradingDashboardProps) {
   const [user, setUser] = useState<CurrentUser | null>(null);
   const [account, setAccount] = useState<Account | null>(null);
-  const [positions, setPositions] = useState<Position[]>([]);
-  const [orders, setOrders] = useState<Order[]>([]);
-  const [fills, setFills] = useState<Fill[]>([]);
+  const [positions, setPositions] = useState<PaperPosition[]>([]);
+  const [orders, setOrders] = useState<PaperOrder[]>([]);
+  const [fills, setFills] = useState<PaperFill[]>([]);
   const [side, setSide] = useState<"buy" | "sell">("buy");
   const [quantity, setQuantity] = useState(1);
   const [stopLoss, setStopLoss] = useState<string | null>(null);
@@ -134,6 +146,7 @@ export default function PaperTradingDashboard({
         setPositions([]);
         setOrders([]);
         setFills([]);
+        onOverlayChange({ positions: [], orders: [], fills: [] });
         if (!silent) setError("");
         return;
       }
@@ -148,13 +161,18 @@ export default function PaperTradingDashboard({
       ]);
       setAccount(accountBody.account); setPositions(accountBody.positions);
       setOrders(ordersBody.orders); setFills(fillsBody.fills);
+      onOverlayChange({
+        positions: accountBody.positions,
+        orders: ordersBody.orders,
+        fills: fillsBody.fills,
+      });
       if (!silent) setError("");
     } catch (reason) {
       if (!silent) setError(reason instanceof Error ? reason.message : "無法載入模擬帳戶");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [onOverlayChange]);
 
   useEffect(() => {
     const initial = window.setTimeout(() => void load(), 0);
@@ -194,7 +212,7 @@ export default function PaperTradingDashboard({
     } finally { setBusy(""); }
   }
 
-  async function closePosition(position: Position) {
+  async function closePosition(position: PaperPosition) {
     if (!window.confirm(`確定以最新行情平倉 ${position.contract} ${Math.abs(position.quantity)} 口？`)) return;
     setBusy(`close:${position.contract}`); setError(""); setNotice("");
     try {
