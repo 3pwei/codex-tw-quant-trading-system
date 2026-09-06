@@ -210,6 +210,14 @@ class LiveApiTests(unittest.TestCase):
                     [item["key"] for item in snapshot["strategies"]],
                     ["ma_crossover", "rsi_mean_reversion"],
                 )
+                self.assertTrue(all(
+                    item["execution"]["engine"] == "deterministic_event_engine"
+                    for item in snapshot["strategies"]
+                ))
+                self.assertTrue(all(
+                    item["execution"]["event_counts"]["bar_closed"] == 6
+                    for item in snapshot["strategies"]
+                ))
                 self.assertTrue(snapshot["snapshot_id"])
 
                 missing = client.post("/api/replay/prepare", json={

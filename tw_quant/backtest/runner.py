@@ -12,6 +12,7 @@ from ..strategy import (
     analyze_strategies,
     generate_composite_signals,
 )
+from .event_runner import run_historical_events
 
 
 MAX_BACKTEST_DAYS = 31
@@ -23,71 +24,6 @@ def validate_date_range(start: date, end: date) -> None:
         raise ValueError("開始日期不可晚於結束日期")
     if (end - start).days + 1 > MAX_BACKTEST_DAYS:
         raise ValueError(f"回測區間最多 {MAX_BACKTEST_DAYS} 天")
-
-
-def _trade_from_signals(
-    entry: dict[str, object],
-    exit_signal: dict[str, object],
-    bars: list[KBar],
-    costs: FuturesCostConfig,
-    initial_capital: float,
-    contracts: int,
-) -> dict[str, object]:
-    direction = 1 if entry["direction"] == "long" else -1
-    raw_entry = float(entry["price"])
-    raw_exit = float(exit_signal["price"])
-    entry_price = raw_entry + costs.slippage_points * direction
-    exit_price = raw_exit - costs.slippage_points * direction
-    entry_time = pd.Timestamp(str(entry["time"]))
-    exit_time = pd.Timestamp(str(exit_signal["time"]))
-    segment = [
-        bar
-        for bar in bars
-        if entry_time <= pd.Timestamp(bar.time) <= exit_time
-        and bar.contract == entry["contract"]
-    ]
-    favorable = 0.0
-    adverse = 0.0
-    for bar in segment:
-        favorable = max(
-            favorable,
-            (bar.high - entry_price) if direction == 1 else (entry_price - bar.low),
-        )
-        adverse = min(
-            adverse,
-            (bar.low - entry_price) if direction == 1 else (entry_price - bar.high),
-        )
-
-    entry_commission, entry_tax = costs.side_cost(entry_price, contracts)
-    exit_commission, exit_tax = costs.side_cost(exit_price, contracts)
-    commission = entry_commission + exit_commission
-    tax = entry_tax + exit_tax
-    total_cost = commission + tax
-    gross_pnl = (exit_price - entry_price) * direction * costs.multiplier * contracts
-    net_pnl = gross_pnl - total_cost
-    return {
-        "strategy": entry["strategy"],
-        "contract": entry["contract"],
-        "trading_date": entry["trading_date"],
-        "direction": entry["direction"],
-        "entry_time": entry_time.to_pydatetime(),
-        "exit_time": exit_time.to_pydatetime(),
-        "quantity": contracts,
-        "entry_price": entry_price,
-        "exit_price": exit_price,
-        "stop_loss_price": float(entry["stop_loss_price"]),
-        "take_profit_price": float(entry["take_profit_price"]),
-        "gross_pnl": gross_pnl,
-        "commission": commission,
-        "tax": tax,
-        "total_cost": total_cost,
-        "net_pnl": net_pnl,
-        "return_pct": net_pnl / initial_capital * 100,
-        "holding_minutes": max(1.0, (exit_time - entry_time).total_seconds() / 60),
-        "mfe": favorable * costs.multiplier * contracts,
-        "mae": adverse * costs.multiplier * contracts,
-        "exit_reason": exit_signal["reason"],
-    }
 
 
 def run_strategy_backtest(
@@ -121,22 +57,16 @@ def run_strategy_backtest(
     )["strategies"][0]
     signals = analysis["signals"]
     cost_config = costs or FuturesCostConfig()
-    entries: list[dict[str, object]] = []
-    trades: list[dict[str, object]] = []
-    for signal in signals:
-        if signal["event"] == "entry":
-            entries.append(signal)
-        elif entries:
-            trades.append(
-                _trade_from_signals(
-                    entries.pop(0),
-                    signal,
-                    closed,
-                    cost_config,
-                    initial_capital,
-                    contracts,
-                )
-            )
+    event_run = run_historical_events(
+        closed,
+        signals,
+        strategy_id=strategy,
+        quantity=contracts,
+        initial_capital=initial_capital,
+        costs=cost_config,
+        timeframe=selected_interval,
+    )
+    trades = list(event_run.trades)
 
     bar_frame = pd.DataFrame(
         [{"timestamp": bar.time, "close": bar.close} for bar in closed]
@@ -183,6 +113,10 @@ def run_strategy_backtest(
             "contract_multiplier": cost_config.multiplier,
         },
         "summary": summary,
+        "execution": {
+            "engine": "deterministic_event_engine",
+            "event_counts": event_run.event_counts,
+        },
         "bars": [
             {
                 "timestamp": bar.time.isoformat(timespec="milliseconds"),
@@ -227,15 +161,17 @@ def run_composite_backtest(
         raise ValueError("所選區間沒有可用的已收盤 K 棒")
     signals, trace = generate_composite_signals(closed, definition)
     cost_config = costs or FuturesCostConfig()
-    entries: list[dict[str, object]] = []
-    trades: list[dict[str, object]] = []
-    for signal in signals:
-        if signal["event"] == "entry":
-            entries.append(signal)
-        elif entries:
-            trades.append(_trade_from_signals(
-                entries.pop(0), signal, closed, cost_config, initial_capital, contracts
-            ))
+    event_run = run_historical_events(
+        closed,
+        signals,
+        strategy_id=strategy_id,
+        strategy_version=version,
+        quantity=contracts,
+        initial_capital=initial_capital,
+        costs=cost_config,
+        timeframe="1m",
+    )
+    trades = list(event_run.trades)
 
     frame = pd.DataFrame(
         [{"timestamp": bar.time, "close": bar.close} for bar in closed]
@@ -274,6 +210,10 @@ def run_composite_backtest(
             "contract_multiplier": cost_config.multiplier,
         },
         "summary": summary,
+        "execution": {
+            "engine": "deterministic_event_engine",
+            "event_counts": event_run.event_counts,
+        },
         "bars": [{
             "timestamp": bar.time.isoformat(timespec="milliseconds"),
             "open": bar.open,

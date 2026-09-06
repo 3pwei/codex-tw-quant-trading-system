@@ -4,7 +4,11 @@ import unittest
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from tw_quant.backtest import run_strategy_backtest, validate_date_range
+from tw_quant.backtest import (
+    run_historical_events,
+    run_strategy_backtest,
+    validate_date_range,
+)
 from tw_quant.market import KBar
 from tw_quant.live.storage import SQLiteBarRepository
 
@@ -26,6 +30,48 @@ def make_bar(minute: int, close: float, volume: int = 100) -> KBar:
 
 
 class StrategyBacktestTests(unittest.TestCase):
+    def test_historical_runner_emits_auditable_execution_chain_deterministically(self):
+        bars = [make_bar(0, 100.0), make_bar(1, 105.0)]
+        signals = [
+            {
+                "strategy": "test",
+                "event": "entry",
+                "direction": "long",
+                "time": bars[0].time.isoformat(timespec="milliseconds"),
+                "price": 100.0,
+                "stop_loss_price": 98.0,
+                "take_profit_price": 106.0,
+                "reason": "signal_confirmed",
+                "contract": bars[0].contract,
+                "trading_date": bars[0].trading_date.isoformat(),
+            },
+            {
+                "strategy": "test",
+                "event": "exit",
+                "direction": "long",
+                "time": bars[1].time.isoformat(timespec="milliseconds"),
+                "price": 105.0,
+                "stop_loss_price": 98.0,
+                "take_profit_price": 106.0,
+                "reason": "test_exit",
+                "contract": bars[1].contract,
+                "trading_date": bars[1].trading_date.isoformat(),
+            },
+        ]
+        first = run_historical_events(bars, signals, strategy_id="test")
+        second = run_historical_events(bars, signals, strategy_id="test")
+
+        self.assertEqual(first.execution_events, second.execution_events)
+        self.assertEqual(first.event_counts["signal"], 2)
+        self.assertEqual(first.event_counts["order_intent"], 2)
+        self.assertEqual(first.event_counts["risk_decision"], 2)
+        self.assertEqual(first.event_counts["fill"], 2)
+        self.assertEqual(len(first.trades), 1)
+        self.assertEqual(first.trades[0]["exit_reason"], "test_exit")
+        for event in first.execution_events:
+            if event["kind"] in {"order_intent", "risk_decision", "fill"}:
+                self.assertIsNotNone(event["meta"]["causation_id"])
+
     def test_range_is_inclusive_and_limited_to_31_days(self):
         validate_date_range(date(2026, 8, 1), date(2026, 8, 31))
         with self.assertRaisesRegex(ValueError, "31 天"):
@@ -46,6 +92,8 @@ class StrategyBacktestTests(unittest.TestCase):
         self.assertEqual(trade["exit_reason"], "session_end")
         self.assertEqual(trade["stop_loss_price"], 102.382)
         self.assertEqual(trade["take_profit_price"], 104.236)
+        self.assertEqual(result["execution"]["engine"], "deterministic_event_engine")
+        self.assertEqual(result["execution"]["event_counts"]["fill"], 2)
 
     def test_bnf_backtest_uses_the_same_mean_reversion_signal_core(self):
         bars = [make_bar(index, 100.0) for index in range(20)]

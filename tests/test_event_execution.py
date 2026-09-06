@@ -213,6 +213,31 @@ class SimulatedExecutionPipelineTests(unittest.TestCase):
 
 
 class ExecutionComponentTests(unittest.TestCase):
+    def test_signal_price_execution_is_disabled_by_default(self):
+        broker = SimulatedBroker(ZERO_TAX_COSTS)
+        intent = OrderIntent(
+            meta=meta("order_intent", 0, "historical-price-order"),
+            order_id="historical-price-order",
+            strategy_id="strategy-a",
+            strategy_version=1,
+            symbol="TMF",
+            contract="TMFU6",
+            side="buy",
+            quantity=1,
+            execution_timing="signal_price",
+            reference_price=100,
+        )
+        broker.on_order(intent)
+        decision = RiskDecision(
+            meta=meta("risk_decision", 0, "historical-price-approved"),
+            order_id=intent.order_id,
+            approved=True,
+            approved_quantity=1,
+            reason="test",
+        )
+        with self.assertRaisesRegex(RuntimeError, "disabled"):
+            broker.on_risk_decision(decision)
+
     def test_rejected_risk_decision_never_fills(self):
         broker = SimulatedBroker(ZERO_TAX_COSTS)
         order = OrderIntent(

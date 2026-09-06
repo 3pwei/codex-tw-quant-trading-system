@@ -35,6 +35,7 @@ from ..auth import (
 from ..backtest import (
     MAX_BACKTEST_DAYS,
     run_composite_backtest,
+    run_historical_events,
     run_strategy_backtest,
     validate_date_range,
 )
@@ -919,6 +920,23 @@ def create_app(
                 "signals": signals,
                 "kind": "composite",
                 "version": item["version"],
+            }
+
+        for key in selected:
+            strategy_result = by_key[key]
+            is_composite = key.startswith("composite:")
+            event_run = run_historical_events(
+                source_bars if is_composite else display_bars,
+                strategy_result["signals"],
+                strategy_id=(key.removeprefix("composite:") if is_composite else key),
+                strategy_version=int(strategy_result.get("version", 1)),
+                owner_id=owner_id,
+                timeframe="1m" if is_composite else interval,
+            )
+            strategy_result["execution"] = {
+                "engine": "deterministic_event_engine",
+                "event_counts": event_run.event_counts,
+                "events": event_run.execution_events,
             }
 
         return {

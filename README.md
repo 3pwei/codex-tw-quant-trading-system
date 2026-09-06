@@ -247,11 +247,12 @@ Setup、Entry 與 Exit 都能加入多條基本策略規則，個別選擇 `1m`�
 目前仍是研究與行情觀察階段：組合策略可在 Live／Replay 資料上呼叫相同訊號
 核心，也可執行歷史回測，但不會連接 Broker 下單。
 
-`tw_quant/events/` 是 Level 2 遷移的事件骨幹，`SimulatedExecutionPipeline` 已能在
-記憶體內完成 Signal → Order → Risk → Fill → Position/PnL。管線預設拒絕新增曝險；
-只有明確注入 `AccountRiskGate`，且帳號為 active、paper 模式並具有 `orders.paper`
-權限時才會核准。現有 Live、Replay 與 Backtest 尚未切換到此管線，因此目前
-API／Dashboard 輸出不變，也不會呼叫真實券商。
+`tw_quant/events/` 是 Level 2 的事件骨幹，Backtest 與 Replay 現已透過
+`run_historical_events()` 共用 Signal → Order → Risk → Fill → Position/PnL 管線。
+研究模式會明確注入 `ResearchRiskGate`，其事件絕不連接外部券商；Paper Trading
+仍須注入 `AccountRiskGate`，且帳號為 active、paper 模式並具有 `orders.paper`
+權限才會核准。既有 Backtest／Replay API 欄位維持相容，另提供事件計數及 Replay
+execution audit events。
 
 ### Mock／Replay 本機啟動
 
