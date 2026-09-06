@@ -254,8 +254,8 @@ export default function UserManagement() {
             <tbody>
               {users.map(user => (
                 <tr key={user.user_id}>
-                  <td>{user.email}</td>
-                  <td>
+                  <td data-label="Email">{user.email}</td>
+                  <td data-label="角色">
                     <select
                       disabled={busy !== null}
                       value={user.role}
@@ -270,7 +270,7 @@ export default function UserManagement() {
                       <option value="admin">系統管理員</option>
                     </select>
                   </td>
-                  <td>
+                  <td data-label="帳號狀態">
                     <select
                       disabled={busy !== null}
                       value={user.status}
@@ -285,7 +285,7 @@ export default function UserManagement() {
                       <option value="revoked">撤銷</option>
                     </select>
                   </td>
-                  <td>
+                  <td data-label="交易模式">
                     <select
                       disabled={busy !== null || user.role === "researcher"}
                       value={user.trading_mode}
@@ -302,7 +302,7 @@ export default function UserManagement() {
                       )}
                     </select>
                   </td>
-                  <td>
+                  <td data-label="身分綁定">
                     <span
                       className={user.identity_bound ? "bound" : "pending"}
                     >
