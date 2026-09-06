@@ -270,17 +270,17 @@ class PositionLedger:
         return events or None
 
 
-class PassThroughRiskGate:
-    """Temporary simulation-only gate; account policies are added in PR #36."""
+class ResearchRiskGate:
+    """Approve historical research intents that cannot reach an external broker."""
 
     def on_order(self, event: DomainEvent) -> list[RiskDecision]:
         if not isinstance(event, OrderIntent):
-            raise TypeError("PassThroughRiskGate.on_order requires OrderIntent")
+            raise TypeError("ResearchRiskGate.on_order requires OrderIntent")
         decision = RiskDecision(
             meta=EventMetadata.create(
                 kind="risk_decision",
                 occurred_at=event.meta.occurred_at,
-                source="pass_through_risk",
+                source="research_risk",
                 source_key=event.order_id,
                 causation_id=event.meta.event_id,
                 correlation_id=event.meta.correlation_id,
@@ -289,9 +289,13 @@ class PassThroughRiskGate:
             order_id=event.order_id,
             approved=True,
             approved_quantity=event.quantity,
-            reason="simulation_default_approved",
+            reason="historical_research_approved",
         )
         return [decision]
+
+
+class PassThroughRiskGate(ResearchRiskGate):
+    """Backward-compatible alias for isolated execution tests."""
 
 
 class DisabledRiskGate:
@@ -322,11 +326,20 @@ class DisabledRiskGate:
 
 
 class SignalOrderRouter:
-    def __init__(self, ledger: PositionLedger, *, default_quantity: int = 1):
+    def __init__(
+        self,
+        ledger: PositionLedger,
+        *,
+        default_quantity: int = 1,
+        execution_timing: Literal[
+            "next_bar_open", "current_close", "signal_price"
+        ] = "next_bar_open",
+    ):
         if default_quantity <= 0:
             raise ValueError("default_quantity must be positive")
         self.ledger = ledger
         self.default_quantity = default_quantity
+        self.execution_timing = execution_timing
 
     def on_signal(self, event: DomainEvent) -> list[OrderIntent] | None:
         if not isinstance(event, SignalEvent):
@@ -373,6 +386,7 @@ class SignalOrderRouter:
                 contract=event.contract,
                 side=side,
                 quantity=quantity,
+                execution_timing=self.execution_timing,
                 purpose=purpose,
                 reduce_only=reduce_only,
                 reason=event.reason,
@@ -390,9 +404,12 @@ class SimulatedBroker:
         self,
         costs: FuturesCostConfig | None = None,
         position_ledger: PositionLedger | None = None,
+        *,
+        allow_signal_price_execution: bool = False,
     ):
         self.costs = costs or FuturesCostConfig()
         self.position_ledger = position_ledger
+        self.allow_signal_price_execution = allow_signal_price_execution
         self.orders: dict[str, OrderRecord] = {}
         self._order_sequence: list[str] = []
         self._last_close: dict[tuple[str, str], float] = {}
@@ -499,11 +516,18 @@ class SimulatedBroker:
         record.status = "approved"
         record.approved_quantity = event.approved_quantity
         record.status_reason = event.reason
-        if record.intent.execution_timing != "current_close":
+        if record.intent.execution_timing == "next_bar_open":
             return None
-        price = self._last_close.get((record.intent.symbol, record.intent.contract))
-        if price is None:
-            raise RuntimeError("current_close order has no known closing price")
+        if record.intent.execution_timing == "signal_price":
+            if not self.allow_signal_price_execution:
+                raise RuntimeError("signal_price execution is disabled")
+            price = record.intent.reference_price
+            if price <= 0:
+                raise RuntimeError("signal_price order requires a positive reference price")
+        else:
+            price = self._last_close.get((record.intent.symbol, record.intent.contract))
+            if price is None:
+                raise RuntimeError("current_close order has no known closing price")
         quantity = self._reduce_only_available(record)
         if quantity == 0:
             self._reject_unfillable_reduce_only(record)
@@ -685,14 +709,26 @@ class SimulatedExecutionPipeline:
         *,
         costs: FuturesCostConfig | None = None,
         default_quantity: int = 1,
+        execution_timing: Literal[
+            "next_bar_open", "current_close", "signal_price"
+        ] = "next_bar_open",
+        allow_signal_price_execution: bool = False,
         risk_gate: RiskGate | None = None,
         ledger: PositionLedger | None = None,
     ):
         resolved_costs = costs or FuturesCostConfig()
         self.ledger = ledger or PositionLedger(multiplier=resolved_costs.multiplier)
-        self.broker = SimulatedBroker(resolved_costs, self.ledger)
+        self.broker = SimulatedBroker(
+            resolved_costs,
+            self.ledger,
+            allow_signal_price_execution=allow_signal_price_execution,
+        )
         self.risk = risk_gate or DisabledRiskGate()
-        self.router = SignalOrderRouter(self.ledger, default_quantity=default_quantity)
+        self.router = SignalOrderRouter(
+            self.ledger,
+            default_quantity=default_quantity,
+            execution_timing=execution_timing,
+        )
         self.liquidator = PositionLiquidator(self.ledger)
 
     def install(self, engine: DeterministicEventEngine) -> None:

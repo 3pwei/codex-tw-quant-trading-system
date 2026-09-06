@@ -1,7 +1,8 @@
 # 統一事件引擎契約
 
-此模組是 Backtest、Replay 與 Paper Trading 共用的執行骨幹。事件契約與確定性
-迴圈之上已加入記憶體內模擬券商及部位帳本；不連接真實券商，也不改變既有 API。
+此模組是 Backtest、Replay 與 Paper Trading 共用的執行骨幹。Backtest 與 Replay
+已由 `run_historical_events()` 接入確定性迴圈、模擬券商及部位帳本；不連接真實
+券商，既有 API 欄位保持相容。
 
 ## 事件流程
 
@@ -23,14 +24,16 @@ MarketEvent / BarClosedEvent
 
 - 策略 entry／exit 訊號轉成 market `OrderIntent`，成交量預設一口且可設定。
 - 一般訂單只會在嚴格晚於訊號時間的下一根同契約 K 棒開盤成交。
+- 歷史策略核心已先決定下一根開盤或盤中停損價，因此研究管線使用
+  `signal_price` 重建成交事件，避免再延遲一根 K 棒；此模式不可用於 Paper Trading。
 - 買進滑價向上、賣出滑價向下；每邊手續費與期貨交易稅皆寫入 `FillEvent`。
 - 部位以 owner、策略 ID／版本、symbol、contract 分帳，支援多空、加減碼與反手。
 - 已實現損益扣除進出雙邊成本；未實現損益扣除尚未結轉的進場成本。
 - `closing` 與換月事件以舊契約最後已知收盤價強制平倉，仍套用滑價與成本。
 - 重複 Fill ID 不會再次改變部位。
 
-管線預設使用 `DisabledRiskGate`，新增曝險會 fail closed；測試若要略過帳戶規則，
-必須明確注入 `PassThroughRiskGate`。正式 Paper Trading 必須注入
+管線預設使用 `DisabledRiskGate`，新增曝險會 fail closed。Backtest／Replay 必須
+明確注入只供離線研究的 `ResearchRiskGate`；正式 Paper Trading 必須注入
 `AccountRiskGate`，且任何風控都不能將核准數量放大。
 
 ## 確定性規則
@@ -61,7 +64,7 @@ MarketEvent / BarClosedEvent
 
 - 模擬成交與部位引擎已消費 `OrderIntent`／`RiskDecision`。
 - 帳戶層風控已能取代預設閘門，並記錄核准或拒絕原因。
-- Backtest 與 Replay 最後改由相同事件流驅動。
+- Backtest 與 Replay 已改由相同事件流驅動，Replay 快照並提供 execution audit events。
 - Paper Trading 只接已收盤 K 棒，並保存事件與狀態快照以支援重啟。
 
 任何真實券商 adapter 都不在目前 Level 2 範圍內；`OrderExecutor` 預設仍維持停用。

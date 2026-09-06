@@ -159,7 +159,9 @@ class OrderIntent:
     quantity: int
     order_type: Literal["market"] = "market"
     purpose: Literal["entry", "exit", "liquidation"] = "entry"
-    execution_timing: Literal["next_bar_open", "current_close"] = "next_bar_open"
+    execution_timing: Literal[
+        "next_bar_open", "current_close", "signal_price"
+    ] = "next_bar_open"
     reduce_only: bool = False
     reason: str = "strategy_signal"
     reference_price: float = 0.0
