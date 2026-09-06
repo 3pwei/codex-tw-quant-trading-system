@@ -96,7 +96,8 @@ CSV 1 分 K
 | `tw_quant/live/backtest.py` | 舊回測名稱相容層；新程式不應使用 |
 | `tw_quant/futures.py` | 期交所逐筆 CSV 匯入與標準 KBar 轉換 |
 | `tw_quant/futures_costs.py` | 各 TMF 回測入口共用的契約乘數、手續費、稅與滑價 |
-| `dashboard/app/live/` | 即時 K 線、成交量、狀態與自動重連前端 |
+| `dashboard/app/trade/` | 統一交易工作台路由；即時圖表與 Paper 委託同頁操作 |
+| `dashboard/app/live/` | 工作台共用行情連線、K 線、成交量、狀態與自動重連前端 |
 | `dashboard/app/strategies/` | 基本策略參數輸入、驗證訊息與儲存介面 |
 | `dashboard/app/composite-strategies/` | 組合策略清單、版本管理與獨立編輯流程 |
 
@@ -264,7 +265,7 @@ Paper API 的委託價格、契約、owner、權限及交易模式全部由伺�
 重複點擊產生第二筆委託。模擬市價單會以伺服器最新行情套用滑價與成本，依序產生
 Order → Risk → Fill → Position 事件並保存到 SQLite；風控拒絕時只留下拒絕紀錄。
 
-Trader 與具有明確 Paper 權限的 Admin 可由 `/paper/` 查看帳戶損益、持倉、委託與
+Trader 與具有明確 Paper 權限的 Admin 可由 `/trade/` 查看即時圖表、帳戶損益、持倉、委託與
 成交紀錄，手動送出模擬市價單、平倉及控制 Kill Switch。Admin 建立時仍預設為
 `disabled`，必須在帳號管理頁明確切換為 `paper`；Admin 永遠不能切換為 `live`。
 
@@ -326,7 +327,7 @@ Windows PowerShell 可先執行 `$env:NEXT_PUBLIC_MARKET_API_URL="http://localho
 - 系統總覽：<http://localhost:3000/>
 - 回測 Dashboard：<http://localhost:3000/backtest/>
 - 回測執行紀錄：<http://localhost:3000/history/>
-- 即時 1 分 K：<http://localhost:3000/live/>
+- 交易工作台：<http://localhost:3000/trade/>
 - API 文件：<http://localhost:8000/docs>
 
 Mock 會重播 `data/mock_tmf_ticks.csv`。同一分鐘包含多筆 Tick，圖表應以 `series.update()` 反覆更新同一根形成中 K 棒，跨分鐘才新增 K 棒；15:02 沒有成交，會補成零量 K 棒。
@@ -590,7 +591,7 @@ curl https://tmf.example.com/healthz
 更精確的 Access application `tmf.example.com/healthz`，Policy action 選 `Bypass`、
 Selector 選 `Everyone`；此路徑只回傳固定的 `ok`，不包含行情或系統狀態。
 
-瀏覽器開啟 `https://tmf.example.com/live/`，使用核准 Email 收取一次性驗證碼後，
+瀏覽器開啟 `https://tmf.example.com/trade/`，使用核准 Email 收取一次性驗證碼後，
 應看到 Mock 形成中的 1 分 K。Cloudflare Access Session 同時涵蓋 Dashboard、REST
 與 WebSocket。切換 Shioaji 前，將 `market.env` 改成：
 

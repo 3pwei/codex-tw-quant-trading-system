@@ -3,10 +3,27 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 
-const routes = [
+export type SystemRoute =
+  | "/"
+  | "/trade/"
+  | "/backtest/"
+  | "/replay/"
+  | "/history/"
+  | "/strategies/"
+  | "/composite-strategies/"
+  | "/settings/"
+  | "/admin/users/";
+
+type SystemNavRoute = {
+  href: SystemRoute;
+  label: string;
+  permission?: string;
+  admin?: boolean;
+};
+
+const routes: readonly SystemNavRoute[] = [
   { href: "/", label: "總覽" },
-  { href: "/live/", label: "即時行情" },
-  { href: "/paper/", label: "模擬交易", permission: "positions.read.own" },
+  { href: "/trade/", label: "交易工作台" },
   { href: "/backtest/", label: "歷史回測" },
   { href: "/replay/", label: "行情回放" },
   { href: "/history/", label: "執行紀錄" },
@@ -14,9 +31,7 @@ const routes = [
   { href: "/composite-strategies/", label: "組合策略" },
   { href: "/settings/", label: "系統設定", admin: true },
   { href: "/admin/users/", label: "帳號權限", admin: true },
-] as const;
-
-export type SystemRoute = (typeof routes)[number]["href"];
+];
 
 type CurrentUser = {
   email: string;
@@ -40,8 +55,8 @@ export default function SystemNav({ active }: { active: SystemRoute }) {
     <nav className="system-nav" aria-label="系統功能">
       <div className="system-nav-routes">
         {routes.filter(route =>
-          (!("admin" in route) || currentUser?.role === "admin")
-          && (!("permission" in route)
+          (!route.admin || currentUser?.role === "admin")
+          && (!route.permission
             || currentUser?.permissions.includes(route.permission))
         ).map(route => (
           <Link

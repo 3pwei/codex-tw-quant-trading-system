@@ -206,6 +206,15 @@ class AuthorizationApiTests(unittest.TestCase):
         )
         self.assertEqual(ordinary_page.status_code, 204)
 
+        trade_page = self.client.get(
+            "/internal/auth/cloudflare",
+            headers={
+                "Cf-Access-Jwt-Assertion": "reader-token",
+                "X-Original-Uri": "/trade/",
+            },
+        )
+        self.assertEqual(trade_page.status_code, 204)
+
         paper_page = self.client.get(
             "/internal/auth/cloudflare",
             headers={

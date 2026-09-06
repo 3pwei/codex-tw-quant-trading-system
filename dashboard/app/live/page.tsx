@@ -1,5 +1,5 @@
-import LiveDashboard from "./live-dashboard";
+import TradeRedirect from "../components/trade-redirect";
 
 export default function LivePage() {
-  return <LiveDashboard />;
+  return <TradeRedirect />;
 }
