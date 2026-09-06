@@ -174,6 +174,8 @@ def _required_permission(method: str, path: str) -> str | None:
 
 
 def _page_permission(path: str) -> str | None:
+    if path.startswith("/paper"):
+        return "positions.read.own"
     if path.startswith("/settings"):
         return "admin.settings.read"
     if path.startswith("/admin"):

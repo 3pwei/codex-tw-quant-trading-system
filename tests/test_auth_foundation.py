@@ -103,7 +103,7 @@ class AuthRepositoryTests(unittest.TestCase):
         self.assertIn("access_request.rejected", actions)
         self.assertIn("access_request.approved", actions)
 
-    def test_user_changes_are_audited_and_non_trader_cannot_trade(self):
+    def test_user_changes_are_audited_and_role_limits_are_enforced(self):
         admin = self.repository.create_user(
             "admin@example.com", role=Role.ADMIN
         )
@@ -122,7 +122,7 @@ class AuthRepositoryTests(unittest.TestCase):
         self.assertEqual(updated.trading_mode, TradingMode.PAPER)
         self.assertIn("orders.paper", updated.permissions)
         self.assertIn("orders.live", updated.permissions)
-        with self.assertRaisesRegex(ValueError, "only trader"):
+        with self.assertRaisesRegex(ValueError, "researcher"):
             self.repository.update_user(
                 researcher.user_id,
                 role=Role.RESEARCHER,
@@ -133,6 +133,28 @@ class AuthRepositoryTests(unittest.TestCase):
             [event["action"] for event in self.repository.audit_events()],
             ["user.created", "user.created", "user.updated"],
         )
+
+    def test_admin_can_explicitly_enable_paper_but_not_live_trading(self):
+        admin = self.repository.create_user(
+            "admin@example.com", role=Role.ADMIN
+        )
+        enabled = self.repository.update_user(
+            admin.user_id,
+            role=Role.ADMIN,
+            status=AccountStatus.ACTIVE,
+            trading_mode=TradingMode.PAPER,
+        )
+        self.assertEqual(enabled.trading_mode, TradingMode.PAPER)
+        self.assertIn("orders.paper", enabled.permissions)
+        self.assertIn("positions.read.own", enabled.permissions)
+        self.assertNotIn("orders.live", enabled.permissions)
+        with self.assertRaisesRegex(ValueError, "admin.*live"):
+            self.repository.update_user(
+                admin.user_id,
+                role=Role.ADMIN,
+                status=AccountStatus.ACTIVE,
+                trading_mode=TradingMode.LIVE,
+            )
 
     def test_bootstrap_does_not_silently_promote_existing_user(self):
         self.repository.create_user("reader@example.com")

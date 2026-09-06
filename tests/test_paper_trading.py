@@ -27,6 +27,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class PaperAccessValidator:
     def authenticate(self, token):
         identities = {
+            "admin-token": AccessIdentity("cf-admin", "admin@example.com"),
             "trader-token": AccessIdentity("cf-trader", "trader@example.com"),
             "other-token": AccessIdentity("cf-other", "other@example.com"),
             "reader-token": AccessIdentity("cf-reader", "reader@example.com"),
@@ -42,6 +43,10 @@ class PaperTradingApiTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.db_path = Path(self.temp.name) / "paper.sqlite3"
         auth = SQLiteAuthRepository(self.db_path)
+        auth.create_user(
+            "admin@example.com", role=Role.ADMIN,
+            trading_mode=TradingMode.PAPER,
+        )
         auth.create_user(
             "trader@example.com", role=Role.TRADER,
             trading_mode=TradingMode.PAPER,
@@ -137,6 +142,21 @@ class PaperTradingApiTests(unittest.TestCase):
             headers=self.headers("cf-reader", "reader@example.com"),
         )
         self.assertEqual(denied.status_code, 403)
+
+    def test_admin_with_explicit_paper_mode_can_submit_but_remains_isolated(self):
+        response = self.client.post(
+            "/api/paper/orders",
+            headers=self.headers("cf-admin", "admin@example.com", "admin-paper"),
+            json={"side": "buy", "stop_loss_price": 19_950},
+        )
+        self.assertEqual(response.status_code, 201, response.text)
+        self.assertEqual(response.json()["order"]["status"], "filled")
+        trader_orders = self.client.get(
+            "/api/paper/orders",
+            headers=self.headers("cf-trader", "trader@example.com"),
+        )
+        self.assertEqual(trader_orders.status_code, 200)
+        self.assertEqual(trader_orders.json()["orders"], [])
 
     def test_kill_switch_blocks_new_exposure(self):
         identity = self.headers("cf-trader", "trader@example.com")

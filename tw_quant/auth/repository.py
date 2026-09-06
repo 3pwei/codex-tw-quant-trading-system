@@ -27,6 +27,13 @@ def normalize_email(email: str) -> str:
     return email.strip().casefold()
 
 
+def validate_trading_mode(role: Role, trading_mode: TradingMode) -> None:
+    if role is Role.RESEARCHER and trading_mode is not TradingMode.DISABLED:
+        raise ValueError("researcher accounts cannot enable trading modes")
+    if role is Role.ADMIN and trading_mode is TradingMode.LIVE:
+        raise ValueError("admin accounts cannot enable live trading")
+
+
 class SQLiteAuthRepository:
     """Application identities stored beside market data in SQLite.
 
@@ -176,8 +183,7 @@ class SQLiteAuthRepository:
         normalized = normalize_email(email)
         if not normalized or "@" not in normalized:
             raise ValueError("a valid email is required")
-        if role is not Role.TRADER and trading_mode is not TradingMode.DISABLED:
-            raise ValueError("only trader accounts can enable trading modes")
+        validate_trading_mode(role, trading_mode)
         user_id = str(uuid4())
         now = _now()
         approved_request_id = None
@@ -251,8 +257,7 @@ class SQLiteAuthRepository:
         trading_mode: TradingMode,
         actor_user_id: str | None = None,
     ) -> AuthUser:
-        if role is not Role.TRADER and trading_mode is not TradingMode.DISABLED:
-            raise ValueError("only trader accounts can enable trading modes")
+        validate_trading_mode(role, trading_mode)
         with self.lock:
             existing = self.connection.execute(
                 "SELECT * FROM app_users WHERE user_id=?", (user_id,)
