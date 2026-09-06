@@ -18,7 +18,7 @@ Trading，不支援也不應用於真實券商下單。
 9. 停損價差、契約乘數、雙邊成本與滑價估算的單筆風險未超限。
 
 任一步驟失敗都產生拒絕的 `RiskDecision`，不會產生 `FillEvent`。決策同時寫入
-記憶體 `audit_log`；後續 Paper Session 持久化階段會將相同資料寫入 SQLite。
+記憶體 `audit_log`，完整事件鏈也會寫入 SQLite `paper_events`。
 
 ## 預設限制
 
@@ -56,5 +56,9 @@ next-open 訂單，風控同步釋放保留口數。
 - `trading_mode` → 必須為 paper
 - `permissions` → 必須包含 `orders.paper`
 
-後續 Paper Trading API 必須從伺服器端的登入使用者建立快照，不接受瀏覽器自行
-提交 owner、role、mode 或 permissions。
+Paper Trading API 從伺服器端的登入使用者建立快照，不接受瀏覽器自行提交
+owner、role、mode、permissions、成交價或契約。委託另以 owner 與
+`Idempotency-Key` 建立唯一鍵，重送同一請求不會再次成交。
+
+目前 API 的事件與控制紀錄已持久化；程序重啟後的持倉、風控與手動 Kill Switch
+狀態重建會在 Level 2 的復原／正式驗收階段完成。在完成前不啟用真實券商 adapter。
