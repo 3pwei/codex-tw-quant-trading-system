@@ -28,6 +28,7 @@ class LiveSettings:
     market_data: MarketDataSettings
     db_path: str
     heartbeat_seconds: float
+    stale_after_seconds: float
     allowed_origins: tuple[str, ...]
     holidays: frozenset[date]
     access_mode: str
@@ -42,6 +43,7 @@ class LiveSettings:
         market_data: MarketDataSettings | None = None,
         db_path: str = "output/live_market.sqlite3",
         heartbeat_seconds: float = 5.0,
+        stale_after_seconds: float = 120.0,
         allowed_origins: tuple[str, ...] = ("http://localhost:3000",),
         holidays: frozenset[date] = frozenset(),
         access_mode: str = "disabled",
@@ -83,6 +85,7 @@ class LiveSettings:
         object.__setattr__(self, "market_data", data)
         object.__setattr__(self, "db_path", db_path)
         object.__setattr__(self, "heartbeat_seconds", heartbeat_seconds)
+        object.__setattr__(self, "stale_after_seconds", stale_after_seconds)
         object.__setattr__(self, "allowed_origins", allowed_origins)
         object.__setattr__(self, "holidays", holidays)
         object.__setattr__(self, "access_mode", access_mode)
@@ -110,6 +113,9 @@ class LiveSettings:
             market_data=MarketDataSettings.from_env(),
             db_path=os.getenv("MARKET_DB_PATH", "output/live_market.sqlite3"),
             heartbeat_seconds=float(os.getenv("MARKET_HEARTBEAT_SECONDS", "5")),
+            stale_after_seconds=float(
+                os.getenv("MARKET_STALE_AFTER_SECONDS", "120")
+            ),
             allowed_origins=_split_origins(
                 os.getenv("MARKET_ALLOWED_ORIGINS", "http://localhost:3000")
             ),
@@ -133,6 +139,8 @@ class LiveSettings:
         self.market_data.validate()
         if self.heartbeat_seconds <= 0:
             raise ValueError("MARKET_HEARTBEAT_SECONDS must be positive")
+        if self.stale_after_seconds <= 0:
+            raise ValueError("MARKET_STALE_AFTER_SECONDS must be positive")
         if self.access_mode not in {"disabled", "cloudflare"}:
             raise ValueError("MARKET_ACCESS_MODE must be disabled or cloudflare")
         if self.access_mode == "cloudflare" and not (

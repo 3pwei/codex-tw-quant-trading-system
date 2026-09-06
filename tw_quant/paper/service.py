@@ -66,6 +66,7 @@ class PaperTradingService:
         self.submissions = 0
         self.filled_submissions = 0
         self.rejected_submissions = 0
+        self.market_blocked_requests = 0
         self.last_submission_at: datetime | None = None
         self.total_submission_ms = 0.0
         self.max_submission_ms = 0.0
@@ -485,6 +486,7 @@ class PaperTradingService:
 
     def health(self) -> dict[str, object]:
         repository = self.repository.stats()
+        kill_switches = self.risk.kill_switch_summary()
         return {
             "status": "healthy" if self.recovery.healthy else "degraded",
             "started_at": self.started_at.isoformat(timespec="milliseconds"),
@@ -502,6 +504,11 @@ class PaperTradingService:
             "submission_requests": self.submissions,
             "filled_submissions": self.filled_submissions,
             "rejected_submissions": self.rejected_submissions,
+            "market_blocked_requests": self.market_blocked_requests,
+            "order_requests": self.submissions + self.market_blocked_requests,
+            "active_kill_switches": kill_switches["active"],
+            "manual_kill_switches": kill_switches["manual"],
+            "automatic_kill_switches": kill_switches["automatic"],
             "average_submission_ms": round(
                 self.total_submission_ms / self.submissions, 3
             ) if self.submissions else None,
@@ -511,6 +518,9 @@ class PaperTradingService:
             ) if self.last_submission_at else None,
             "repository": repository,
         }
+
+    def record_market_block(self) -> None:
+        self.market_blocked_requests += 1
 
     def activate_kill_switch(self, owner_id: str, reason: str) -> None:
         occurred_at = datetime.now(TAIPEI)

@@ -65,6 +65,8 @@ class LiveApiTests(unittest.TestCase):
                 self.assertEqual(health["symbol"], "TMF")
                 self.assertNotIn("market_data_provider", health)
                 self.assertIn("last_tick_time", health)
+                self.assertIn("last_bar_time", health)
+                self.assertIn("trading_block_reason", health)
                 strategy_response = client.get(
                     "/api/strategy-signals?symbol=TMF&strategies=orb,bnf&limit=500"
                 )
@@ -342,7 +344,7 @@ class ReplayConnectionTests(unittest.IsolatedAsyncioTestCase):
         service.add_bar_listener(
             lambda _bar: (_ for _ in ()).throw(RuntimeError("listener failed"))
         )
-        at = datetime(2026, 8, 24, 15, 0, tzinfo=ZoneInfo("Asia/Taipei"))
+        at = datetime.now(ZoneInfo("Asia/Taipei"))
         ticks = [
             TickEvent(
                 symbol="TMF", contract="TMFI6",
@@ -363,6 +365,9 @@ class ReplayConnectionTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(status["service_status"], "degraded")
             self.assertGreaterEqual(status["queue_high_watermark"], 1)
             self.assertIsNotNone(status["average_tick_processing_ms"])
+            self.assertGreaterEqual(status["database_write_count"], 2)
+            self.assertIn("average_database_write_ms", status)
+            self.assertEqual(status["websocket_connections"], 0)
             self.assertFalse(service._worker.done())
         finally:
             await service.stop()

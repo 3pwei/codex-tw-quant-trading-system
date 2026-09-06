@@ -29,12 +29,31 @@
 | 區域 | 指標 | 判讀 |
 |---|---|---|
 | 行情 | `service_status` | `healthy` 以外需要檢查 |
-| Provider | `connection_status`、`tick_age_ms` | 交易時段內斷線或 Tick 持續老化需處理 |
+| Provider | `connection_status`、最新 Tick／K 棒時間、行情延遲 | 斷線或 Tick 持續老化會禁止新倉 |
 | Queue | size、capacity、high watermark | 持續上升代表消費速度不足 |
+| WebSocket | active/total/disconnections/dropped messages | 連線反覆增加或訊息丟棄需檢查網路與消費速度 |
 | Worker | dropped ticks、errors | 任一增加都會將服務標示 degraded |
 | 效能 | Tick average/max processing ms | 用來觀察版本間退化，不是成交延遲承諾 |
+| SQLite | Market/Paper average/max write ms | 寫入升高時同步比對 Queue 是否累積 |
 | Paper | recovery status/issues | degraded 帳戶已自動禁止新增曝險 |
+| Paper | 委託、成交、拒絕、行情阻擋、Kill Switch | 只顯示彙總，不揭露帳戶資料 |
 | Paper | submission average/max ms | 只統計本次程序啟動後的 API 處理 |
+| Host | CPU、記憶體、SQLite 所在磁碟 | 用來定位 502 是否與主機資源壓力相關 |
+
+頂層 `system_status` 使用以下狀態，並以行情安全為最高優先：
+
+| 狀態 | 意義 | 新倉 |
+|---|---|---|
+| `healthy` | 行情、Worker 與 Paper 復原正常 | 依帳號風控決定 |
+| `degraded` | Worker、歷史載入或 Paper 復原有非致命異常 | 依具體風控決定 |
+| `market_stale` | Tick 超過 `MARKET_STALE_AFTER_SECONDS` 未更新 | 禁止 |
+| `provider_disconnected` | 行情 Provider 已斷線 | 立即禁止 |
+| `trading_halted` | 至少一個帳戶 Kill Switch 或復原鎖啟用 | 受影響帳戶禁止 |
+
+`MARKET_STALE_AFTER_SECONDS` 預設 120 秒，與 Paper 市價有效期限共用。Provider
+斷線或行情過期時，API 在建立任何 Order Intent 前即回傳 503，因此沒有待恢復後補送
+的委託。既有持倉、委託與成交仍可讀取；reduce-only 平倉只在最新報價仍位於有效期限
+內時允許，絕不使用過期價格成交。
 
 Worker 遇到單筆壞資料或 listener 例外時會記錄錯誤並繼續處理 Queue，不會讓唯一的
 行情 Worker 靜默終止。
@@ -55,6 +74,9 @@ Cloudflare Zero Trust 必須為 `/healthz` 建立比 Dashboard 更精確的 Bypa
 - [ ] 不同使用者互相看不到委託、成交、持倉與問題代碼。
 - [ ] 重複點擊或網路重送相同 Idempotency-Key 只產生一筆委託。
 - [ ] 行情超過兩分鐘時，新委託 fail closed。
+- [ ] Provider 斷線時新倉立即回傳 503，恢復後不會自動補送。
+- [ ] 斷線期間仍可讀取既有持倉、委託與成交。
+- [ ] 管理員健康頁可看到 WebSocket、Queue、SQLite 及主機資源指標。
 - [ ] 手動 Kill Switch 阻止新倉但允許平倉，重啟後仍保持啟用。
 - [ ] 有持倉時重啟 Market API，持倉、損益與當日交易次數保持一致。
 - [ ] 故意建立中斷冪等紀錄後重啟，帳戶進入 recovery lock。

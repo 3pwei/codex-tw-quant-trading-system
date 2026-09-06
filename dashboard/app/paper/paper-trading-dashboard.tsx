@@ -63,6 +63,13 @@ type Quote = {
   status: "forming" | "closed";
   session: "day" | "night";
 };
+type MarketHealth = {
+  service_status: "healthy" | "degraded" | "market_stale" | "provider_disconnected";
+  connection_status: string;
+  trading_block_reason: "market_stale" | "provider_disconnected" | null;
+  stale_after_seconds: number;
+  last_tick_time: string | null;
+};
 
 const apiBase = () => (process.env.NEXT_PUBLIC_MARKET_API_URL
   ?? (typeof window === "undefined" ? "" : window.location.origin)).replace(/\/$/, "");
@@ -99,6 +106,7 @@ export default function PaperTradingDashboard() {
   const [fills, setFills] = useState<Fill[]>([]);
   const [quote, setQuote] = useState<Quote | null>(null);
   const [quoteFresh, setQuoteFresh] = useState(false);
+  const [marketHealth, setMarketHealth] = useState<MarketHealth | null>(null);
   const [side, setSide] = useState<"buy" | "sell">("buy");
   const [quantity, setQuantity] = useState(1);
   const [stopLoss, setStopLoss] = useState("");
@@ -109,21 +117,23 @@ export default function PaperTradingDashboard() {
 
   const load = useCallback(async (silent = false) => {
     try {
-      const [meResponse, accountResponse, ordersResponse, fillsResponse, quoteResponse] = await Promise.all([
+      const [meResponse, accountResponse, ordersResponse, fillsResponse, quoteResponse, healthResponse] = await Promise.all([
         fetch(`${apiBase()}/api/me`, { cache: "no-store" }),
         fetch(`${apiBase()}/api/paper/account`, { cache: "no-store" }),
         fetch(`${apiBase()}/api/paper/orders`, { cache: "no-store" }),
         fetch(`${apiBase()}/api/paper/fills?limit=100`, { cache: "no-store" }),
         fetch(`${apiBase()}/api/kbars?symbol=TMF&interval=1m&limit=1`, { cache: "no-store" }),
+        fetch(`${apiBase()}/api/health`, { cache: "no-store" }),
       ]);
-      const [me, accountBody, ordersBody, fillsBody, quotes] = await Promise.all([
+      const [me, accountBody, ordersBody, fillsBody, quotes, health] = await Promise.all([
         responseBody(meResponse), responseBody(accountResponse),
         responseBody(ordersResponse), responseBody(fillsResponse), responseBody(quoteResponse),
+        responseBody(healthResponse),
       ]);
       const latestQuote: Quote | null = quotes.at(-1) ?? null;
       setUser(me); setAccount(accountBody.account); setPositions(accountBody.positions);
-      setOrders(ordersBody.orders); setFills(fillsBody.fills); setQuote(latestQuote);
-      setQuoteFresh(Boolean(latestQuote && Date.now() - new Date(latestQuote.received_time).getTime() <= 120_000));
+      setOrders(ordersBody.orders); setFills(fillsBody.fills); setQuote(latestQuote); setMarketHealth(health);
+      setQuoteFresh(Boolean(latestQuote && Date.now() - new Date(latestQuote.received_time).getTime() <= health.stale_after_seconds * 1_000));
       if (latestQuote) setStopLoss(current => current || String(latestQuote.close - 50));
       if (!silent) setError("");
     } catch (reason) {
@@ -144,6 +154,12 @@ export default function PaperTradingDashboard() {
     [positions],
   );
   const paperEnabled = user?.trading_mode === "paper";
+  const marketBlockReason = marketHealth?.trading_block_reason ?? null;
+  const marketBlockCopy = marketBlockReason === "provider_disconnected"
+    ? { code: "PROVIDER DISCONNECTED", title: "行情供應商連線中斷", detail: "系統已禁止建立新倉；既有持倉仍可查看。連線恢復後也不會自動補送中斷期間的委託。" }
+    : marketBlockReason === "market_stale"
+      ? { code: "MARKET STALE", title: "行情已停止更新", detail: `最新 Tick：${time(marketHealth?.last_tick_time ?? null)}。系統已禁止建立新倉，恢復後請重新確認價格再送單。` }
+      : null;
 
   async function submitOrder(event: FormEvent) {
     event.preventDefault();
@@ -212,6 +228,10 @@ export default function PaperTradingDashboard() {
       <div><span>RECOVERY LOCK</span><h2>帳戶狀態需要檢查</h2><p>重啟復原發現資料不一致，系統已禁止新增曝險；既有部位仍可平倉。</p></div>
       {user?.role === "admin" && <Link href="/settings/">查看系統健康狀態 →</Link>}
     </section>}
+    {marketBlockCopy && <section className="paper-mode-warning market-interruption panel">
+      <div><span>{marketBlockCopy.code}</span><h2>{marketBlockCopy.title}</h2><p>{marketBlockCopy.detail}</p></div>
+      {user?.role === "admin" && <Link href="/settings/">查看系統健康狀態 →</Link>}
+    </section>}
     {error && <div className="paper-message error">{error}</div>}
     {notice && <div className="paper-message success">{notice}</div>}
 
@@ -231,8 +251,8 @@ export default function PaperTradingDashboard() {
         </div>
         <label><span>數量</span><select value={quantity} onChange={event => setQuantity(Number(event.target.value))}><option value={1}>1 口</option><option value={2}>2 口</option></select></label>
         <label><span>停損價</span><input required min="1" step="1" inputMode="decimal" value={stopLoss} onChange={event => setStopLoss(event.target.value)} /></label>
-        <p>單筆風險與最大持倉仍由後端再次檢查。行情超過 2 分鐘不會成交。</p>
-        <button className={`paper-submit ${side}`} disabled={!paperEnabled || !quoteFresh || account?.kill_switch_active || Boolean(busy)}>{busy === "order" ? "送單中…" : `送出模擬${side === "buy" ? "買單" : "賣單"}`}</button>
+        <p>單筆風險與最大持倉仍由後端再次檢查。行情超過系統容許延遲時不會成交。</p>
+        <button className={`paper-submit ${side}`} disabled={!paperEnabled || !quoteFresh || Boolean(marketBlockReason) || account?.kill_switch_active || Boolean(busy)}>{busy === "order" ? "送單中…" : `送出模擬${side === "buy" ? "買單" : "賣單"}`}</button>
       </form>
 
       <section className="paper-risk panel">
