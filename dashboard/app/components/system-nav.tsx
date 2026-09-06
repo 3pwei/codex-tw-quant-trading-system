@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 const routes = [
   { href: "/", label: "總覽" },
   { href: "/live/", label: "即時行情" },
+  { href: "/paper/", label: "模擬交易", permission: "positions.read.own" },
   { href: "/backtest/", label: "歷史回測" },
   { href: "/replay/", label: "行情回放" },
   { href: "/history/", label: "執行紀錄" },
@@ -20,6 +21,7 @@ export type SystemRoute = (typeof routes)[number]["href"];
 type CurrentUser = {
   email: string;
   role: string;
+  permissions: string[];
 };
 
 export default function SystemNav({ active }: { active: SystemRoute }) {
@@ -37,8 +39,10 @@ export default function SystemNav({ active }: { active: SystemRoute }) {
   return (
     <nav className="system-nav" aria-label="系統功能">
       <div className="system-nav-routes">
-        {routes.filter(
-          route => !("admin" in route) || currentUser?.role === "admin"
+        {routes.filter(route =>
+          (!("admin" in route) || currentUser?.role === "admin")
+          && (!("permission" in route)
+            || currentUser?.permissions.includes(route.permission))
         ).map(route => (
           <Link
           key={route.href}

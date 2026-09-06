@@ -7,7 +7,7 @@ export const metadata: Metadata = {
       "https://3pwei.github.io/codex-tw-quant-trading-system/"
   ),
   title: "微型臺指期貨量化儀表板",
-  description: "TMF 即時行情、歷史回測、策略與系統狀態儀表板。",
+  description: "TMF 即時行情、模擬交易、歷史回測、策略與系統狀態儀表板。",
   openGraph: {
     title: "微型臺指期貨 1 分 K 與策略回測",
     description: "TMF 即時行情、歷史回測、基本與組合策略及系統狀態一站管理。",

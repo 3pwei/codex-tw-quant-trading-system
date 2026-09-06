@@ -120,8 +120,11 @@ export default function UserManagement() {
 
   async function updateUser(user: User, changes: Partial<User>) {
     const next = { ...user, ...changes };
-    const tradingMode =
-      next.role === "trader" ? next.trading_mode : "disabled";
+    const tradingMode = next.role === "researcher"
+      ? "disabled"
+      : next.role === "admin" && next.trading_mode === "live"
+        ? "disabled"
+        : next.trading_mode;
     setBusy(user.user_id);
     setError("");
     setNotice("");
@@ -284,7 +287,7 @@ export default function UserManagement() {
                   </td>
                   <td>
                     <select
-                      disabled={busy !== null || user.role !== "trader"}
+                      disabled={busy !== null || user.role === "researcher"}
                       value={user.trading_mode}
                       onChange={event =>
                         void updateUser(user, {
@@ -294,7 +297,9 @@ export default function UserManagement() {
                     >
                       <option value="disabled">不允許下單</option>
                       <option value="paper">模擬下單</option>
-                      <option value="live">實盤下單</option>
+                      {user.role === "trader" && (
+                        <option value="live">實盤下單</option>
+                      )}
                     </select>
                   </td>
                   <td>
@@ -310,7 +315,7 @@ export default function UserManagement() {
           </table>
         </div>
         <p className="admin-footnote">
-          管理員不具備下單權限；只有 Trader 角色可設定 paper／live。此階段尚未提供任何真實下單 API。
+          Admin 預設不允許下單，但可明確啟用 Paper；只有 Trader 可選擇 live。此階段尚未提供任何真實下單 API。
         </p>
       </section>
     </>

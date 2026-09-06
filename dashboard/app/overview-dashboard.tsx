@@ -13,7 +13,7 @@ type Health = {
 };
 type KBar = { close: number; session: "day" | "night"; status: "forming" | "closed"; time: string };
 type Strategy = { key: string; name: string; signals: { event: "entry" | "exit"; direction: "long" | "short"; time: string; price: number }[] };
-type CurrentUser = { role: "researcher" | "trader" | "admin" };
+type CurrentUser = { role: "researcher" | "trader" | "admin"; permissions: string[] };
 
 const apiBase = () => (process.env.NEXT_PUBLIC_MARKET_API_URL ?? (typeof window === "undefined" ? "" : window.location.origin)).replace(/\/$/, "");
 const number = new Intl.NumberFormat("zh-TW", { maximumFractionDigits: 2 });
@@ -21,6 +21,7 @@ const time = (value: string | null | undefined) => value ? new Intl.DateTimeForm
 
 const modules = [
   { href: "/live/", code: "LIVE", title: "即時交易／1 分 K", detail: "WebSocket 行情、形成中 K 棒與策略訊號", ready: true },
+  { href: "/paper/", code: "PAPER", title: "模擬交易", detail: "手動模擬委託、持倉、成交紀錄與 Kill Switch", ready: true, permission: "positions.read.own" },
   { href: "/backtest/", code: "TEST", title: "歷史回測", detail: "選擇策略與最長 31 天的歷史範圍", ready: true },
   { href: "/replay/", code: "PLAY", title: "動態歷史回放", detail: "依時間軸模擬行情逐根推進", ready: true },
   { href: "/history/", code: "LOG", title: "回測／交易歷史", detail: "查看績效、交易明細與策略版本", ready: true },
@@ -78,7 +79,10 @@ export default function OverviewDashboard() {
       </section>
       {error && <div className="live-error">{error}；總覽將自動重試，其他功能仍可由下方進入。</div>}
       <section className="overview-grid">
-        {modules.filter(module => !("admin" in module) || user?.role === "admin").map(module => <Link key={module.href} href={module.href} className="module-card">
+        {modules.filter(module =>
+          (!("admin" in module) || user?.role === "admin")
+          && (!("permission" in module) || user?.permissions.includes(module.permission))
+        ).map(module => <Link key={module.href} href={module.href} className="module-card">
           <div><b>{module.code}</b><span className={module.ready ? "ready" : "planned"}>{module.ready ? "可使用" : "建置中"}</span></div>
           <h2>{module.title}</h2><p>{module.detail}</p><em>開啟功能 →</em>
         </Link>)}

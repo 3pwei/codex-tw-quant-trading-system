@@ -259,6 +259,10 @@ Paper API 的委託價格、契約、owner、權限及交易模式全部由伺�
 重複點擊產生第二筆委託。模擬市價單會以伺服器最新行情套用滑價與成本，依序產生
 Order → Risk → Fill → Position 事件並保存到 SQLite；風控拒絕時只留下拒絕紀錄。
 
+Trader 與具有明確 Paper 權限的 Admin 可由 `/paper/` 查看帳戶損益、持倉、委託與
+成交紀錄，手動送出模擬市價單、平倉及控制 Kill Switch。Admin 建立時仍預設為
+`disabled`，必須在帳號管理頁明確切換為 `paper`；Admin 永遠不能切換為 `live`。
+
 相關 API：
 
 - `GET /api/paper/account`
@@ -542,11 +546,13 @@ disabled` 帳號並直接綁定該 Cloudflare 身分，之後可再調整角色�
 
 - `researcher`：行情、策略與回測研究。
 - `trader`：研究功能，加上自己的 Broker、模擬交易；真實交易仍需另行啟用。
-- `admin`：平台帳號、系統設定、Provider 診斷與稽核管理，不代替使用者下單。
+- `admin`：平台帳號、系統設定、Provider 診斷與稽核管理；可明確啟用自己的 Paper
+  帳戶，但不能使用 live 模式。
 
 帳號狀態為 `active`、`suspended`、`revoked`；交易模式獨立保存為 `disabled`、
-`paper`、`live`。研究者與管理員不能設定為 `paper` 或 `live`。`audit_events` 僅提供
-append 操作，Secret、API Key 與 Token 不得寫入事件內容。
+`paper`、`live`。Researcher 只能使用 `disabled`；Admin 可使用 `disabled` 或
+`paper`；只有 Trader 可選擇 `live`。`audit_events` 僅提供 append 操作，Secret、
+API Key 與 Token 不得寫入事件內容。
 
 先保持 DNS `DNS only`，讓 Caddy 取得源站 HTTPS 憑證，然後啟動：
 

@@ -206,6 +206,15 @@ class AuthorizationApiTests(unittest.TestCase):
         )
         self.assertEqual(ordinary_page.status_code, 204)
 
+        paper_page = self.client.get(
+            "/internal/auth/cloudflare",
+            headers={
+                "Cf-Access-Jwt-Assertion": "reader-token",
+                "X-Original-Uri": "/paper/",
+            },
+        )
+        self.assertEqual(paper_page.status_code, 403)
+
     def test_admin_can_create_and_change_user_with_audit(self):
         admin = self.headers("cf-admin", "admin@example.com")
         created = self.client.post(

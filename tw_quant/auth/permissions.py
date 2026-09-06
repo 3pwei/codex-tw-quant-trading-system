@@ -55,6 +55,8 @@ ROLE_PERMISSIONS: dict[Role, frozenset[str]] = {
             "backtest.run",
             "backtest_history.read.own",
             "backtest_history.delete.own",
+            "orders.paper",
+            "positions.read.own",
             "admin.settings.read",
             "admin.settings.write",
             "admin.providers.read",
