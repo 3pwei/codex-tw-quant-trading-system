@@ -24,6 +24,9 @@ Dashboard 採功能導向 URL：
 
 `/trade/` 是唯一的即時交易入口。圖表與 Paper 委託票共用同一條 WebSocket
 行情，Paper 帳戶資料則每 5 秒更新；舊 `/live/`、`/paper/` 會自動導向工作台。
+商品、週期與策略圖層由工作台的單一選擇狀態管理；Paper 資料更新後會在目前
+圖表顯示成交點、未平倉部位均價及該部位最近一筆進場委託的停損線，不會另行
+呼叫行情或 Paper API。
 
 回測頁會先呼叫 `/api/backtest/options` 取得 SQLite 可用交易日，再呼叫
 `/api/backtest` 執行所選策略與日期。日期區間由前後端共同限制為最多 31 個

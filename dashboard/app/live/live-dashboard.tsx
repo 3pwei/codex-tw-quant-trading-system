@@ -7,9 +7,11 @@ import {
   createChart,
   createSeriesMarkers,
   HistogramSeries,
+  LineStyle,
   type CandlestickData,
   type HistogramData,
   type IChartApi,
+  type IPriceLine,
   type ISeriesApi,
   type ISeriesMarkersPluginApi,
   type SeriesMarker,
@@ -17,7 +19,10 @@ import {
   type UTCTimestamp,
 } from "lightweight-charts";
 import SystemNav from "../components/system-nav";
-import PaperTradingDashboard, { type MarketHealth } from "../paper/paper-trading-dashboard";
+import PaperTradingDashboard, {
+  type MarketHealth,
+  type PaperOverlaySnapshot,
+} from "../paper/paper-trading-dashboard";
 
 type ConnectionStatus = "connecting" | "connected" | "reconnecting" | "disconnected";
 type KBar = {
@@ -53,7 +58,13 @@ type StatusMessage = {
 type FeedMessage = KBar | StatusMessage;
 type Ohlc = Pick<KBar, "open" | "high" | "low" | "close"> | null;
 type StrategyKey = string;
+type SymbolKey = "TMF";
 type Timeframe = "1m" | "5m" | "10m" | "15m" | "30m" | "1h" | "1d" | "1w";
+type TradeSelection = {
+  symbol: SymbolKey;
+  interval: Timeframe;
+  strategies: StrategyKey[];
+};
 type StrategySignal = {
   strategy: StrategyKey;
   event: "entry" | "exit";
@@ -101,6 +112,20 @@ const TIMEFRAME_OPTIONS: { key: Timeframe; name: string }[] = [
   { key: "30m", name: "30 分 K" }, { key: "1h", name: "1 小時 K" },
   { key: "1d", name: "日 K" }, { key: "1w", name: "週 K" },
 ];
+const PRODUCT_OPTIONS: { key: SymbolKey; name: string }[] = [
+  { key: "TMF", name: "微型臺指期貨" },
+];
+const EMPTY_PAPER_OVERLAY: PaperOverlaySnapshot = {
+  positions: [], orders: [], fills: [],
+};
+
+function chartBarAtOrBefore(value: string, times: UTCTimestamp[]): UTCTimestamp | null {
+  const target = toTime(value);
+  for (let index = times.length - 1; index >= 0; index -= 1) {
+    if (times[index] <= target) return times[index];
+  }
+  return null;
+}
 
 function StrategyStatus({ strategy }: { strategy: StrategyResult }) {
   const latestEntry = [...strategy.signals].reverse().find(signal => signal.event === "entry");
@@ -139,6 +164,8 @@ export default function TradingWorkspace() {
   const candleRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const volumeRef = useRef<ISeriesApi<"Histogram"> | null>(null);
   const markerRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
+  const priceLinesRef = useRef<IPriceLine[]>([]);
+  const barTimesRef = useRef<UTCTimestamp[]>([]);
   const socketRef = useRef<WebSocket | null>(null);
   const connectionGeneration = useRef(0);
   const attempts = useRef(0);
@@ -152,12 +179,20 @@ export default function TradingWorkspace() {
   const [latency, setLatency] = useState<number | null>(null);
   const [error, setError] = useState("");
   const [historyCount, setHistoryCount] = useState(0);
-  const [selectedInterval, setSelectedInterval] = useState<Timeframe>("1m");
-  const [selectedStrategies, setSelectedStrategies] = useState<StrategyKey[]>(["orb", "bnf"]);
+  const [selection, setSelection] = useState<TradeSelection>({
+    symbol: "TMF", interval: "1m", strategies: ["orb", "bnf"],
+  });
   const [strategyOptions, setStrategyOptions] = useState<StrategyOption[]>([]);
   const [strategyResults, setStrategyResults] = useState<StrategyResult[]>([]);
   const [marketHealth, setMarketHealth] = useState<MarketHealth | null>(null);
   const [clock, setClock] = useState(() => Date.now());
+  const [paperOverlay, setPaperOverlay] = useState<PaperOverlaySnapshot>(EMPTY_PAPER_OVERLAY);
+
+  const selectedInterval = selection.interval;
+  const selectedStrategies = selection.strategies;
+  const updatePaperOverlay = useCallback((snapshot: PaperOverlaySnapshot) => {
+    setPaperOverlay(snapshot);
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -193,8 +228,8 @@ export default function TradingWorkspace() {
     };
   }, []);
 
-  const loadHistory = useCallback(async (interval: Timeframe, signal?: AbortSignal) => {
-    const response = await fetch(`${apiBase()}/api/kbars?symbol=TMF&interval=${interval}&limit=500`, { cache: "no-store", signal });
+  const loadHistory = useCallback(async (symbol: SymbolKey, interval: Timeframe, signal?: AbortSignal) => {
+    const response = await fetch(`${apiBase()}/api/kbars?symbol=${symbol}&interval=${interval}&limit=500`, { cache: "no-store", signal });
     if (!response.ok) throw new Error(`歷史 K 棒載入失敗 (${response.status})`);
     const bars: KBar[] = await response.json();
     if (signal?.aborted) return [];
@@ -203,6 +238,7 @@ export default function TradingWorkspace() {
     }
     candleRef.current?.setData(bars.map(candle));
     volumeRef.current?.setData(bars.map(volume));
+    barTimesRef.current = bars.map(bar => toTime(bar.time));
     setHistoryCount(bars.length);
     if (bars.length) setLatest(bars[bars.length - 1]);
     return bars;
@@ -217,30 +253,14 @@ export default function TradingWorkspace() {
     }
     const selected = selectedStrategies.join(",");
     const response = await fetch(
-      `${apiBase()}/api/strategy-signals?symbol=TMF&strategies=${selected}&interval=${selectedInterval}&limit=500`,
+      `${apiBase()}/api/strategy-signals?symbol=${selection.symbol}&strategies=${selected}&interval=${selectedInterval}&limit=500`,
       { cache: "no-store" },
     );
     if (!response.ok) throw new Error(`策略訊號載入失敗 (${response.status})`);
     const payload: { strategies: StrategyResult[] } = await response.json();
     if (requestId !== strategyRequest.current) return;
     setStrategyResults(payload.strategies);
-    const markers: SeriesMarker<Time>[] = payload.strategies.flatMap(strategy =>
-      strategy.signals.map(signal => ({
-        time: toTime(signal.time),
-        position: signal.direction === "long"
-          ? signal.event === "entry" ? "belowBar" : "aboveBar"
-          : signal.event === "entry" ? "aboveBar" : "belowBar",
-        color: signal.event === "entry" ? strategy.color : "#f59e0b",
-        shape: signal.event === "entry"
-          ? signal.direction === "long" ? "arrowUp" : "arrowDown"
-          : "circle",
-        text: signal.event === "entry"
-          ? `${strategy.key.toUpperCase()} ${signal.direction === "long" ? "多" : "空"}進 · SL ${fmt(signal.stop_loss_price)} · TP ${fmt(signal.take_profit_price)}`
-          : `${strategy.key.toUpperCase()} ${signal.direction === "long" ? "多" : "空"}出`,
-      })),
-    );
-    markerRef.current?.setMarkers(markers.sort((a, b) => Number(a.time) - Number(b.time)));
-  }, [selectedStrategies, selectedInterval]);
+  }, [selectedStrategies, selectedInterval, selection.symbol]);
 
   useEffect(() => {
     if (!hostRef.current) return;
@@ -285,8 +305,81 @@ export default function TradingWorkspace() {
       candleRef.current = null;
       volumeRef.current = null;
       markerRef.current = null;
+      priceLinesRef.current = [];
     };
   }, []);
+
+  useEffect(() => {
+    const strategyMarkers: SeriesMarker<Time>[] = strategyResults.flatMap(strategy =>
+      strategy.signals.map(signal => ({
+        time: toTime(signal.time),
+        position: signal.direction === "long"
+          ? signal.event === "entry" ? "belowBar" as const : "aboveBar" as const
+          : signal.event === "entry" ? "aboveBar" as const : "belowBar" as const,
+        color: signal.event === "entry" ? strategy.color : "#f59e0b",
+        shape: signal.event === "entry"
+          ? signal.direction === "long" ? "arrowUp" as const : "arrowDown" as const
+          : "circle" as const,
+        text: signal.event === "entry"
+          ? `${strategy.key.toUpperCase()} ${signal.direction === "long" ? "多" : "空"}進 · SL ${fmt(signal.stop_loss_price)} · TP ${fmt(signal.take_profit_price)}`
+          : `${strategy.key.toUpperCase()} ${signal.direction === "long" ? "多" : "空"}出`,
+      })),
+    );
+    const fillMarkers: SeriesMarker<Time>[] = paperOverlay.fills.flatMap(fill => {
+      if (fill.symbol !== selection.symbol || (latest?.contract && fill.contract !== latest.contract)) return [];
+      const markerTime = chartBarAtOrBefore(fill.meta.occurred_at, barTimesRef.current);
+      if (markerTime == null) return [];
+      return [{
+        time: markerTime,
+        position: fill.side === "buy" ? "belowBar" as const : "aboveBar" as const,
+        color: fill.side === "buy" ? "#42d6a4" : "#ff6b72",
+        shape: fill.side === "buy" ? "arrowUp" as const : "arrowDown" as const,
+        text: `PAPER ${fill.purpose === "entry" ? "成交" : "平倉"} ${fill.quantity}口 @ ${fmt(fill.price)}`,
+      }];
+    });
+    markerRef.current?.setMarkers(
+      [...strategyMarkers, ...fillMarkers].sort((a, b) => Number(a.time) - Number(b.time)),
+    );
+  }, [historyCount, latest?.contract, latest?.time, paperOverlay.fills, selectedInterval, selection.symbol, strategyResults]);
+
+  useEffect(() => {
+    const series = candleRef.current;
+    if (!series) return;
+    priceLinesRef.current.forEach(line => series.removePriceLine(line));
+    priceLinesRef.current = [];
+    const positions = paperOverlay.positions.filter(position =>
+      position.symbol === selection.symbol
+      && (!latest?.contract || position.contract === latest.contract),
+    );
+    for (const position of positions) {
+      priceLinesRef.current.push(series.createPriceLine({
+        price: position.average_price,
+        color: position.quantity > 0 ? "#42d6a4" : "#ff6b72",
+        lineWidth: 2,
+        lineStyle: LineStyle.Dashed,
+        axisLabelVisible: true,
+        title: `PAPER ${position.quantity > 0 ? "多" : "空"}均價 ${Math.abs(position.quantity)}口`,
+      }));
+      const entryOrder = paperOverlay.orders.find(order =>
+        order.status === "filled"
+        && !order.reduce_only
+        && order.strategy_id === position.strategy_id
+        && order.strategy_version === position.strategy_version
+        && order.contract === position.contract
+        && order.stop_loss_price != null,
+      );
+      if (entryOrder?.stop_loss_price != null) {
+        priceLinesRef.current.push(series.createPriceLine({
+          price: entryOrder.stop_loss_price,
+          color: "#ff6b72",
+          lineWidth: 1,
+          lineStyle: LineStyle.Dotted,
+          axisLabelVisible: true,
+          title: "PAPER 停損",
+        }));
+      }
+    }
+  }, [latest?.contract, paperOverlay.orders, paperOverlay.positions, selection.symbol]);
 
   useEffect(() => {
     strategyLoaderRef.current = async () => {
@@ -298,6 +391,7 @@ export default function TradingWorkspace() {
   }, [loadStrategySignals]);
 
   useEffect(() => {
+    const symbol = selection.symbol;
     const interval = selectedInterval;
     const generation = ++connectionGeneration.current;
     const abortController = new AbortController();
@@ -324,20 +418,21 @@ export default function TradingWorkspace() {
         setCrosshair(null);
         setHistoryCount(0);
         setStrategyResults([]);
+        barTimesRef.current = [];
         candleRef.current?.setData([]);
         volumeRef.current?.setData([]);
         markerRef.current?.setMarkers([]);
       }
       setStatus(attempts.current ? "reconnecting" : "connecting");
       try {
-        await loadHistory(interval, abortController.signal);
+        await loadHistory(symbol, interval, abortController.signal);
       } catch (reason) {
         if (isCurrentGeneration() && !(reason instanceof DOMException && reason.name === "AbortError")) {
           setError(reason instanceof Error ? reason.message : "REST 載入失敗");
         }
       }
       if (!isCurrentGeneration()) return;
-      const wsUrl = `${apiBase().replace(/^http/, "ws")}/ws/market/TMF?interval=${interval}`;
+      const wsUrl = `${apiBase().replace(/^http/, "ws")}/ws/market/${symbol}?interval=${interval}`;
       const socket = new WebSocket(wsUrl);
       activeSocket = socket;
       socketRef.current = socket;
@@ -346,7 +441,7 @@ export default function TradingWorkspace() {
         attempts.current = 0;
         lastMessageAt.current = Date.now();
         setError("");
-        await loadHistory(interval, abortController.signal).catch(() => undefined); // reconnect gap recovery
+        await loadHistory(symbol, interval, abortController.signal).catch(() => undefined); // reconnect gap recovery
         if (!isCurrentSocket(socket)) return;
         await strategyLoaderRef.current();
       };
@@ -359,6 +454,8 @@ export default function TradingWorkspace() {
           if (message.interval !== interval) return;
           candleRef.current?.update(candle(message));
           volumeRef.current?.update(volume(message));
+          const messageTime = toTime(message.time);
+          if (barTimesRef.current.at(-1) !== messageTime) barTimesRef.current.push(messageTime);
           setLatest(message);
           setLastTick(message.exchange_time);
           setLatency(message.latency_ms);
@@ -413,12 +510,15 @@ export default function TradingWorkspace() {
       activeSocket?.close();
       activeSocket = null;
     };
-  }, [loadHistory, selectedInterval]);
+  }, [loadHistory, selectedInterval, selection.symbol]);
 
   const toggleStrategy = (key: StrategyKey) => {
-    setSelectedStrategies(current => current.includes(key)
-      ? current.filter(value => value !== key)
-      : [...current, key]);
+    setSelection(current => ({
+      ...current,
+      strategies: current.strategies.includes(key)
+        ? current.strategies.filter(value => value !== key)
+        : [...current.strategies, key],
+    }));
   };
 
   const shown = crosshair ?? latest;
@@ -434,9 +534,10 @@ export default function TradingWorkspace() {
   );
   return <main className="live-shell">
     <header className="live-header">
-      <div><span>WADE QUANT LAB · TRADE WORKSPACE</span><h1>TMF 交易工作台</h1></div>
+      <div><span>WADE QUANT LAB · TRADE WORKSPACE</span><h1>{selection.symbol} 交易工作台</h1></div>
       <div className="live-header-actions">
-        <label className="timeframe-select"><span>K 棒週期</span><select value={selectedInterval} onChange={event => setSelectedInterval(event.target.value as Timeframe)}>{TIMEFRAME_OPTIONS.map(option => <option key={option.key} value={option.key}>{option.name}</option>)}</select></label>
+        <label className="timeframe-select"><span>商品</span><select value={selection.symbol} onChange={event => setSelection(current => ({ ...current, symbol: event.target.value as SymbolKey }))}>{PRODUCT_OPTIONS.map(option => <option key={option.key} value={option.key}>{option.key} · {option.name}</option>)}</select></label>
+        <label className="timeframe-select"><span>K 棒週期</span><select value={selectedInterval} onChange={event => setSelection(current => ({ ...current, interval: event.target.value as Timeframe }))}>{TIMEFRAME_OPTIONS.map(option => <option key={option.key} value={option.key}>{option.name}</option>)}</select></label>
         <details className="strategy-select">
           <summary>交易策略 <b>{selectedStrategies.length}</b></summary>
           <div className="strategy-menu">
@@ -455,7 +556,7 @@ export default function TradingWorkspace() {
     </header>
     <SystemNav active="/trade/" />
     <section className="live-summary">
-      <div><span>商品／契約</span><b>TMF · {latest?.contract ?? "等待行情"}</b></div>
+      <div><span>商品／契約</span><b>{selection.symbol} · {latest?.contract ?? "等待行情"}</b></div>
       <div><span>交易時段</span><b>{latest?.session === "night" ? "夜盤" : latest?.session === "day" ? "日盤" : "—"}</b></div>
       <div><span>最後行情時間</span><b>{fmtTime(lastTick)}</b></div>
       <div><span>資料延遲</span><b className={latency != null && latency > 1000 ? "warn" : ""}>{fmt(latency)} ms</b></div>
@@ -470,15 +571,16 @@ export default function TradingWorkspace() {
       quote={latest}
       quoteFresh={quoteFresh}
       marketHealth={marketHealth}
+      onOverlayChange={updatePaperOverlay}
       marketPanel={<>
         <section className="live-chart-panel">
           <div className="live-toolbar">
-            <div><strong>{latest?.contract ?? "TMF"}</strong><span>{TIMEFRAME_OPTIONS.find(item => item.key === selectedInterval)?.name} · Asia/Taipei · Exchange Time</span></div>
+            <div><strong>{latest?.contract ?? selection.symbol}</strong><span>{TIMEFRAME_OPTIONS.find(item => item.key === selectedInterval)?.name} · Asia/Taipei · Exchange Time</span></div>
             <div className="ohlc-strip"><span>O <b>{fmt(shown?.open)}</b></span><span>H <b>{fmt(shown?.high)}</b></span><span>L <b>{fmt(shown?.low)}</b></span><span>C <b>{fmt(shown?.close)}</b></span><span>V <b>{fmt(latest?.volume)}</b></span></div>
             <div className={`bar-state ${latest?.status ?? "forming"}`}>{latest?.status === "closed" ? "已收盤" : "形成中"}</div>
           </div>
           <div ref={hostRef} className="live-chart" />
-          <div className="chart-legend"><span><i className="legend-forming" />形成中 K 棒</span><span><i className="legend-closed" />已收盤 K 棒</span>{strategyOptions.filter(option => selectedStrategies.includes(option.key)).map(option => <span key={option.key}><i style={{ background: option.color }} />{option.name}</span>)}</div>
+          <div className="chart-legend"><span><i className="legend-forming" />形成中 K 棒</span><span><i className="legend-closed" />已收盤 K 棒</span>{paperOverlay.fills.length > 0 && <span><i className="legend-paper-fill" />Paper 成交</span>}{paperOverlay.positions.length > 0 && <><span><i className="legend-position" />持倉均價</span><span><i className="legend-stop-line" />停損</span></>}{strategyOptions.filter(option => selectedStrategies.includes(option.key)).map(option => <span key={option.key}><i style={{ background: option.color }} />{option.name}</span>)}</div>
         </section>
         {error && <div className="live-error">{error}；系統將以指數退避自動重連。</div>}
       </>}
