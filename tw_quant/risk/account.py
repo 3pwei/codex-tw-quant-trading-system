@@ -497,3 +497,12 @@ class AccountRiskGate:
             open_contracts=self._open_contracts(owner_id),
             reserved_contracts=sum(state.reserved_entries.values()),
         )
+
+    def kill_switch_summary(self) -> dict[str, int]:
+        active = [state for state in self._states.values() if state.kill_switch_active]
+        return {
+            "active": len(active),
+            "manual": sum(1 for state in active if state.manual_kill_switch),
+            "automatic": sum(1 for state in active if not state.manual_kill_switch),
+            "tracked_accounts": len(self._states),
+        }

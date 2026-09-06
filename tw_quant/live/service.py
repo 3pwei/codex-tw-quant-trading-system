@@ -30,6 +30,7 @@ class LiveMarketService:
         calendar: TradingCalendar = DEFAULT_CALENDAR,
         history_limit: int = 500,
         history_provider: HistoricalMarketDataProvider | None = None,
+        stale_after_seconds: float = 120.0,
     ):
         # ``feed`` remains the constructor name for compatibility. Internally
         # the service depends on provider-neutral ports.
@@ -39,12 +40,15 @@ class LiveMarketService:
         self.symbol = symbol
         self.heartbeat_seconds = heartbeat_seconds
         self.history_limit = history_limit
+        self.stale_after_seconds = stale_after_seconds
         self.queue: asyncio.Queue[TickEvent] = asyncio.Queue(maxsize=20_000)
         self.hub = BroadcastHub()
         self.aggregator = MinuteBarAggregator(symbol, calendar=calendar)
         self.connection_status: ConnectionStatus = "connecting"
         self.last_tick_time: datetime | None = None
         self.last_received_time: datetime | None = None
+        self.last_bar_time: datetime | None = None
+        self.last_bar_received_time: datetime | None = None
         self.last_heartbeat_time: datetime | None = None
         self.dropped_ticks = 0
         self.processed_ticks = 0
@@ -54,6 +58,10 @@ class LiveMarketService:
         self.queue_high_watermark = 0
         self.total_tick_processing_ms = 0.0
         self.max_tick_processing_ms = 0.0
+        self.database_write_count = 0
+        self.total_database_write_ms = 0.0
+        self.max_database_write_ms = 0.0
+        self.last_database_write_ms: float | None = None
         self.history_bars_loaded = 0
         self.history_error: str | None = None
         self._worker: asyncio.Task | None = None
@@ -84,7 +92,11 @@ class LiveMarketService:
 
     async def start(self) -> None:
         self._running = True
-        self.aggregator.restore(self.repository.latest_forming(self.symbol))
+        restored = self.repository.latest_forming(self.symbol)
+        self.aggregator.restore(restored)
+        latest = self.repository.latest(self.symbol, 1)
+        if latest:
+            self._remember_bar(latest[0])
         self._worker = asyncio.create_task(self._run_worker(), name="tmf-kbar-worker")
         self._heartbeat = asyncio.create_task(
             self._run_heartbeat(), name="tmf-feed-heartbeat"
@@ -103,7 +115,7 @@ class LiveMarketService:
                 if purge is not None:
                     purge(self.symbol, history[-1].contract)
             for bar in history:
-                self.repository.save(bar)
+                self._save_bar(bar)
             self.history_bars_loaded = len(history)
         except Exception as exc:
             # Historical backfill must not interrupt the live Tick stream.
@@ -121,7 +133,33 @@ class LiveMarketService:
         )
         current = self.aggregator.current
         if current:
-            self.repository.save(current)
+            self._save_bar(current)
+
+    def _record_database_write(self, started: float) -> None:
+        elapsed_ms = (perf_counter() - started) * 1_000
+        self.database_write_count += 1
+        self.total_database_write_ms += elapsed_ms
+        self.max_database_write_ms = max(self.max_database_write_ms, elapsed_ms)
+        self.last_database_write_ms = elapsed_ms
+
+    def _remember_tick(self, tick: TickEvent) -> None:
+        started = perf_counter()
+        self.repository.remember_tick(tick.dedup_key, tick.exchange_time)
+        self._record_database_write(started)
+
+    def _remember_bar(self, bar: KBar) -> None:
+        if (
+            self.last_bar_received_time is None
+            or bar.received_time >= self.last_bar_received_time
+        ):
+            self.last_bar_time = bar.time
+            self.last_bar_received_time = bar.received_time
+
+    def _save_bar(self, bar: KBar) -> None:
+        started = perf_counter()
+        self.repository.save(bar)
+        self._record_database_write(started)
+        self._remember_bar(bar)
 
     async def _run_worker(self) -> None:
         while self._running:
@@ -133,10 +171,10 @@ class LiveMarketService:
                 if self.repository.tick_seen(tick.dedup_key):
                     self.aggregator.duplicate_ticks += 1
                     continue
-                self.repository.remember_tick(tick.dedup_key, tick.exchange_time)
+                self._remember_tick(tick)
                 result = self.aggregator.process(tick)
                 for bar in result.bars:
-                    self.repository.save(bar)
+                    self._save_bar(bar)
                     self.hub.publish(bar.to_message(self.connection_status))
                     for listener in tuple(self._bar_listeners):
                         listener(bar)
@@ -172,20 +210,39 @@ class LiveMarketService:
         now = datetime.now(TAIPEI)
         latency_ms = None
         tick_age_ms = None
+        bar_age_ms = None
         if self.last_tick_time and self.last_received_time:
             latency_ms = max(
                 0.0,
                 (self.last_received_time - self.last_tick_time).total_seconds() * 1000,
             )
             tick_age_ms = max(0.0, (now - self.last_received_time).total_seconds() * 1000)
-        if self.connection_status == "disconnected":
+        if self.last_bar_received_time:
+            bar_age_ms = max(
+                0.0,
+                (now - self.last_bar_received_time).total_seconds() * 1000,
+            )
+        freshness_age_ms = (
+            tick_age_ms if tick_age_ms is not None else bar_age_ms
+        )
+        if self.connection_status != "connected":
             service_status = "provider_disconnected"
-        elif self.connection_status != "connected":
-            service_status = "degraded"
+        elif (
+            self.connection_status == "connected"
+            and freshness_age_ms is not None
+            and freshness_age_ms > self.stale_after_seconds * 1_000
+        ):
+            service_status = "market_stale"
         elif self.dropped_ticks or self.worker_errors or self.history_error:
             service_status = "degraded"
         else:
             service_status = "healthy"
+        trading_block_reason = (
+            service_status
+            if service_status in {"provider_disconnected", "market_stale"}
+            else None
+        )
+        websocket = self.hub.stats()
         return {
             "type": message_type,
             "service_status": service_status,
@@ -197,11 +254,21 @@ class LiveMarketService:
             "connection_status": self.connection_status,
             "last_tick_time": isoformat_millis(self.last_tick_time)
             if self.last_tick_time else None,
+            "last_bar_time": isoformat_millis(self.last_bar_time)
+            if self.last_bar_time else None,
             "last_heartbeat_time": isoformat_millis(self.last_heartbeat_time)
             if self.last_heartbeat_time else None,
             "server_time": isoformat_millis(now),
             "latency_ms": round(latency_ms, 3) if latency_ms is not None else None,
+            "market_latency_seconds": round(latency_ms / 1_000, 3)
+            if latency_ms is not None else None,
             "tick_age_ms": round(tick_age_ms, 3) if tick_age_ms is not None else None,
+            "tick_age_seconds": round(tick_age_ms / 1_000, 3)
+            if tick_age_ms is not None else None,
+            "bar_age_seconds": round(bar_age_ms / 1_000, 3)
+            if bar_age_ms is not None else None,
+            "stale_after_seconds": self.stale_after_seconds,
+            "trading_block_reason": trading_block_reason,
             "queue_size": self.queue.qsize(),
             "queue_capacity": self.queue.maxsize,
             "queue_high_watermark": self.queue_high_watermark,
@@ -214,6 +281,17 @@ class LiveMarketService:
                 self.total_tick_processing_ms / self.worker_cycles, 3
             ) if self.worker_cycles else None,
             "max_tick_processing_ms": round(self.max_tick_processing_ms, 3),
+            "database_write_count": self.database_write_count,
+            "average_database_write_ms": round(
+                self.total_database_write_ms / self.database_write_count, 3
+            ) if self.database_write_count else None,
+            "max_database_write_ms": round(self.max_database_write_ms, 3),
+            "last_database_write_ms": round(self.last_database_write_ms, 3)
+            if self.last_database_write_ms is not None else None,
+            "websocket_connections": websocket["active_connections"],
+            "websocket_connections_total": websocket["total_connections"],
+            "websocket_disconnections_total": websocket["total_disconnections"],
+            "websocket_dropped_messages": websocket["dropped_messages"],
             "duplicate_ticks": self.aggregator.duplicate_ticks,
             "late_ticks": self.aggregator.late_ticks,
             "history_bars_loaded": self.history_bars_loaded,

@@ -256,11 +256,18 @@ class AuthorizationApiTests(unittest.TestCase):
         self.assertIn("queue_size", admin_health.json())
         self.assertIn("queue_high_watermark", admin_health.json())
         self.assertIn("average_tick_processing_ms", admin_health.json())
+        self.assertIn("system_status", admin_health.json())
+        self.assertIn("host", admin_health.json())
+        self.assertIn("websocket_connections", admin_health.json())
+        self.assertIn("average_database_write_ms", admin_health.json())
         self.assertEqual(
             admin_health.json()["paper_trading"]["status"], "healthy"
         )
         self.assertIn(
             "average_submission_ms", admin_health.json()["paper_trading"]
+        )
+        self.assertIn(
+            "active_kill_switches", admin_health.json()["paper_trading"]
         )
 
     def test_websocket_requires_market_permission_and_identity(self):

@@ -39,6 +39,15 @@ class LiveSettingsTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "MARKET_HISTORY_DAYS"):
             LiveSettings(history_days=31).validate()
 
+    def test_market_stale_threshold_loads_and_validates(self):
+        with patch.dict(
+            "os.environ", {"MARKET_STALE_AFTER_SECONDS": "45"}, clear=True
+        ):
+            settings = LiveSettings.from_env()
+        self.assertEqual(settings.stale_after_seconds, 45)
+        with self.assertRaisesRegex(ValueError, "MARKET_STALE_AFTER_SECONDS"):
+            LiveSettings(stale_after_seconds=0).validate()
+
     def test_market_data_settings_are_composed_not_flattened(self):
         with patch.dict("os.environ", {
             "MARKET_DATA_PROVIDER": "replay",

@@ -15,13 +15,26 @@ from tw_quant.auth import (
     TradingMode,
 )
 from tw_quant.live.api import create_app
-from tw_quant.live.feed import ReplayFeed
 from tw_quant.live.settings import LiveSettings
 from tw_quant.live.storage import SQLiteBarRepository
 from tw_quant.market import KBar, TAIPEI
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+class PaperMarketFeed:
+    provider_name = "paper-test"
+    contract = "TMFTEST"
+
+    async def start(self, _on_tick, on_status):
+        on_status("connected")
+
+    async def stop(self):
+        return None
+
+    async def heartbeat(self):
+        return True
 
 
 class PaperAccessValidator:
@@ -75,7 +88,7 @@ class PaperTradingApiTests(unittest.TestCase):
         )
         self.client = TestClient(create_app(
             settings,
-            feed=ReplayFeed(settings.replay_csv, speed=1000, loop=False),
+            feed=PaperMarketFeed(),
             repository=self.repository,
             access_validator=PaperAccessValidator(),
             auth_repository=auth,
@@ -200,6 +213,40 @@ class PaperTradingApiTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.json()["detail"], "market price is stale")
+
+    def test_provider_disconnect_blocks_new_position_without_delayed_resend(self):
+        service = self.client.app.state.market_service
+        service.set_connection_status("disconnected")
+        headers = self.headers(
+            "cf-trader", "trader@example.com", "disconnect-order"
+        )
+        blocked = self.client.post(
+            "/api/paper/orders", headers=headers,
+            json={"side": "buy", "stop_loss_price": 19_950},
+        )
+        self.assertEqual(blocked.status_code, 503)
+        self.assertIn("new positions are blocked", blocked.json()["detail"])
+
+        positions = self.client.get(
+            "/api/paper/account",
+            headers=self.headers("cf-trader", "trader@example.com"),
+        )
+        self.assertEqual(positions.status_code, 200)
+        self.assertEqual(positions.json()["positions"], [])
+
+        service.set_connection_status("connected")
+        orders = self.client.get(
+            "/api/paper/orders",
+            headers=self.headers("cf-trader", "trader@example.com"),
+        )
+        self.assertEqual(orders.json()["orders"], [])
+        health = self.client.get(
+            "/api/admin/health",
+            headers=self.headers("cf-admin", "admin@example.com"),
+        ).json()
+        self.assertEqual(
+            health["paper_trading"]["market_blocked_requests"], 1
+        )
 
 
 if __name__ == "__main__":

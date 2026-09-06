@@ -506,7 +506,11 @@ forward-auth 與 FastAPI RBAC 雙重限制；前端隱藏選單不是安全邊�
 在 enforced 模式下預設拒絕，WebSocket 也會在握手時驗證 `market.read`。
 
 一般使用者的 `/api/health` 與 WebSocket heartbeat 不回傳 Provider 名稱、Queue、
-丟棄／重複／遲到 Tick 等內部診斷；完整資訊只由 `/api/admin/health` 提供。
+丟棄／重複／遲到 Tick 等內部診斷；完整資訊只由 `/api/admin/health` 提供。管理員健康
+頁另提供最新 Tick／K 棒、WebSocket 連線數、SQLite 寫入延遲、Paper 委託／成交／
+拒絕、Kill Switch，以及 CPU、記憶體與磁碟使用量。行情斷線或超過
+`MARKET_STALE_AFTER_SECONDS`（預設 120 秒）未更新時，新倉會在建立委託事件前被拒絕，
+既有持倉仍可查閱，恢復後也不會補送先前失敗的請求。
 
 ### 單一平台使用者名單
 
@@ -628,6 +632,8 @@ Cloudflare Team domain 與 AUD tag 不是登入密碼，但仍應由伺服器設
   `history_bars_loaded` 與 `history_error`。Mock 模式則從 Replay Tick 累積。
 - `Dashboard 顯示重新連線`：確認後端 URL、CORS 的 `MARKET_ALLOWED_ORIGINS`、TLS 憑證和 `/api/health`。
 - `沒有 Tick 但仍顯示連線`：這是預期行為；無成交不等於斷線，heartbeat 才是連線判斷依據。
+- `provider_disconnected`：Provider heartbeat 失敗，新倉立即禁止，先確認 Shioaji Session 與網路。
+- `market_stale`：Provider 仍連線但最新 Tick 超過設定門檻；恢復後須由使用者重新送單。
 - `重啟後 Mock 不再更新`：既有 SQLite 已記錄相同 replay Tick；測試新一輪可刪除測試用 DB，正式資料庫不要任意刪除。
 - `換月`：訂閱 `TMFR1`，健康檢查與 K 棒訊息的 `contract` 顯示實際契約；換月前應人工核對流動性與切換時間。
 

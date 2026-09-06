@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
@@ -68,6 +69,7 @@ from ..strategy import (
     validate_strategy_parameters,
 )
 from .service import LiveMarketService
+from .monitoring import HostResourceMonitor
 from .settings import LiveSettings
 from .storage import (
     DEFAULT_OWNER_ID,
@@ -132,6 +134,28 @@ class PaperOrderCreate(BaseModel):
 
 class PaperControlRequest(BaseModel):
     reason: str
+
+
+def system_status(
+    market: dict[str, object], paper: dict[str, object],
+    host: dict[str, object] | None = None,
+) -> str:
+    market_status = str(market["service_status"])
+    if market_status in {"provider_disconnected", "market_stale"}:
+        return market_status
+    if (
+        int(paper.get("active_kill_switches", 0)) > 0
+        or int(paper.get("inconsistent_owners", 0)) > 0
+    ):
+        return "trading_halted"
+    if market_status != "healthy" or paper.get("status") != "healthy":
+        return "degraded"
+    if host and any(
+        isinstance(host.get(key), (int, float)) and float(host[key]) >= 90
+        for key in ("cpu_percent", "memory_percent", "disk_percent")
+    ):
+        return "degraded"
+    return "healthy"
 
 
 def _required_permission(method: str, path: str) -> str | None:
@@ -313,8 +337,10 @@ def create_app(
         market_feed, repo, config.symbol, config.heartbeat_seconds,
         TradingCalendar(config.holidays), config.history_limit,
         history_provider=history_provider,
+        stale_after_seconds=config.stale_after_seconds,
     )
     paper = PaperTradingService(SQLitePaperRepository(config.db_path))
+    host_monitor = HostResourceMonitor(Path(config.db_path))
     service.add_bar_listener(paper.on_bar)
 
     @asynccontextmanager
@@ -340,6 +366,7 @@ def create_app(
     app.state.auth_repository = identity_repo
     app.state.auth_service = auth_service
     app.state.paper_trading = paper
+    app.state.host_monitor = host_monitor
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(config.allowed_origins),
@@ -375,8 +402,11 @@ def create_app(
             key: status[key]
             for key in (
                 "type", "service_status", "symbol", "contract", "connection_status",
-                "last_tick_time", "last_heartbeat_time", "server_time",
-                "latency_ms", "tick_age_ms", "history_bars_loaded",
+                "last_tick_time", "last_bar_time", "last_heartbeat_time",
+                "server_time", "latency_ms", "market_latency_seconds",
+                "tick_age_ms", "tick_age_seconds", "bar_age_seconds",
+                "stale_after_seconds", "trading_block_reason",
+                "history_bars_loaded",
             )
         }
 
@@ -494,9 +524,14 @@ def create_app(
 
     @app.get("/api/admin/health")
     async def admin_health():
+        market = service.status_message()
+        paper_health = paper.health()
+        host = host_monitor.snapshot()
         return {
-            **service.status_message(),
-            "paper_trading": paper.health(),
+            **market,
+            "system_status": system_status(market, paper_health, host),
+            "paper_trading": paper_health,
+            "host": host,
         }
 
     @app.get("/api/admin/access-requests")
@@ -622,13 +657,25 @@ def create_app(
         request: Request,
         idempotency_key: str = Header(..., alias="Idempotency-Key"),
     ):
+        market = service.status_message()
+        block_reason = market.get("trading_block_reason")
+        if not payload.reduce_only and block_reason:
+            paper.record_market_block()
+            detail = (
+                "market data provider is disconnected; new positions are blocked"
+                if block_reason == "provider_disconnected"
+                else "market data is stale; new positions are blocked"
+            )
+            raise HTTPException(status_code=503, detail=detail)
         latest = repo.latest(config.symbol, 1)
         if not latest:
+            paper.record_market_block()
             raise HTTPException(
                 status_code=503, detail="market price is not available"
             )
         quote_age = datetime.now(latest[0].received_time.tzinfo) - latest[0].received_time
-        if quote_age > timedelta(minutes=2):
+        if quote_age > timedelta(seconds=config.stale_after_seconds):
+            paper.record_market_block()
             raise HTTPException(
                 status_code=503, detail="market price is stale"
             )

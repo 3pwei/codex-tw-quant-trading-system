@@ -5,6 +5,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
+from time import perf_counter
 
 from ..events import DomainEvent, event_to_dict
 
@@ -22,6 +23,10 @@ class SQLitePaperRepository:
         self.connection = sqlite3.connect(target, check_same_thread=False)
         self.connection.row_factory = sqlite3.Row
         self.lock = Lock()
+        self.write_count = 0
+        self.total_write_ms = 0.0
+        self.max_write_ms = 0.0
+        self.last_write_ms: float | None = None
         self.connection.execute("PRAGMA journal_mode=WAL")
         self._migrate()
 
@@ -63,6 +68,13 @@ class SQLitePaperRepository:
             )
             self.connection.commit()
 
+    def _record_write(self, started: float) -> None:
+        elapsed_ms = (perf_counter() - started) * 1_000
+        self.write_count += 1
+        self.total_write_ms += elapsed_ms
+        self.max_write_ms = max(self.max_write_ms, elapsed_ms)
+        self.last_write_ms = elapsed_ms
+
     def order_for_key(self, owner_id: str, key: str) -> str | None:
         with self.lock:
             row = self.connection.execute(
@@ -73,6 +85,7 @@ class SQLitePaperRepository:
         return str(row["order_id"]) if row else None
 
     def reserve_key(self, owner_id: str, key: str, order_id: str) -> str:
+        started = perf_counter()
         with self.lock:
             self.connection.execute(
                 "INSERT OR IGNORE INTO paper_idempotency VALUES (?, ?, ?, ?)",
@@ -84,6 +97,7 @@ class SQLitePaperRepository:
                 (owner_id, key),
             ).fetchone()
             self.connection.commit()
+        self._record_write(started)
         assert row is not None
         return str(row["order_id"])
 
@@ -105,6 +119,7 @@ class SQLitePaperRepository:
             )
         if not rows:
             return
+        started = perf_counter()
         with self.lock:
             self.connection.executemany(
                 "INSERT OR IGNORE INTO paper_events(" 
@@ -113,6 +128,7 @@ class SQLitePaperRepository:
                 rows,
             )
             self.connection.commit()
+        self._record_write(started)
 
     def events(self, owner_id: str, limit: int = 500) -> list[dict[str, object]]:
         with self.lock:
@@ -173,7 +189,7 @@ class SQLitePaperRepository:
             for row in rows
         ]
 
-    def stats(self) -> dict[str, int]:
+    def stats(self) -> dict[str, object]:
         with self.lock:
             row = self.connection.execute(
                 "SELECT COUNT(*) AS events, "
@@ -187,6 +203,13 @@ class SQLitePaperRepository:
             "events": int(row["events"]),
             "owners": int(row["owners"]),
             "controls": int(controls["total"]),
+            "write_count": self.write_count,
+            "average_write_ms": round(
+                self.total_write_ms / self.write_count, 3
+            ) if self.write_count else None,
+            "max_write_ms": round(self.max_write_ms, 3),
+            "last_write_ms": round(self.last_write_ms, 3)
+            if self.last_write_ms is not None else None,
         }
 
     def order_snapshot(
@@ -257,6 +280,7 @@ class SQLitePaperRepository:
     def append_control(
         self, owner_id: str, action: str, reason: str, occurred_at: datetime
     ) -> None:
+        started = perf_counter()
         with self.lock:
             self.connection.execute(
                 "INSERT INTO paper_controls(" 
@@ -271,6 +295,7 @@ class SQLitePaperRepository:
                 ),
             )
             self.connection.commit()
+        self._record_write(started)
 
     def controls(self, owner_id: str, limit: int = 100) -> list[dict[str, object]]:
         with self.lock:
