@@ -126,6 +126,69 @@ class SQLitePaperRepository:
             for row in rows
         ]
 
+    def recovery_records(self) -> list[dict[str, object]]:
+        """Return events and operator controls in durable write order."""
+        with self.lock:
+            rows = self.connection.execute(
+                "SELECT 'event' AS record_type, sequence, owner_user_id, "
+                "payload_json, NULL AS action, NULL AS reason, occurred_at, "
+                "recorded_at FROM paper_events "
+                "UNION ALL "
+                "SELECT 'control' AS record_type, sequence, owner_user_id, "
+                "NULL AS payload_json, action, reason, occurred_at, recorded_at "
+                "FROM paper_controls "
+                "ORDER BY recorded_at, record_type, sequence"
+            ).fetchall()
+        records: list[dict[str, object]] = []
+        for row in rows:
+            item = dict(row)
+            payload = item.pop("payload_json")
+            if payload is not None:
+                try:
+                    item["payload"] = json.loads(str(payload))
+                except json.JSONDecodeError:
+                    item["payload"] = None
+                    item["parse_error"] = True
+            records.append(item)
+        return records
+
+    def dangling_idempotency(self) -> list[dict[str, str]]:
+        """Find reserved request keys whose order intent was never committed."""
+        with self.lock:
+            rows = self.connection.execute(
+                "SELECT key_row.owner_user_id, key_row.idempotency_key, "
+                "key_row.order_id FROM paper_idempotency AS key_row "
+                "LEFT JOIN paper_events AS event_row "
+                "ON event_row.owner_user_id=key_row.owner_user_id "
+                "AND event_row.event_id=key_row.order_id "
+                "AND event_row.kind='order_intent' "
+                "WHERE event_row.event_id IS NULL"
+            ).fetchall()
+        return [
+            {
+                "owner_user_id": str(row["owner_user_id"]),
+                "idempotency_key": str(row["idempotency_key"]),
+                "order_id": str(row["order_id"]),
+            }
+            for row in rows
+        ]
+
+    def stats(self) -> dict[str, int]:
+        with self.lock:
+            row = self.connection.execute(
+                "SELECT COUNT(*) AS events, "
+                "COUNT(DISTINCT owner_user_id) AS owners FROM paper_events"
+            ).fetchone()
+            controls = self.connection.execute(
+                "SELECT COUNT(*) AS total FROM paper_controls"
+            ).fetchone()
+        assert row is not None and controls is not None
+        return {
+            "events": int(row["events"]),
+            "owners": int(row["owners"]),
+            "controls": int(controls["total"]),
+        }
+
     def order_snapshot(
         self, owner_id: str, order_id: str
     ) -> dict[str, object] | None:

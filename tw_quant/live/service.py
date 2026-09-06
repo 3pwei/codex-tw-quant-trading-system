@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime
+from time import perf_counter
 from typing import Callable
 
 from ..market import (
@@ -46,6 +47,13 @@ class LiveMarketService:
         self.last_received_time: datetime | None = None
         self.last_heartbeat_time: datetime | None = None
         self.dropped_ticks = 0
+        self.processed_ticks = 0
+        self.worker_cycles = 0
+        self.worker_errors = 0
+        self.last_worker_error: str | None = None
+        self.queue_high_watermark = 0
+        self.total_tick_processing_ms = 0.0
+        self.max_tick_processing_ms = 0.0
         self.history_bars_loaded = 0
         self.history_error: str | None = None
         self._worker: asyncio.Task | None = None
@@ -64,6 +72,9 @@ class LiveMarketService:
     def enqueue_tick(self, tick: TickEvent) -> None:
         try:
             self.queue.put_nowait(tick)
+            self.queue_high_watermark = max(
+                self.queue_high_watermark, self.queue.qsize()
+            )
         except asyncio.QueueFull:
             self.dropped_ticks += 1
 
@@ -115,20 +126,34 @@ class LiveMarketService:
     async def _run_worker(self) -> None:
         while self._running:
             tick = await self.queue.get()
-            self.last_tick_time = tick.exchange_time
-            self.last_received_time = tick.received_time
-            if self.repository.tick_seen(tick.dedup_key):
-                self.aggregator.duplicate_ticks += 1
+            started = perf_counter()
+            try:
+                self.last_tick_time = tick.exchange_time
+                self.last_received_time = tick.received_time
+                if self.repository.tick_seen(tick.dedup_key):
+                    self.aggregator.duplicate_ticks += 1
+                    continue
+                self.repository.remember_tick(tick.dedup_key, tick.exchange_time)
+                result = self.aggregator.process(tick)
+                for bar in result.bars:
+                    self.repository.save(bar)
+                    self.hub.publish(bar.to_message(self.connection_status))
+                    for listener in tuple(self._bar_listeners):
+                        listener(bar)
+                self.processed_ticks += 1
+            except Exception as exc:
+                # One malformed Tick or downstream listener must not terminate
+                # the only market-data worker. The diagnostic remains admin-only.
+                self.worker_errors += 1
+                self.last_worker_error = f"{type(exc).__name__}: {exc}"
+            finally:
+                elapsed_ms = (perf_counter() - started) * 1_000
+                self.worker_cycles += 1
+                self.total_tick_processing_ms += elapsed_ms
+                self.max_tick_processing_ms = max(
+                    self.max_tick_processing_ms, elapsed_ms
+                )
                 self.queue.task_done()
-                continue
-            self.repository.remember_tick(tick.dedup_key, tick.exchange_time)
-            result = self.aggregator.process(tick)
-            for bar in result.bars:
-                self.repository.save(bar)
-                self.hub.publish(bar.to_message(self.connection_status))
-                for listener in tuple(self._bar_listeners):
-                    listener(bar)
-            self.queue.task_done()
 
     async def _run_heartbeat(self) -> None:
         while self._running:
@@ -153,8 +178,17 @@ class LiveMarketService:
                 (self.last_received_time - self.last_tick_time).total_seconds() * 1000,
             )
             tick_age_ms = max(0.0, (now - self.last_received_time).total_seconds() * 1000)
+        if self.connection_status == "disconnected":
+            service_status = "provider_disconnected"
+        elif self.connection_status != "connected":
+            service_status = "degraded"
+        elif self.dropped_ticks or self.worker_errors or self.history_error:
+            service_status = "degraded"
+        else:
+            service_status = "healthy"
         return {
             "type": message_type,
+            "service_status": service_status,
             "market_data_provider": getattr(
                 self.market_data_provider, "provider_name", "custom"
             ),
@@ -169,7 +203,17 @@ class LiveMarketService:
             "latency_ms": round(latency_ms, 3) if latency_ms is not None else None,
             "tick_age_ms": round(tick_age_ms, 3) if tick_age_ms is not None else None,
             "queue_size": self.queue.qsize(),
+            "queue_capacity": self.queue.maxsize,
+            "queue_high_watermark": self.queue_high_watermark,
             "dropped_ticks": self.dropped_ticks,
+            "processed_ticks": self.processed_ticks,
+            "worker_cycles": self.worker_cycles,
+            "worker_errors": self.worker_errors,
+            "last_worker_error": self.last_worker_error,
+            "average_tick_processing_ms": round(
+                self.total_tick_processing_ms / self.worker_cycles, 3
+            ) if self.worker_cycles else None,
+            "max_tick_processing_ms": round(self.max_tick_processing_ms, 3),
             "duplicate_ticks": self.aggregator.duplicate_ticks,
             "late_ticks": self.aggregator.late_ticks,
             "history_bars_loaded": self.history_bars_loaded,

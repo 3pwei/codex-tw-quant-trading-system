@@ -33,10 +33,13 @@ if source_path.exists():
     backup = sqlite3.connect(backup_path)
     try:
         source.backup(backup)
+        result = backup.execute("PRAGMA integrity_check").fetchone()
+        if result != ("ok",):
+            raise RuntimeError(f"SQLite backup integrity check failed: {result!r}")
     finally:
         backup.close()
         source.close()
-    print(f"SQLite backup created: {backup_path}")
+    print(f"SQLite backup created and verified: {backup_path}")
 PY
 fi
 
