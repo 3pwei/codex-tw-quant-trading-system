@@ -90,6 +90,8 @@ type PaperTradingDashboardProps = {
   onOverlayChange: (snapshot: PaperOverlaySnapshot) => void;
 };
 
+type LedgerTab = "positions" | "orders" | "fills";
+
 const apiBase = () => (process.env.NEXT_PUBLIC_MARKET_API_URL
   ?? (typeof window === "undefined" ? "" : window.location.origin)).replace(/\/$/, "");
 const price = new Intl.NumberFormat("zh-TW", { minimumFractionDigits: 0, maximumFractionDigits: 2 });
@@ -136,6 +138,8 @@ export default function PaperTradingDashboard({
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(true);
+  const [ledgerTab, setLedgerTab] = useState<LedgerTab>("positions");
+  const [mobileOrderOpen, setMobileOrderOpen] = useState(false);
 
   const load = useCallback(async (silent = false) => {
     try {
@@ -180,6 +184,20 @@ export default function PaperTradingDashboard({
     return () => { window.clearTimeout(initial); window.clearInterval(timer); };
   }, [load]);
 
+  useEffect(() => {
+    if (!mobileOrderOpen) return;
+    const previousOverflow = document.body.style.overflow;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setMobileOrderOpen(false);
+    };
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [mobileOrderOpen]);
+
   const totalUnrealized = useMemo(
     () => positions.reduce((sum, position) => sum + position.unrealized_pnl, 0),
     [positions],
@@ -192,6 +210,23 @@ export default function PaperTradingDashboard({
     : marketBlockReason === "market_stale"
       ? { code: "MARKET STALE", title: "行情已停止更新", detail: `最新 Tick：${time(marketHealth?.last_tick_time ?? null)}。系統已禁止建立新倉，恢復後請重新確認價格再送單。` }
       : null;
+  const orderDisabled = !paperEnabled || !quoteFresh || Boolean(marketBlockReason)
+    || Boolean(account?.kill_switch_active) || Boolean(busy);
+  const ledgerTabs: { key: LedgerTab; label: string; count: number }[] = [
+    { key: "positions", label: "目前持倉", count: positions.length },
+    { key: "orders", label: "最近委託", count: orders.length },
+    { key: "fills", label: "最近成交", count: fills.length },
+  ];
+
+  function chooseSide(nextSide: "buy" | "sell") {
+    setSide(nextSide);
+    if (quote) setStopLoss(String(quote.close + (nextSide === "buy" ? -50 : 50)));
+  }
+
+  function openMobileOrder(nextSide: "buy" | "sell") {
+    chooseSide(nextSide);
+    setMobileOrderOpen(true);
+  }
 
   async function submitOrder(event: FormEvent) {
     event.preventDefault();
@@ -276,16 +311,16 @@ export default function PaperTradingDashboard({
     <div className="trade-workspace-grid">
       <div className="trade-market-column">{marketPanel}</div>
       <aside className="trade-order-column">
-      <form className="paper-order panel" onSubmit={submitOrder}>
-        <div className="panel-head"><div><span>MANUAL ORDER</span><h2>模擬市價單</h2></div><small>成交價由伺服器決定</small></div>
+      <form className={`paper-order panel ${mobileOrderOpen ? "mobile-open" : ""}`} onSubmit={submitOrder} aria-label="模擬市價單">
+        <div className="panel-head"><div><span>MANUAL ORDER</span><h2>模擬市價單</h2></div><small>成交價由伺服器決定</small><button type="button" className="mobile-sheet-close" aria-label="關閉下單面板" onClick={() => setMobileOrderOpen(false)}>×</button></div>
         <div className="paper-side">
-          <button type="button" className={side === "buy" ? "active buy" : ""} onClick={() => { setSide("buy"); if (quote) setStopLoss(String(quote.close - 50)); }}>買進／做多</button>
-          <button type="button" className={side === "sell" ? "active sell" : ""} onClick={() => { setSide("sell"); if (quote) setStopLoss(String(quote.close + 50)); }}>賣出／做空</button>
+          <button type="button" className={side === "buy" ? "active buy" : ""} onClick={() => chooseSide("buy")}>買進／做多</button>
+          <button type="button" className={side === "sell" ? "active sell" : ""} onClick={() => chooseSide("sell")}>賣出／做空</button>
         </div>
         <label><span>數量</span><select value={quantity} onChange={event => setQuantity(Number(event.target.value))}><option value={1}>1 口</option><option value={2}>2 口</option></select></label>
         <label><span>停損價</span><input required min="1" step="1" inputMode="decimal" value={orderStopLoss} onChange={event => setStopLoss(event.target.value)} /></label>
         <p>單筆風險與最大持倉仍由後端再次檢查。行情超過系統容許延遲時不會成交。</p>
-        <button className={`paper-submit ${side}`} disabled={!paperEnabled || !quoteFresh || Boolean(marketBlockReason) || account?.kill_switch_active || Boolean(busy)}>{busy === "order" ? "送單中…" : `送出模擬${side === "buy" ? "買單" : "賣單"}`}</button>
+        <button className={`paper-submit ${side}`} disabled={orderDisabled}>{busy === "order" ? "送單中…" : `送出模擬${side === "buy" ? "買單" : "賣單"}`}</button>
       </form>
 
       <section className="paper-risk panel">
@@ -299,16 +334,24 @@ export default function PaperTradingDashboard({
       </aside>
     </div>
 
-    <section className="paper-positions panel">
-      <div className="panel-head"><div><span>OPEN POSITIONS</span><h2>目前持倉</h2></div><small>{positions.length} 筆</small></div>
-      <div className="table-scroll"><table><thead><tr><th>契約</th><th>方向／口數</th><th>均價</th><th>未實現損益</th><th>建立時間</th><th></th></tr></thead><tbody>
-        {positions.map(position => <tr key={`${position.strategy_id}:${position.contract}`}><td><b>{position.contract}</b><small>{position.strategy_id} · v{position.strategy_version}</small></td><td><i className={`dir ${position.quantity > 0 ? "long" : "short"}`}>{position.quantity > 0 ? "多" : "空"}</i> {Math.abs(position.quantity)} 口</td><td>{price.format(position.average_price)}</td><td className={position.unrealized_pnl >= 0 ? "profit" : "loss"}><b>{signedMoney(position.unrealized_pnl)}</b></td><td>{time(position.opened_at)}</td><td><button disabled={Boolean(busy) || !quoteFresh} onClick={() => void closePosition(position)}>{busy === `close:${position.contract}` ? "平倉中…" : "全部平倉"}</button></td></tr>)}
-      </tbody></table>{!positions.length && <p className="paper-empty">目前沒有模擬持倉。</p>}</div>
+    <section className="paper-ledger panel">
+      <div className="paper-ledger-tabs" role="tablist" aria-label="模擬交易紀錄">
+        {ledgerTabs.map(tab => <button key={tab.key} id={`paper-tab-${tab.key}`} type="button" role="tab" aria-controls={`paper-panel-${tab.key}`} aria-selected={ledgerTab === tab.key} className={ledgerTab === tab.key ? "active" : ""} onClick={() => setLedgerTab(tab.key)}><span>{tab.label}</span><b>{tab.count}</b></button>)}
+      </div>
+      {ledgerTab === "positions" && <div id="paper-panel-positions" className="paper-positions" role="tabpanel" aria-labelledby="paper-tab-positions">
+        <div className="table-scroll"><table><thead><tr><th>契約</th><th>方向／口數</th><th>均價</th><th>未實現損益</th><th>建立時間</th><th></th></tr></thead><tbody>
+          {positions.map(position => <tr key={`${position.strategy_id}:${position.contract}`}><td data-label="契約"><b>{position.contract}</b><small>{position.strategy_id} · v{position.strategy_version}</small></td><td data-label="方向／口數"><i className={`dir ${position.quantity > 0 ? "long" : "short"}`}>{position.quantity > 0 ? "多" : "空"}</i> {Math.abs(position.quantity)} 口</td><td data-label="均價">{price.format(position.average_price)}</td><td data-label="未實現損益" className={position.unrealized_pnl >= 0 ? "profit" : "loss"}><b>{signedMoney(position.unrealized_pnl)}</b></td><td data-label="建立時間">{time(position.opened_at)}</td><td className="paper-close-cell"><button disabled={Boolean(busy) || !quoteFresh} onClick={() => void closePosition(position)}>{busy === `close:${position.contract}` ? "平倉中…" : "全部平倉"}</button></td></tr>)}
+        </tbody></table>{!positions.length && <p className="paper-empty">目前沒有模擬持倉。</p>}</div>
+      </div>}
+      {ledgerTab === "orders" && <div id="paper-panel-orders" className="paper-record-list" role="tabpanel" aria-labelledby="paper-tab-orders">{orders.slice(0, 20).map(order => <article key={order.order_id}><div><b>{order.side === "buy" ? "買進" : "賣出"} {order.quantity} 口</b><span className={order.status}>{order.status === "filled" ? "已成交" : order.status === "rejected" ? "已拒絕" : "處理中"}</span></div><strong>{order.contract} · {price.format(order.reference_price)}</strong><small>{time(order.submitted_at)} · {reasonLabel(order.status_reason)}</small></article>)}{!orders.length && <p className="paper-empty">尚無委託紀錄。</p>}</div>}
+      {ledgerTab === "fills" && <div id="paper-panel-fills" className="paper-record-list" role="tabpanel" aria-labelledby="paper-tab-fills">{fills.slice(0, 20).map(fill => <article key={fill.fill_id}><div><b>{fill.side === "buy" ? "買進" : "賣出"} {fill.quantity} 口</b><span className="filled">已成交</span></div><strong>{fill.contract} · {price.format(fill.price)}</strong><small>{time(fill.meta.occurred_at)} · 成本 NT$ {money.format(fill.commission + fill.tax)} · 滑價 {price.format(fill.slippage)} 點</small></article>)}{!fills.length && <p className="paper-empty">尚無成交紀錄。</p>}</div>}
     </section>
 
-    <div className="paper-records">
-      <section className="panel"><div className="panel-head"><div><span>ORDER LOG</span><h2>最近委託</h2></div><small>{orders.length} 筆</small></div><div className="paper-record-list">{orders.slice(0, 20).map(order => <article key={order.order_id}><div><b>{order.side === "buy" ? "買進" : "賣出"} {order.quantity} 口</b><span className={order.status}>{order.status === "filled" ? "已成交" : order.status === "rejected" ? "已拒絕" : "處理中"}</span></div><strong>{order.contract} · {price.format(order.reference_price)}</strong><small>{time(order.submitted_at)} · {reasonLabel(order.status_reason)}</small></article>)}{!orders.length && <p className="paper-empty">尚無委託紀錄。</p>}</div></section>
-      <section className="panel"><div className="panel-head"><div><span>FILL LOG</span><h2>最近成交</h2></div><small>{fills.length} 筆</small></div><div className="paper-record-list">{fills.slice(0, 20).map(fill => <article key={fill.fill_id}><div><b>{fill.side === "buy" ? "買進" : "賣出"} {fill.quantity} 口</b><span className="filled">已成交</span></div><strong>{fill.contract} · {price.format(fill.price)}</strong><small>{time(fill.meta.occurred_at)} · 成本 NT$ {money.format(fill.commission + fill.tax)} · 滑價 {price.format(fill.slippage)} 點</small></article>)}{!fills.length && <p className="paper-empty">尚無成交紀錄。</p>}</div></section>
+    {mobileOrderOpen && <button type="button" className="mobile-sheet-backdrop" aria-label="關閉下單面板" onClick={() => setMobileOrderOpen(false)} />}
+    <div className="mobile-trade-bar" aria-label="快速模擬下單">
+      <span><small>{quote?.contract ?? "等待行情"}</small><b>{quote ? price.format(quote.close) : "—"}</b></span>
+      <button type="button" className="buy" disabled={orderDisabled} onClick={() => openMobileOrder("buy")}>買進</button>
+      <button type="button" className="sell" disabled={orderDisabled} onClick={() => openMobileOrder("sell")}>賣出</button>
     </div>
   </div>;
 }
