@@ -17,6 +17,7 @@ import {
   type UTCTimestamp,
 } from "lightweight-charts";
 import SystemNav from "../components/system-nav";
+import PaperTradingDashboard, { type MarketHealth } from "../paper/paper-trading-dashboard";
 
 type ConnectionStatus = "connecting" | "connected" | "reconnecting" | "disconnected";
 type KBar = {
@@ -132,7 +133,7 @@ function volume(bar: KBar): HistogramData<UTCTimestamp> {
   };
 }
 
-export default function LiveDashboard() {
+export default function TradingWorkspace() {
   const hostRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candleRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
@@ -155,6 +156,8 @@ export default function LiveDashboard() {
   const [selectedStrategies, setSelectedStrategies] = useState<StrategyKey[]>(["orb", "bnf"]);
   const [strategyOptions, setStrategyOptions] = useState<StrategyOption[]>([]);
   const [strategyResults, setStrategyResults] = useState<StrategyResult[]>([]);
+  const [marketHealth, setMarketHealth] = useState<MarketHealth | null>(null);
+  const [clock, setClock] = useState(() => Date.now());
 
   useEffect(() => {
     let active = true;
@@ -166,6 +169,28 @@ export default function LiveDashboard() {
       })
       .catch(reason => { if (active) setError(reason instanceof Error ? reason.message : "策略清單載入失敗"); });
     return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    const loadHealth = async () => {
+      try {
+        const response = await fetch(`${apiBase()}/api/health`, { cache: "no-store" });
+        const body = await response.json();
+        if (!response.ok) throw new Error(body.detail ?? `健康狀態載入失敗 (${response.status})`);
+        if (active) setMarketHealth(body);
+      } catch {
+        if (active) setMarketHealth(null);
+      }
+    };
+    void loadHealth();
+    const healthTimer = window.setInterval(() => void loadHealth(), 5_000);
+    const clockTimer = window.setInterval(() => setClock(Date.now()), 1_000);
+    return () => {
+      active = false;
+      window.clearInterval(healthTimer);
+      window.clearInterval(clockTimer);
+    };
   }, []);
 
   const loadHistory = useCallback(async (interval: Timeframe, signal?: AbortSignal) => {
@@ -397,9 +422,19 @@ export default function LiveDashboard() {
   };
 
   const shown = crosshair ?? latest;
+  const quoteAgeSeconds = latest
+    ? Math.max(0, Math.floor((clock - new Date(latest.received_time).getTime()) / 1_000))
+    : null;
+  const quoteFresh = Boolean(
+    latest
+    && status === "connected"
+    && marketHealth?.trading_block_reason == null
+    && quoteAgeSeconds != null
+    && quoteAgeSeconds <= (marketHealth?.stale_after_seconds ?? 30),
+  );
   return <main className="live-shell">
     <header className="live-header">
-      <div><span>WADE QUANT LAB · LIVE 01</span><h1>TMF 即時 {TIMEFRAME_OPTIONS.find(item => item.key === selectedInterval)?.name}</h1></div>
+      <div><span>WADE QUANT LAB · TRADE WORKSPACE</span><h1>TMF 交易工作台</h1></div>
       <div className="live-header-actions">
         <label className="timeframe-select"><span>K 棒週期</span><select value={selectedInterval} onChange={event => setSelectedInterval(event.target.value as Timeframe)}>{TIMEFRAME_OPTIONS.map(option => <option key={option.key} value={option.key}>{option.name}</option>)}</select></label>
         <details className="strategy-select">
@@ -413,10 +448,12 @@ export default function LiveDashboard() {
             </label>)}
           </div>
         </details>
+        <div className="paper-mode-pill">PAPER</div>
+        <div className={`freshness-pill ${quoteFresh ? "fresh" : "stale"}`}>報價 {quoteAgeSeconds == null ? "等待中" : `${quoteAgeSeconds} 秒前`}</div>
         <div className={`connection-pill ${status}`}><i />{status === "connected" ? "即時連線" : status === "reconnecting" ? "重新連線中" : status === "connecting" ? "連線中" : "行情中斷"}</div>
       </div>
     </header>
-    <SystemNav active="/live/" />
+    <SystemNav active="/trade/" />
     <section className="live-summary">
       <div><span>商品／契約</span><b>TMF · {latest?.contract ?? "等待行情"}</b></div>
       <div><span>交易時段</span><b>{latest?.session === "night" ? "夜盤" : latest?.session === "day" ? "日盤" : "—"}</b></div>
@@ -429,16 +466,23 @@ export default function LiveDashboard() {
       {strategyResults.map(strategy => <StrategyStatus key={strategy.key} strategy={strategy} />)}
       <small>僅用已收盤 K 棒確認；訊號於下一根開盤成立</small>
     </section>
-    <section className="live-chart-panel">
-      <div className="live-toolbar">
-        <div><strong>{latest?.contract ?? "TMF"}</strong><span>{TIMEFRAME_OPTIONS.find(item => item.key === selectedInterval)?.name} · Asia/Taipei · Exchange Time</span></div>
-        <div className="ohlc-strip"><span>O <b>{fmt(shown?.open)}</b></span><span>H <b>{fmt(shown?.high)}</b></span><span>L <b>{fmt(shown?.low)}</b></span><span>C <b>{fmt(shown?.close)}</b></span><span>V <b>{fmt(latest?.volume)}</b></span></div>
-        <div className={`bar-state ${latest?.status ?? "forming"}`}>{latest?.status === "closed" ? "已收盤" : "形成中"}</div>
-      </div>
-      <div ref={hostRef} className="live-chart" />
-      <div className="chart-legend"><span><i className="legend-forming" />形成中 K 棒</span><span><i className="legend-closed" />已收盤 K 棒</span>{strategyOptions.filter(option => selectedStrategies.includes(option.key)).map(option => <span key={option.key}><i style={{ background: option.color }} />{option.name}</span>)}</div>
-    </section>
-    {error && <div className="live-error">{error}；系統將以指數退避自動重連。</div>}
+    <PaperTradingDashboard
+      quote={latest}
+      quoteFresh={quoteFresh}
+      marketHealth={marketHealth}
+      marketPanel={<>
+        <section className="live-chart-panel">
+          <div className="live-toolbar">
+            <div><strong>{latest?.contract ?? "TMF"}</strong><span>{TIMEFRAME_OPTIONS.find(item => item.key === selectedInterval)?.name} · Asia/Taipei · Exchange Time</span></div>
+            <div className="ohlc-strip"><span>O <b>{fmt(shown?.open)}</b></span><span>H <b>{fmt(shown?.high)}</b></span><span>L <b>{fmt(shown?.low)}</b></span><span>C <b>{fmt(shown?.close)}</b></span><span>V <b>{fmt(latest?.volume)}</b></span></div>
+            <div className={`bar-state ${latest?.status ?? "forming"}`}>{latest?.status === "closed" ? "已收盤" : "形成中"}</div>
+          </div>
+          <div ref={hostRef} className="live-chart" />
+          <div className="chart-legend"><span><i className="legend-forming" />形成中 K 棒</span><span><i className="legend-closed" />已收盤 K 棒</span>{strategyOptions.filter(option => selectedStrategies.includes(option.key)).map(option => <span key={option.key}><i style={{ background: option.color }} />{option.name}</span>)}</div>
+        </section>
+        {error && <div className="live-error">{error}；系統將以指數退避自動重連。</div>}
+      </>}
+    />
     <footer className="live-footer">行情模式由後端設定。Mock 資料僅供工程驗證；正式 Shioaji 模式僅訂閱行情，不含下單功能。</footer>
   </main>;
 }

@@ -5,10 +5,9 @@ Dashboard 採功能導向 URL：
 | URL | 功能 | 狀態 |
 |---|---|---|
 | `/` | 系統總覽、目前行情與策略狀態 | 可使用 |
-| `/live/` | TMF 即時多週期 K 線 | 可使用 |
+| `/trade/` | 交易工作台 | 即時多週期 K 線、Paper 委託、持倉／損益、Kill Switch 與成交紀錄 |
 | `/backtest/` | 動態歷史回測 | 可使用 |
 | `/replay/` | 動態歷史回放 | 單日盤次快照、策略訊號、播放與逐根控制 |
-| `/paper/` | 模擬交易 | 手動送單、持倉／損益、平倉、Kill Switch 與成交紀錄 |
 | `/history/` | 回測／交易執行紀錄 | 查詢、篩選、明細與永久刪除 |
 | `/strategies/` | 11 套基本策略與風險規則 | 可輸入並儲存參數 |
 | `/composite-strategies/` | 組合策略清單、版本與封存管理 | 可新增、搜尋、編輯與回測 |
@@ -16,12 +15,15 @@ Dashboard 採功能導向 URL：
 | `/composite-strategies/editor/` | 組合策略編輯器 | 以 `strategy_id` 查詢參數指定策略 |
 | `/settings/` | 行情、商品與部署設定摘要 | 唯讀摘要可使用 |
 
-`/live/`、`/replay/` 與 `/backtest/` 共用
+`/trade/`、`/replay/` 與 `/backtest/` 共用
 `tw_quant.strategy.analyze_strategies()`；資料來源先轉成標準 `KBar`，再進入
 同一套基本策略、停損／停利與模擬成交流程，避免不同模式的規則漂移。
 策略管理頁透過 `GET /api/strategies` 載入欄位規格，並以
 `PUT /api/strategies/{strategy}` 儲存到後端 SQLite；Live、Replay 與 Backtest
 下一次分析時都會使用這份共用設定。
+
+`/trade/` 是唯一的即時交易入口。圖表與 Paper 委託票共用同一條 WebSocket
+行情，Paper 帳戶資料則每 5 秒更新；舊 `/live/`、`/paper/` 會自動導向工作台。
 
 回測頁會先呼叫 `/api/backtest/options` 取得 SQLite 可用交易日，再呼叫
 `/api/backtest` 執行所選策略與日期。日期區間由前後端共同限制為最多 31 個

@@ -1,11 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { FormEvent, type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 
 type CurrentUser = {
-  role: "trader" | "admin";
+  role: "researcher" | "trader" | "admin";
   trading_mode: "disabled" | "paper" | "live";
+  permissions: string[];
 };
 type Account = {
   realized_pnl: number;
@@ -56,19 +57,26 @@ type Fill = {
   slippage: number;
   meta: { occurred_at: string };
 };
-type Quote = {
+export type PaperQuote = {
   contract: string;
   close: number;
   received_time: string;
   status: "forming" | "closed";
   session: "day" | "night";
 };
-type MarketHealth = {
+export type MarketHealth = {
   service_status: "healthy" | "degraded" | "market_stale" | "provider_disconnected";
   connection_status: string;
   trading_block_reason: "market_stale" | "provider_disconnected" | null;
   stale_after_seconds: number;
   last_tick_time: string | null;
+};
+
+type PaperTradingDashboardProps = {
+  marketPanel: ReactNode;
+  quote: PaperQuote | null;
+  quoteFresh: boolean;
+  marketHealth: MarketHealth | null;
 };
 
 const apiBase = () => (process.env.NEXT_PUBLIC_MARKET_API_URL
@@ -98,18 +106,20 @@ async function responseBody(response: Response) {
   return body;
 }
 
-export default function PaperTradingDashboard() {
+export default function PaperTradingDashboard({
+  marketPanel,
+  quote,
+  quoteFresh,
+  marketHealth,
+}: PaperTradingDashboardProps) {
   const [user, setUser] = useState<CurrentUser | null>(null);
   const [account, setAccount] = useState<Account | null>(null);
   const [positions, setPositions] = useState<Position[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
   const [fills, setFills] = useState<Fill[]>([]);
-  const [quote, setQuote] = useState<Quote | null>(null);
-  const [quoteFresh, setQuoteFresh] = useState(false);
-  const [marketHealth, setMarketHealth] = useState<MarketHealth | null>(null);
   const [side, setSide] = useState<"buy" | "sell">("buy");
   const [quantity, setQuantity] = useState(1);
-  const [stopLoss, setStopLoss] = useState("");
+  const [stopLoss, setStopLoss] = useState<string | null>(null);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -117,24 +127,27 @@ export default function PaperTradingDashboard() {
 
   const load = useCallback(async (silent = false) => {
     try {
-      const [meResponse, accountResponse, ordersResponse, fillsResponse, quoteResponse, healthResponse] = await Promise.all([
-        fetch(`${apiBase()}/api/me`, { cache: "no-store" }),
+      const me = await responseBody(await fetch(`${apiBase()}/api/me`, { cache: "no-store" }));
+      setUser(me);
+      if (!me.permissions.includes("positions.read.own")) {
+        setAccount(null);
+        setPositions([]);
+        setOrders([]);
+        setFills([]);
+        if (!silent) setError("");
+        return;
+      }
+      const [accountResponse, ordersResponse, fillsResponse] = await Promise.all([
         fetch(`${apiBase()}/api/paper/account`, { cache: "no-store" }),
         fetch(`${apiBase()}/api/paper/orders`, { cache: "no-store" }),
         fetch(`${apiBase()}/api/paper/fills?limit=100`, { cache: "no-store" }),
-        fetch(`${apiBase()}/api/kbars?symbol=TMF&interval=1m&limit=1`, { cache: "no-store" }),
-        fetch(`${apiBase()}/api/health`, { cache: "no-store" }),
       ]);
-      const [me, accountBody, ordersBody, fillsBody, quotes, health] = await Promise.all([
-        responseBody(meResponse), responseBody(accountResponse),
-        responseBody(ordersResponse), responseBody(fillsResponse), responseBody(quoteResponse),
-        responseBody(healthResponse),
+      const [accountBody, ordersBody, fillsBody] = await Promise.all([
+        responseBody(accountResponse),
+        responseBody(ordersResponse), responseBody(fillsResponse),
       ]);
-      const latestQuote: Quote | null = quotes.at(-1) ?? null;
-      setUser(me); setAccount(accountBody.account); setPositions(accountBody.positions);
-      setOrders(ordersBody.orders); setFills(fillsBody.fills); setQuote(latestQuote); setMarketHealth(health);
-      setQuoteFresh(Boolean(latestQuote && Date.now() - new Date(latestQuote.received_time).getTime() <= health.stale_after_seconds * 1_000));
-      if (latestQuote) setStopLoss(current => current || String(latestQuote.close - 50));
+      setAccount(accountBody.account); setPositions(accountBody.positions);
+      setOrders(ordersBody.orders); setFills(fillsBody.fills);
       if (!silent) setError("");
     } catch (reason) {
       if (!silent) setError(reason instanceof Error ? reason.message : "無法載入模擬帳戶");
@@ -153,7 +166,8 @@ export default function PaperTradingDashboard() {
     () => positions.reduce((sum, position) => sum + position.unrealized_pnl, 0),
     [positions],
   );
-  const paperEnabled = user?.trading_mode === "paper";
+  const paperEnabled = user?.trading_mode === "paper" && user.permissions.includes("orders.paper");
+  const orderStopLoss = stopLoss ?? (quote ? String(quote.close + (side === "buy" ? -50 : 50)) : "");
   const marketBlockReason = marketHealth?.trading_block_reason ?? null;
   const marketBlockCopy = marketBlockReason === "provider_disconnected"
     ? { code: "PROVIDER DISCONNECTED", title: "行情供應商連線中斷", detail: "系統已禁止建立新倉；既有持倉仍可查看。連線恢復後也不會自動補送中斷期間的委託。" }
@@ -168,7 +182,7 @@ export default function PaperTradingDashboard() {
       const response = await fetch(`${apiBase()}/api/paper/orders`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "Idempotency-Key": crypto.randomUUID() },
-        body: JSON.stringify({ side, quantity, stop_loss_price: Number(stopLoss) }),
+        body: JSON.stringify({ side, quantity, stop_loss_price: Number(orderStopLoss) }),
       });
       const body = await responseBody(response);
       setNotice(body.order.status === "filled"
@@ -217,10 +231,9 @@ export default function PaperTradingDashboard() {
     } finally { setBusy(""); }
   }
 
-  if (loading) return <section className="panel paper-loading">正在讀取模擬帳戶…</section>;
-
   return <div className="paper-page">
-    {!paperEnabled && <section className="paper-mode-warning panel">
+    {loading && <section className="panel paper-loading">正在讀取模擬帳戶…</section>}
+    {!loading && !paperEnabled && <section className="paper-mode-warning panel">
       <div><span>PAPER MODE DISABLED</span><h2>帳號尚未啟用模擬下單</h2><p>可以查看帳戶狀態，但送單按鈕維持停用。</p></div>
       {user?.role === "admin" && <Link href="/admin/users/">前往帳號權限啟用 Paper →</Link>}
     </section>}
@@ -239,10 +252,12 @@ export default function PaperTradingDashboard() {
       <article><span>最新模擬報價</span><strong>{quote ? price.format(quote.close) : "—"}</strong><small>{quote?.contract ?? "等待行情"} · {quoteFresh ? "即時" : "已過期"}</small></article>
       <article><span>未實現損益</span><strong className={totalUnrealized >= 0 ? "profit" : "loss"}>{signedMoney(totalUnrealized)}</strong><small>{account?.open_contracts ?? 0} 口未平倉</small></article>
       <article><span>已實現損益</span><strong className={(account?.realized_pnl ?? 0) >= 0 ? "profit" : "loss"}>{signedMoney(account?.realized_pnl ?? 0)}</strong><small>今日成交 {account?.trades ?? 0} 筆</small></article>
-      <article><span>風控狀態</span><strong className={account?.kill_switch_active ? "loss" : "profit"}>{account?.kill_switch_active ? "已停止" : "可交易"}</strong><small>{account?.kill_switch_reason ? reasonLabel(account.kill_switch_reason) : "風控閘門正常"}</small></article>
+      <article><span>風控狀態</span><strong className={!paperEnabled ? "warning" : account?.kill_switch_active ? "loss" : "profit"}>{!paperEnabled ? "未啟用" : account?.kill_switch_active ? "已停止" : "可交易"}</strong><small>{account?.kill_switch_reason ? reasonLabel(account.kill_switch_reason) : paperEnabled ? "風控閘門正常" : "送單功能維持停用"}</small></article>
     </section>
 
-    <div className="paper-primary">
+    <div className="trade-workspace-grid">
+      <div className="trade-market-column">{marketPanel}</div>
+      <aside className="trade-order-column">
       <form className="paper-order panel" onSubmit={submitOrder}>
         <div className="panel-head"><div><span>MANUAL ORDER</span><h2>模擬市價單</h2></div><small>成交價由伺服器決定</small></div>
         <div className="paper-side">
@@ -250,7 +265,7 @@ export default function PaperTradingDashboard() {
           <button type="button" className={side === "sell" ? "active sell" : ""} onClick={() => { setSide("sell"); if (quote) setStopLoss(String(quote.close + 50)); }}>賣出／做空</button>
         </div>
         <label><span>數量</span><select value={quantity} onChange={event => setQuantity(Number(event.target.value))}><option value={1}>1 口</option><option value={2}>2 口</option></select></label>
-        <label><span>停損價</span><input required min="1" step="1" inputMode="decimal" value={stopLoss} onChange={event => setStopLoss(event.target.value)} /></label>
+        <label><span>停損價</span><input required min="1" step="1" inputMode="decimal" value={orderStopLoss} onChange={event => setStopLoss(event.target.value)} /></label>
         <p>單筆風險與最大持倉仍由後端再次檢查。行情超過系統容許延遲時不會成交。</p>
         <button className={`paper-submit ${side}`} disabled={!paperEnabled || !quoteFresh || Boolean(marketBlockReason) || account?.kill_switch_active || Boolean(busy)}>{busy === "order" ? "送單中…" : `送出模擬${side === "buy" ? "買單" : "賣單"}`}</button>
       </form>
@@ -263,6 +278,7 @@ export default function PaperTradingDashboard() {
           ? <button className="reset" disabled={Boolean(busy)} onClick={() => void control("reset")}>解除 Kill Switch</button>
           : <button className="activate" disabled={Boolean(busy) || !paperEnabled} onClick={() => void control("activate")}>啟用 Kill Switch</button>}
       </section>
+      </aside>
     </div>
 
     <section className="paper-positions panel">
