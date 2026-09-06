@@ -141,7 +141,7 @@ export default function LiveDashboard() {
   const socketRef = useRef<WebSocket | null>(null);
   const connectionGeneration = useRef(0);
   const attempts = useRef(0);
-  const lastHeartbeat = useRef(0);
+  const lastMessageAt = useRef(0);
   const strategyRequest = useRef(0);
   const strategyLoaderRef = useRef<() => Promise<void>>(async () => undefined);
   const [status, setStatus] = useState<ConnectionStatus>("connecting");
@@ -168,17 +168,20 @@ export default function LiveDashboard() {
     return () => { active = false; };
   }, []);
 
-  const loadHistory = useCallback(async (signal?: AbortSignal) => {
-    const response = await fetch(`${apiBase()}/api/kbars?symbol=TMF&interval=${selectedInterval}&limit=500`, { cache: "no-store", signal });
+  const loadHistory = useCallback(async (interval: Timeframe, signal?: AbortSignal) => {
+    const response = await fetch(`${apiBase()}/api/kbars?symbol=TMF&interval=${interval}&limit=500`, { cache: "no-store", signal });
     if (!response.ok) throw new Error(`歷史 K 棒載入失敗 (${response.status})`);
     const bars: KBar[] = await response.json();
     if (signal?.aborted) return [];
+    if (bars.some(bar => bar.interval !== interval)) {
+      throw new Error(`歷史 K 棒週期不符（預期 ${interval}）`);
+    }
     candleRef.current?.setData(bars.map(candle));
     volumeRef.current?.setData(bars.map(volume));
     setHistoryCount(bars.length);
     if (bars.length) setLatest(bars[bars.length - 1]);
     return bars;
-  }, [selectedInterval]);
+  }, []);
 
   const loadStrategySignals = useCallback(async () => {
     const requestId = ++strategyRequest.current;
@@ -270,6 +273,7 @@ export default function LiveDashboard() {
   }, [loadStrategySignals]);
 
   useEffect(() => {
+    const interval = selectedInterval;
     const generation = ++connectionGeneration.current;
     const abortController = new AbortController();
     let disposed = false;
@@ -285,38 +289,49 @@ export default function LiveDashboard() {
     );
 
     attempts.current = 0;
-    lastHeartbeat.current = 0;
+    lastMessageAt.current = 0;
+    let initialConnect = true;
     const connect = async () => {
       if (!isCurrentGeneration()) return;
+      if (initialConnect) {
+        initialConnect = false;
+        setLatest(null);
+        setCrosshair(null);
+        setHistoryCount(0);
+        setStrategyResults([]);
+        candleRef.current?.setData([]);
+        volumeRef.current?.setData([]);
+        markerRef.current?.setMarkers([]);
+      }
       setStatus(attempts.current ? "reconnecting" : "connecting");
       try {
-        await loadHistory(abortController.signal);
+        await loadHistory(interval, abortController.signal);
       } catch (reason) {
         if (isCurrentGeneration() && !(reason instanceof DOMException && reason.name === "AbortError")) {
           setError(reason instanceof Error ? reason.message : "REST 載入失敗");
         }
       }
       if (!isCurrentGeneration()) return;
-      const wsUrl = `${apiBase().replace(/^http/, "ws")}/ws/market/TMF?interval=${selectedInterval}`;
+      const wsUrl = `${apiBase().replace(/^http/, "ws")}/ws/market/TMF?interval=${interval}`;
       const socket = new WebSocket(wsUrl);
       activeSocket = socket;
       socketRef.current = socket;
       socket.onopen = async () => {
         if (!isCurrentSocket(socket)) return;
         attempts.current = 0;
-        lastHeartbeat.current = Date.now();
+        lastMessageAt.current = Date.now();
         setError("");
-        await loadHistory(abortController.signal).catch(() => undefined); // reconnect gap recovery
+        await loadHistory(interval, abortController.signal).catch(() => undefined); // reconnect gap recovery
         if (!isCurrentSocket(socket)) return;
         await strategyLoaderRef.current();
       };
       socket.onmessage = event => {
         if (!isCurrentSocket(socket)) return;
         const message = JSON.parse(event.data) as FeedMessage;
-        if (message.type === "heartbeat") lastHeartbeat.current = Date.now();
+        lastMessageAt.current = Date.now();
         setStatus(message.connection_status);
         if (message.type === "kbar") {
-          if (message.interval !== selectedInterval) return;
+          if (message.interval !== interval) return;
           candleRef.current?.update(candle(message));
           volumeRef.current?.update(volume(message));
           setLatest(message);
@@ -345,11 +360,19 @@ export default function LiveDashboard() {
       };
     };
     void connect();
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible" && isCurrentGeneration()) {
+        lastMessageAt.current = Date.now();
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
     const watchdog = setInterval(() => {
       if (
         isCurrentGeneration()
-        && lastHeartbeat.current
-        && Date.now() - lastHeartbeat.current > 15_000
+        && document.visibilityState === "visible"
+        && activeSocket?.readyState === WebSocket.OPEN
+        && lastMessageAt.current
+        && Date.now() - lastMessageAt.current > 45_000
       ) {
         setStatus("disconnected");
         activeSocket?.close();
@@ -358,6 +381,7 @@ export default function LiveDashboard() {
     return () => {
       disposed = true;
       abortController.abort();
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
       clearInterval(watchdog);
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (socketRef.current === activeSocket) socketRef.current = null;
