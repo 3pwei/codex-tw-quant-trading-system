@@ -3,6 +3,13 @@
 本文件定義事件式 Backtest／Replay／Paper Trading 完成後的正式運行邊界。平台仍只
 提供模擬成交，不連接外部券商下單 API。
 
+配套文件：
+
+- [Paper Trading 操作手冊](paper-trading-guide.md)
+- [故障復原手冊](disaster-recovery.md)
+- [部署驗收清單](deployment-acceptance-checklist.md)
+- [Level 2 完成標準](level2-definition-of-done.md)
+
 ## 重啟復原
 
 `PaperTradingService` 啟動時依 SQLite 的 durable write order 重播 Fill 與控制紀錄，
