@@ -254,6 +254,14 @@ class AuthorizationApiTests(unittest.TestCase):
         self.assertEqual(admin_health.status_code, 200)
         self.assertIn("market_data_provider", admin_health.json())
         self.assertIn("queue_size", admin_health.json())
+        self.assertIn("queue_high_watermark", admin_health.json())
+        self.assertIn("average_tick_processing_ms", admin_health.json())
+        self.assertEqual(
+            admin_health.json()["paper_trading"]["status"], "healthy"
+        )
+        self.assertIn(
+            "average_submission_ms", admin_health.json()["paper_trading"]
+        )
 
     def test_websocket_requires_market_permission_and_identity(self):
         with self.client.websocket_connect(

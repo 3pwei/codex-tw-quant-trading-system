@@ -15,6 +15,8 @@ type Account = {
   kill_switch_active: boolean;
   kill_switch_reason: string | null;
   cooldown_until: string | null;
+  recovery_status: "healthy" | "degraded";
+  recovery_issues: string[];
 };
 type Position = {
   strategy_id: string;
@@ -205,6 +207,10 @@ export default function PaperTradingDashboard() {
     {!paperEnabled && <section className="paper-mode-warning panel">
       <div><span>PAPER MODE DISABLED</span><h2>帳號尚未啟用模擬下單</h2><p>可以查看帳戶狀態，但送單按鈕維持停用。</p></div>
       {user?.role === "admin" && <Link href="/admin/users/">前往帳號權限啟用 Paper →</Link>}
+    </section>}
+    {account?.recovery_status === "degraded" && <section className="paper-mode-warning panel">
+      <div><span>RECOVERY LOCK</span><h2>帳戶狀態需要檢查</h2><p>重啟復原發現資料不一致，系統已禁止新增曝險；既有部位仍可平倉。</p></div>
+      {user?.role === "admin" && <Link href="/settings/">查看系統健康狀態 →</Link>}
     </section>}
     {error && <div className="paper-message error">{error}</div>}
     {notice && <div className="paper-message success">{notice}</div>}

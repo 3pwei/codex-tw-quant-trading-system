@@ -320,6 +320,55 @@ class LiveApiTests(unittest.TestCase):
 
 
 class ReplayConnectionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_worker_survives_listener_failure_and_reports_metrics(self):
+        class ManualFeed:
+            contract = "TMFI6"
+            healthy = True
+
+            async def start(self, on_tick, on_status):
+                self.on_tick = on_tick
+                on_status("connected")
+
+            async def stop(self):
+                self.healthy = False
+
+            async def heartbeat(self):
+                return self.healthy
+
+        temp = tempfile.TemporaryDirectory()
+        repository = SQLiteBarRepository(Path(temp.name) / "worker.sqlite3")
+        feed = ManualFeed()
+        service = LiveMarketService(feed, repository, heartbeat_seconds=1)
+        service.add_bar_listener(
+            lambda _bar: (_ for _ in ()).throw(RuntimeError("listener failed"))
+        )
+        at = datetime(2026, 8, 24, 15, 0, tzinfo=ZoneInfo("Asia/Taipei"))
+        ticks = [
+            TickEvent(
+                symbol="TMF", contract="TMFI6",
+                exchange_time=at + timedelta(seconds=index),
+                received_time=at + timedelta(seconds=index, milliseconds=5),
+                price=100 + index, volume=1, sequence=f"failure-{index}",
+            )
+            for index in (1, 2)
+        ]
+        try:
+            await service.start()
+            for tick in ticks:
+                feed.on_tick(tick)
+            await asyncio.wait_for(service.queue.join(), timeout=1)
+            status = service.status_message()
+            self.assertEqual(status["worker_cycles"], 2)
+            self.assertEqual(status["worker_errors"], 2)
+            self.assertEqual(status["service_status"], "degraded")
+            self.assertGreaterEqual(status["queue_high_watermark"], 1)
+            self.assertIsNotNone(status["average_tick_processing_ms"])
+            self.assertFalse(service._worker.done())
+        finally:
+            await service.stop()
+            repository.close()
+            temp.cleanup()
+
     async def test_backfill_cleanup_preserves_tick_aggregated_bars(self):
         temp = tempfile.TemporaryDirectory()
         repository = SQLiteBarRepository(Path(temp.name) / "cleanup.sqlite3")

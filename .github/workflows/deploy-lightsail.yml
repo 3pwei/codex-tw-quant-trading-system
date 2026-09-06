@@ -100,4 +100,7 @@ jobs:
       - name: Verify public health endpoint
         env:
           PUBLIC_DASHBOARD_URL: ${{ vars.PUBLIC_DASHBOARD_URL }}
-        run: curl --fail --show-error --silent --retry 8 --retry-delay 5 "${PUBLIC_DASHBOARD_URL%/}/healthz"
+        run: |
+          response="$(curl --fail --show-error --silent --location \
+            --retry 8 --retry-delay 5 "${PUBLIC_DASHBOARD_URL%/}/healthz")"
+          test "$response" = "ok"

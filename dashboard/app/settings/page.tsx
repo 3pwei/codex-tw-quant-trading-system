@@ -1,4 +1,5 @@
 import SectionShell from "../components/section-shell";
+import SystemHealthPanel from "./system-health";
 
 export default function SettingsPage() {
   return <SectionShell active="/settings/" eyebrow="WADE QUANT LAB · SETTINGS" title="系統設定" description="行情來源、商品與部署環境摘要">
@@ -10,6 +11,7 @@ export default function SettingsPage() {
       <div><span>正式主機</span><strong>AWS Lightsail</strong><small>Docker Compose 常駐服務</small></div>
       <div><span>存取保護</span><strong>Cloudflare Access</strong><small>核准 Email 一次性驗證碼</small></div>
     </section>
+    <SystemHealthPanel />
     <div className="security-note"><b>安全邊界</b><p>API Key、Secret 與帳號資訊只從伺服器環境變數載入，不會顯示在此頁、送到瀏覽器或提交至 GitHub。</p></div>
   </SectionShell>;
 }

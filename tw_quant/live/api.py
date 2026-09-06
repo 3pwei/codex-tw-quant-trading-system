@@ -374,7 +374,7 @@ def create_app(
         return {
             key: status[key]
             for key in (
-                "type", "symbol", "contract", "connection_status",
+                "type", "service_status", "symbol", "contract", "connection_status",
                 "last_tick_time", "last_heartbeat_time", "server_time",
                 "latency_ms", "tick_age_ms", "history_bars_loaded",
             )
@@ -494,7 +494,10 @@ def create_app(
 
     @app.get("/api/admin/health")
     async def admin_health():
-        return service.status_message()
+        return {
+            **service.status_message(),
+            "paper_trading": paper.health(),
+        }
 
     @app.get("/api/admin/access-requests")
     def admin_access_requests(

@@ -77,6 +77,7 @@ CSV 1 分 K
 | `tw_quant/risk/account.py` | Paper 權限、帳戶級限制、Kill Switch 與風控稽核 |
 | `tw_quant/execution/simulator.py` | 下一根開盤、風險出場與時段平倉模擬 |
 | `tw_quant/execution/event_simulator.py` | 統一事件引擎的模擬券商、訂單狀態與部位／PnL 帳本 |
+| `docs/level2-operations.md` | Level 2 重啟復原、監控、效能預算與正式驗收清單 |
 | `tw_quant/backtest/runner.py` | 成本、交易、權益與績效報表 |
 | `tw_quant/market_data/ports.py` | 即時／歷史行情 Provider 介面與能力宣告 |
 | `tw_quant/market_data/factory.py` | Provider 組裝點；FastAPI 不認識供應商實作 |
@@ -561,7 +562,8 @@ sudo /opt/tw-quant/repo/deploy/lightsail/deploy.sh "$(git -C /opt/tw-quant/repo 
 curl https://tmf.example.com/healthz
 ```
 
-`/healthz` 成功後，將 Cloudflare DNS 紀錄切成 Proxied（橘雲），SSL/TLS mode 設為
+`/healthz` 必須直接回傳 HTTP 200 與本文 `ok`，不能是 Cloudflare Access 的 302
+登入轉址。確認成功後，將 Cloudflare DNS 紀錄切成 Proxied（橘雲），SSL/TLS mode 設為
 `Full (strict)`。為讓 GitHub deployment health check 不需要使用者 Session，可另外建立
 更精確的 Access application `tmf.example.com/healthz`，Policy action 選 `Bypass`、
 Selector 選 `Everyone`；此路徑只回傳固定的 `ok`，不包含行情或系統狀態。
@@ -615,7 +617,9 @@ Cloudflare Team domain 與 AUD tag 不是登入密碼，但仍應由伺服器設
 - 部署前應建立 Lightsail snapshot；若有真實下單需求，資料庫應升級 PostgreSQL。
 - 部署會短暫中斷行情，僅在休市時手動執行。
 - 重啟後 Worker 會讀取形成中 K 棒及 Tick 去重資料；恢復 Shioaji 後仍須檢查缺漏行情。
-- `/healthz` 只代表 HTTPS gateway 存活；`/api/health` 才包含 Shioaji 連線、最後 Tick 與延遲。
+- `/healthz` 只代表 HTTPS gateway 存活；部署流程會跟隨轉址並嚴格檢查回應本文為
+  `ok`，避免把 Cloudflare 登入頁誤判為健康。`/api/health` 才包含 Shioaji 連線、
+  最後 Tick 與延遲。
 - 若未來加入下單，必須先完成模擬交易、固定 IP 白名單、CA 安全保存、訂單冪等、持倉核對、最大虧損與 Kill Switch；目前版本仍完全不能下單。
 
 ### 常見問題
