@@ -137,6 +137,30 @@ class PaperTradingApiTests(unittest.TestCase):
             headers=self.headers("cf-trader", "trader@example.com"),
         ).json()["fills"]), 1)
 
+    def test_rapid_repeated_mobile_taps_create_one_order_and_fill(self):
+        headers = self.headers(
+            "cf-trader", "trader@example.com", "rapid-mobile-tap"
+        )
+        payload = {"side": "buy", "quantity": 1, "stop_loss_price": 19_950}
+        responses = [
+            self.client.post("/api/paper/orders", headers=headers, json=payload)
+            for _ in range(25)
+        ]
+        self.assertTrue(all(response.status_code == 201 for response in responses))
+        self.assertEqual(sum(response.json()["created"] for response in responses), 1)
+        order_ids = {response.json()["order"]["order_id"] for response in responses}
+        self.assertEqual(len(order_ids), 1)
+        orders = self.client.get(
+            "/api/paper/orders",
+            headers=self.headers("cf-trader", "trader@example.com"),
+        ).json()["orders"]
+        fills = self.client.get(
+            "/api/paper/fills",
+            headers=self.headers("cf-trader", "trader@example.com"),
+        ).json()["fills"]
+        self.assertEqual(len(orders), 1)
+        self.assertEqual(len(fills), 1)
+
     def test_owner_data_is_isolated_and_researcher_is_denied(self):
         created = self.client.post(
             "/api/paper/orders",
@@ -171,6 +195,27 @@ class PaperTradingApiTests(unittest.TestCase):
         self.assertEqual(trader_orders.status_code, 200)
         self.assertEqual(trader_orders.json()["orders"], [])
 
+    def test_two_traders_can_interleave_orders_without_cross_account_leakage(self):
+        cases = (
+            ("cf-trader", "trader@example.com", "trader-interleaved", "buy", 19_950),
+            ("cf-other", "other@example.com", "other-interleaved", "sell", 20_050),
+        )
+        created_order_ids = {}
+        for subject, email, key, side, stop in cases:
+            response = self.client.post(
+                "/api/paper/orders",
+                headers=self.headers(subject, email, key),
+                json={"side": side, "stop_loss_price": stop},
+            )
+            self.assertEqual(response.status_code, 201, response.text)
+            created_order_ids[email] = response.json()["order"]["order_id"]
+        for subject, email, _key, _side, _stop in cases:
+            orders = self.client.get(
+                "/api/paper/orders", headers=self.headers(subject, email)
+            ).json()["orders"]
+            self.assertEqual(len(orders), 1)
+            self.assertEqual(orders[0]["order_id"], created_order_ids[email])
+
     def test_kill_switch_blocks_new_exposure(self):
         identity = self.headers("cf-trader", "trader@example.com")
         activated = self.client.post(
@@ -196,6 +241,37 @@ class PaperTradingApiTests(unittest.TestCase):
         )
         self.assertEqual(reset.status_code, 200)
         self.assertFalse(reset.json()["kill_switch_active"])
+
+    def test_kill_switch_blocks_entry_but_allows_reduce_only_close(self):
+        identity = self.headers("cf-trader", "trader@example.com")
+        entry = self.client.post(
+            "/api/paper/orders",
+            headers={**identity, "Idempotency-Key": "entry-before-halt"},
+            json={"side": "buy", "stop_loss_price": 19_950},
+        )
+        self.assertEqual(entry.status_code, 201, entry.text)
+        self.client.post(
+            "/api/paper/kill-switch", headers=identity,
+            json={"reason": "acceptance_halt"},
+        )
+        blocked = self.client.post(
+            "/api/paper/orders",
+            headers={**identity, "Idempotency-Key": "entry-after-halt"},
+            json={"side": "buy", "stop_loss_price": 19_950},
+        )
+        self.assertEqual(blocked.json()["order"]["status"], "rejected")
+
+        close = self.client.post(
+            "/api/paper/orders",
+            headers={**identity, "Idempotency-Key": "close-during-halt"},
+            json={"side": "sell", "reduce_only": True},
+        )
+        self.assertEqual(close.status_code, 201, close.text)
+        self.assertEqual(close.json()["order"]["status"], "filled")
+        account = self.client.get(
+            "/api/paper/account", headers=identity
+        ).json()
+        self.assertEqual(account["positions"], [])
 
     def test_stale_market_price_cannot_be_used_for_a_paper_fill(self):
         old = datetime.now(TAIPEI) - timedelta(minutes=5)

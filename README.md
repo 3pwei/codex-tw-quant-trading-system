@@ -78,6 +78,10 @@ CSV 1 分 K
 | `tw_quant/execution/simulator.py` | 下一根開盤、風險出場與時段平倉模擬 |
 | `tw_quant/execution/event_simulator.py` | 統一事件引擎的模擬券商、訂單狀態與部位／PnL 帳本 |
 | `docs/level2-operations.md` | Level 2 重啟復原、監控、效能預算與正式驗收清單 |
+| `docs/paper-trading-guide.md` | Paper Trading 使用者操作與拒絕處理 |
+| `docs/disaster-recovery.md` | FastAPI、主機與 SQLite 故障復原程序 |
+| `docs/deployment-acceptance-checklist.md` | 每次上線可留存的正式驗收清單 |
+| `docs/level2-definition-of-done.md` | Level 2 能力、效能門檻與完成證據 |
 | `tw_quant/backtest/runner.py` | 成本、交易、權益與績效報表 |
 | `tw_quant/market_data/ports.py` | 即時／歷史行情 Provider 介面與能力宣告 |
 | `tw_quant/market_data/factory.py` | Provider 組裝點；FastAPI 不認識供應商實作 |
@@ -272,6 +276,20 @@ Trader 與具有明確 Paper 權限的 Admin 可由 `/paper/` 查看帳戶損益
 - `GET /api/paper/events`
 - `POST /api/paper/kill-switch`
 - `POST /api/paper/kill-switch/reset`
+
+Level 2 短版效能驗收可執行：
+
+```bash
+python -m tw_quant level2-soak \
+  --duration-seconds 60 \
+  --tick-interval-seconds 0.1 \
+  --output output/level2-soak.json
+```
+
+正式候選版本須依 [Level 2 完成標準](docs/level2-definition-of-done.md) 執行四小時
+soak 與正式站人工驗收；備份、復原及上線程序分別見
+[故障復原手冊](docs/disaster-recovery.md) 與
+[部署驗收清單](docs/deployment-acceptance-checklist.md)。
 
 ### Mock／Replay 本機啟動
 

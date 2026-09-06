@@ -38,6 +38,14 @@ jobs:
       - name: Validate Mock Replay API and WebSocket
         run: python -m unittest tests.test_live_api -v
 
+      - name: Level 2 short soak acceptance
+        if: matrix.python-version == '3.12'
+        run: >-
+          python -m tw_quant level2-soak
+          --duration-seconds 1
+          --tick-interval-seconds 0.01
+          --output /tmp/level2-soak.json
+
   dashboard:
     runs-on: ubuntu-latest
     defaults:

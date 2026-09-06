@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 from datetime import datetime
 import json
 from pathlib import Path
@@ -18,6 +19,8 @@ from .futures import (
     taifex_bars_to_kbars,
     ticks_to_bars,
 )
+from .level2_acceptance import run_level2_soak
+from .maintenance import backup_sqlite, restore_sqlite
 from .report import save_report
 from .strategy import (
     BNFMeanReversion,
@@ -199,6 +202,36 @@ def run_futures_night(args: argparse.Namespace) -> None:
     print(f"\n報告位置：{output.resolve()}")
 
 
+def run_level2_acceptance(args: argparse.Namespace) -> None:
+    report = asyncio.run(
+        run_level2_soak(
+            args.duration_seconds,
+            tick_interval_seconds=args.tick_interval_seconds,
+            database_path=args.database,
+        )
+    )
+    output = json.dumps(report.to_dict(), ensure_ascii=False, indent=2)
+    print(output)
+    if args.output:
+        path = Path(args.output)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"{output}\n", encoding="utf-8")
+    if not report.passed:
+        raise SystemExit(1)
+
+
+def run_sqlite_backup(args: argparse.Namespace) -> None:
+    result = backup_sqlite(args.source, args.destination)
+    print(f"SQLite backup created and verified: {result}")
+
+
+def run_sqlite_restore(args: argparse.Namespace) -> None:
+    rollback = restore_sqlite(args.backup, args.target)
+    print(f"SQLite database restored and verified: {args.target}")
+    if rollback:
+        print(f"Pre-restore rollback copy: {rollback}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="台股分鐘線當沖回測 MVP")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -231,6 +264,29 @@ def build_parser() -> argparse.ArgumentParser:
     futures.add_argument("--tax-rate", type=float, default=0.00002)
     futures.add_argument("--slippage-points", type=float, default=1.0)
     futures.set_defaults(func=run_futures_night)
+
+    soak = subparsers.add_parser(
+        "level2-soak", help="執行可調整時長的 Level 2 行情與效能驗收"
+    )
+    soak.add_argument("--duration-seconds", type=float, default=60)
+    soak.add_argument("--tick-interval-seconds", type=float, default=0.1)
+    soak.add_argument("--database", help="保留驗收 SQLite；省略則使用暫存檔")
+    soak.add_argument("--output", help="將 JSON 驗收結果寫入指定路徑")
+    soak.set_defaults(func=run_level2_acceptance)
+
+    backup = subparsers.add_parser(
+        "sqlite-backup", help="建立並驗證 SQLite online backup"
+    )
+    backup.add_argument("--source", required=True)
+    backup.add_argument("--destination", required=True)
+    backup.set_defaults(func=run_sqlite_backup)
+
+    restore = subparsers.add_parser(
+        "sqlite-restore", help="離線復原並驗證 SQLite database"
+    )
+    restore.add_argument("--backup", required=True)
+    restore.add_argument("--target", required=True)
+    restore.set_defaults(func=run_sqlite_restore)
     return parser
 
 
