@@ -139,9 +139,8 @@ export default function LiveDashboard() {
   const volumeRef = useRef<ISeriesApi<"Histogram"> | null>(null);
   const markerRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
-  const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const connectionGeneration = useRef(0);
   const attempts = useRef(0);
-  const shouldReconnect = useRef(true);
   const lastHeartbeat = useRef(0);
   const strategyRequest = useRef(0);
   const strategyLoaderRef = useRef<() => Promise<void>>(async () => undefined);
@@ -169,10 +168,11 @@ export default function LiveDashboard() {
     return () => { active = false; };
   }, []);
 
-  const loadHistory = useCallback(async () => {
-    const response = await fetch(`${apiBase()}/api/kbars?symbol=TMF&interval=${selectedInterval}&limit=500`, { cache: "no-store" });
+  const loadHistory = useCallback(async (signal?: AbortSignal) => {
+    const response = await fetch(`${apiBase()}/api/kbars?symbol=TMF&interval=${selectedInterval}&limit=500`, { cache: "no-store", signal });
     if (!response.ok) throw new Error(`歷史 K 棒載入失敗 (${response.status})`);
     const bars: KBar[] = await response.json();
+    if (signal?.aborted) return [];
     candleRef.current?.setData(bars.map(candle));
     volumeRef.current?.setData(bars.map(volume));
     setHistoryCount(bars.length);
@@ -270,25 +270,53 @@ export default function LiveDashboard() {
   }, [loadStrategySignals]);
 
   useEffect(() => {
-    shouldReconnect.current = true;
+    const generation = ++connectionGeneration.current;
+    const abortController = new AbortController();
+    let disposed = false;
+    let activeSocket: WebSocket | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    const isCurrentGeneration = () => (
+      !disposed && connectionGeneration.current === generation
+    );
+    const isCurrentSocket = (socket: WebSocket) => (
+      isCurrentGeneration()
+      && activeSocket === socket
+      && socketRef.current === socket
+    );
+
+    attempts.current = 0;
+    lastHeartbeat.current = 0;
     const connect = async () => {
+      if (!isCurrentGeneration()) return;
       setStatus(attempts.current ? "reconnecting" : "connecting");
-      try { await loadHistory(); } catch (reason) { setError(reason instanceof Error ? reason.message : "REST 載入失敗"); }
+      try {
+        await loadHistory(abortController.signal);
+      } catch (reason) {
+        if (isCurrentGeneration() && !(reason instanceof DOMException && reason.name === "AbortError")) {
+          setError(reason instanceof Error ? reason.message : "REST 載入失敗");
+        }
+      }
+      if (!isCurrentGeneration()) return;
       const wsUrl = `${apiBase().replace(/^http/, "ws")}/ws/market/TMF?interval=${selectedInterval}`;
       const socket = new WebSocket(wsUrl);
+      activeSocket = socket;
       socketRef.current = socket;
       socket.onopen = async () => {
+        if (!isCurrentSocket(socket)) return;
         attempts.current = 0;
         lastHeartbeat.current = Date.now();
         setError("");
-        await loadHistory().catch(() => undefined); // reconnect gap recovery
+        await loadHistory(abortController.signal).catch(() => undefined); // reconnect gap recovery
+        if (!isCurrentSocket(socket)) return;
         await strategyLoaderRef.current();
       };
       socket.onmessage = event => {
+        if (!isCurrentSocket(socket)) return;
         const message = JSON.parse(event.data) as FeedMessage;
         if (message.type === "heartbeat") lastHeartbeat.current = Date.now();
         setStatus(message.connection_status);
         if (message.type === "kbar") {
+          if (message.interval !== selectedInterval) return;
           candleRef.current?.update(candle(message));
           volumeRef.current?.update(volume(message));
           setLatest(message);
@@ -300,27 +328,41 @@ export default function LiveDashboard() {
           setLatency(message.latency_ms);
         }
       };
-      socket.onerror = () => setError("WebSocket 連線發生錯誤");
+      socket.onerror = () => {
+        if (isCurrentSocket(socket)) setError("WebSocket 連線發生錯誤");
+      };
       socket.onclose = () => {
-        if (!shouldReconnect.current) return;
+        if (!isCurrentSocket(socket)) return;
+        socketRef.current = null;
+        activeSocket = null;
         setStatus("reconnecting");
         const delay = Math.min(30_000, 1_000 * 2 ** attempts.current) + Math.random() * 300;
         attempts.current += 1;
-        reconnectTimer.current = setTimeout(connect, delay);
+        reconnectTimer = setTimeout(() => {
+          reconnectTimer = null;
+          void connect();
+        }, delay);
       };
     };
-    connect();
+    void connect();
     const watchdog = setInterval(() => {
-      if (lastHeartbeat.current && Date.now() - lastHeartbeat.current > 15_000) {
+      if (
+        isCurrentGeneration()
+        && lastHeartbeat.current
+        && Date.now() - lastHeartbeat.current > 15_000
+      ) {
         setStatus("disconnected");
-        socketRef.current?.close();
+        activeSocket?.close();
       }
     }, 2_500);
     return () => {
-      shouldReconnect.current = false;
+      disposed = true;
+      abortController.abort();
       clearInterval(watchdog);
-      if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
-      socketRef.current?.close();
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (socketRef.current === activeSocket) socketRef.current = null;
+      activeSocket?.close();
+      activeSocket = null;
     };
   }, [loadHistory, selectedInterval]);
 
