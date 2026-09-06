@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Literal
 from uuid import uuid4
 
 from fastapi import (
     FastAPI,
+    Header,
     HTTPException,
     Query,
     Request,
@@ -54,6 +55,7 @@ from ..market_data import (
     LiveMarketDataProvider,
     build_market_data_provider,
 )
+from ..paper import PaperOrderCommand, PaperTradingService, SQLitePaperRepository
 from ..strategy import (
     SUPPORTED_STRATEGIES,
     analyze_strategies,
@@ -119,6 +121,19 @@ class AdminUserUpdate(BaseModel):
     trading_mode: TradingMode
 
 
+class PaperOrderCreate(BaseModel):
+    strategy_id: str = "manual"
+    strategy_version: int = 1
+    side: Literal["buy", "sell"]
+    quantity: int = 1
+    stop_loss_price: float | None = None
+    reduce_only: bool = False
+
+
+class PaperControlRequest(BaseModel):
+    reason: str
+
+
 def _required_permission(method: str, path: str) -> str | None:
     """Map HTTP resources to permissions; unknown API routes fail closed."""
     if path in {"/api/me", "/api/access-requests"}:
@@ -147,6 +162,12 @@ def _required_permission(method: str, path: str) -> str | None:
             if method == "GET"
             else "strategy.write.own"
         )
+    if path.startswith("/api/paper/orders"):
+        return "orders.paper" if method == "POST" else "positions.read.own"
+    if path.startswith("/api/paper/kill-switch"):
+        return "orders.paper"
+    if path.startswith("/api/paper"):
+        return "positions.read.own"
     if path.startswith("/api/"):
         return "__deny_unknown_api__"
     return None
@@ -291,6 +312,8 @@ def create_app(
         TradingCalendar(config.holidays), config.history_limit,
         history_provider=history_provider,
     )
+    paper = PaperTradingService(SQLitePaperRepository(config.db_path))
+    service.add_bar_listener(paper.on_bar)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -299,19 +322,22 @@ def create_app(
             yield
         finally:
             await service.stop()
+            service.remove_bar_listener(paper.on_bar)
+            paper.close()
             repo.close()
             identity_repo.close()
 
     app = FastAPI(
         title="TMF Live Market API",
-        version="0.8.0",
-        description="Provider-neutral quote service; no order endpoints.",
+        version="0.9.0",
+        description="Provider-neutral market data and isolated paper trading API.",
         lifespan=lifespan,
     )
     app.state.market_service = service
     app.state.repository = repo
     app.state.auth_repository = identity_repo
     app.state.auth_service = auth_service
+    app.state.paper_trading = paper
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(config.allowed_origins),
@@ -555,6 +581,93 @@ def create_app(
     @app.get("/api/admin/audit")
     def admin_audit(limit: int = Query(200, ge=1, le=1000)):
         return {"events": identity_repo.audit_events(limit)}
+
+    @app.get("/api/paper/account")
+    def paper_account(request: Request):
+        owner_id = request.state.auth_user.user_id
+        return {
+            "mode": "paper",
+            "account": paper.account(owner_id),
+            "positions": paper.positions(owner_id),
+        }
+
+    @app.get("/api/paper/orders")
+    def paper_orders(request: Request):
+        return {"orders": paper.orders(request.state.auth_user.user_id)}
+
+    @app.get("/api/paper/fills")
+    def paper_fills(
+        request: Request, limit: int = Query(200, ge=1, le=1000)
+    ):
+        return {"fills": paper.fills(request.state.auth_user.user_id)[:limit]}
+
+    @app.get("/api/paper/events")
+    def paper_events(
+        request: Request, limit: int = Query(200, ge=1, le=1000)
+    ):
+        return {
+            "events": paper.repository.events(
+                request.state.auth_user.user_id, limit
+            )
+        }
+
+    @app.post("/api/paper/orders", status_code=201)
+    def create_paper_order(
+        payload: PaperOrderCreate,
+        request: Request,
+        idempotency_key: str = Header(..., alias="Idempotency-Key"),
+    ):
+        latest = repo.latest(config.symbol, 1)
+        if not latest:
+            raise HTTPException(
+                status_code=503, detail="market price is not available"
+            )
+        quote_age = datetime.now(latest[0].received_time.tzinfo) - latest[0].received_time
+        if quote_age > timedelta(minutes=2):
+            raise HTTPException(
+                status_code=503, detail="market price is stale"
+            )
+        try:
+            order, created = paper.submit(
+                request.state.auth_user,
+                PaperOrderCommand(
+                    strategy_id=payload.strategy_id.strip(),
+                    strategy_version=payload.strategy_version,
+                    side=payload.side,
+                    quantity=payload.quantity,
+                    stop_loss_price=payload.stop_loss_price,
+                    reduce_only=payload.reduce_only,
+                ),
+                idempotency_key=idempotency_key,
+                market_bar=latest[0],
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"created": created, "order": order}
+
+    @app.post("/api/paper/kill-switch")
+    def activate_paper_kill_switch(
+        payload: PaperControlRequest, request: Request
+    ):
+        try:
+            paper.activate_kill_switch(
+                request.state.auth_user.user_id, payload.reason.strip()
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return paper.account(request.state.auth_user.user_id)
+
+    @app.post("/api/paper/kill-switch/reset")
+    def reset_paper_kill_switch(
+        payload: PaperControlRequest, request: Request
+    ):
+        try:
+            paper.reset_kill_switch(
+                request.state.auth_user.user_id, payload.reason.strip()
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return paper.account(request.state.auth_user.user_id)
 
     @app.get("/api/kbars")
     async def kbars(

@@ -415,6 +415,14 @@ class SimulatedBroker:
         self._last_close: dict[tuple[str, str], float] = {}
         self._bars_with_fills: set[str] = set()
 
+    def update_market_price(self, symbol: str, contract: str, price: float) -> None:
+        """Seed the latest server-side market price for an immediate paper fill."""
+        if not symbol or not contract:
+            raise ValueError("symbol and contract are required")
+        if price <= 0:
+            raise ValueError("market price must be positive")
+        self._last_close[(symbol, contract)] = price
+
     def on_order(self, event: DomainEvent) -> None:
         if not isinstance(event, OrderIntent):
             raise TypeError("SimulatedBroker.on_order requires OrderIntent")

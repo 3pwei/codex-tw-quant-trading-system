@@ -244,15 +244,29 @@ Setup、Entry 與 Exit 都能加入多條基本策略規則，個別選擇 `1m`�
 - `GET /api/backtest-runs/{run_id}`
 - `DELETE /api/backtest-runs/{run_id}`（永久刪除並解除該筆策略版本引用）
 
-目前仍是研究與行情觀察階段：組合策略可在 Live／Replay 資料上呼叫相同訊號
-核心，也可執行歷史回測，但不會連接 Broker 下單。
+目前可執行研究回測與平台內 Paper Trading，但不會連接外部 Broker 或送出真實
+委託。組合策略可在 Live／Replay 資料上呼叫相同訊號核心。
 
 `tw_quant/events/` 是 Level 2 的事件骨幹，Backtest 與 Replay 現已透過
 `run_historical_events()` 共用 Signal → Order → Risk → Fill → Position/PnL 管線。
 研究模式會明確注入 `ResearchRiskGate`，其事件絕不連接外部券商；Paper Trading
-仍須注入 `AccountRiskGate`，且帳號為 active、paper 模式並具有 `orders.paper`
-權限才會核准。既有 Backtest／Replay API 欄位維持相容，另提供事件計數及 Replay
+注入 `AccountRiskGate`，且帳號為 active、paper 模式並具有 `orders.paper` 權限
+才會核准。既有 Backtest／Replay API 欄位維持相容，另提供事件計數及 Replay
 execution audit events。
+
+Paper API 的委託價格、契約、owner、權限及交易模式全部由伺服器取得，瀏覽器不能
+指定。每次 `POST /api/paper/orders` 必須帶 `Idempotency-Key`，避免網路重試或手機
+重複點擊產生第二筆委託。模擬市價單會以伺服器最新行情套用滑價與成本，依序產生
+Order → Risk → Fill → Position 事件並保存到 SQLite；風控拒絕時只留下拒絕紀錄。
+
+相關 API：
+
+- `GET /api/paper/account`
+- `GET|POST /api/paper/orders`
+- `GET /api/paper/fills`
+- `GET /api/paper/events`
+- `POST /api/paper/kill-switch`
+- `POST /api/paper/kill-switch/reset`
 
 ### Mock／Replay 本機啟動
 

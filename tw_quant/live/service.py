@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime
+from typing import Callable
 
 from ..market import (
     DEFAULT_CALENDAR,
     TAIPEI,
     ConnectionStatus,
+    KBar,
     TickEvent,
     TradingCalendar,
     isoformat_millis,
@@ -49,6 +51,15 @@ class LiveMarketService:
         self._worker: asyncio.Task | None = None
         self._heartbeat: asyncio.Task | None = None
         self._running = False
+        self._bar_listeners: list[Callable[[KBar], None]] = []
+
+    def add_bar_listener(self, listener: Callable[[KBar], None]) -> None:
+        if listener not in self._bar_listeners:
+            self._bar_listeners.append(listener)
+
+    def remove_bar_listener(self, listener: Callable[[KBar], None]) -> None:
+        if listener in self._bar_listeners:
+            self._bar_listeners.remove(listener)
 
     def enqueue_tick(self, tick: TickEvent) -> None:
         try:
@@ -115,6 +126,8 @@ class LiveMarketService:
             for bar in result.bars:
                 self.repository.save(bar)
                 self.hub.publish(bar.to_message(self.connection_status))
+                for listener in tuple(self._bar_listeners):
+                    listener(bar)
             self.queue.task_done()
 
     async def _run_heartbeat(self) -> None:
