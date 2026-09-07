@@ -25,7 +25,9 @@ class MarketDataSettingsTests(unittest.TestCase):
         self.assertEqual(settings.provider, "replay")
 
     def test_legacy_mock_mode_maps_to_replay_provider(self):
-        with patch.dict("os.environ", {"MARKET_MODE": "mock"}, clear=True):
+        with patch.dict("os.environ", {
+            "PLATFORM_ENVIRONMENT": "development", "MARKET_MODE": "mock",
+        }, clear=True):
             settings = LiveSettings.from_env()
         self.assertEqual(settings.market_data.provider, "replay")
         self.assertEqual(settings.mode, "mock")

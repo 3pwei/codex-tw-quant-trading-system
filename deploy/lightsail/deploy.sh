@@ -48,7 +48,21 @@ fi
 docker compose \
   --env-file "${COMPOSE_ENV}" \
   -f "${COMPOSE_FILE}" \
-  up --build --detach --remove-orphans
+  build
+
+# Validate the target image with the server's real environment before replacing
+# the currently healthy containers. A missing production auth setting must stop
+# the deployment instead of silently enabling the local-development bypass.
+docker compose \
+  --env-file "${COMPOSE_ENV}" \
+  -f "${COMPOSE_FILE}" \
+  run --rm --no-deps market-api python -c \
+  'from tw_quant.live.settings import LiveSettings; LiveSettings.from_env().validate()'
+
+docker compose \
+  --env-file "${COMPOSE_ENV}" \
+  -f "${COMPOSE_FILE}" \
+  up --no-build --detach --remove-orphans
 
 docker compose \
   --env-file "${COMPOSE_ENV}" \

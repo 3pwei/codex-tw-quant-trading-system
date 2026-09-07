@@ -12,6 +12,7 @@ class LiveSettingsTests(unittest.TestCase):
 
     def test_cloudflare_access_settings_load_from_environment(self):
         environment = {
+            "PLATFORM_ENVIRONMENT": "development",
             "MARKET_ACCESS_MODE": "cloudflare",
             "CF_ACCESS_TEAM_DOMAIN": "example.cloudflareaccess.com",
             "CF_ACCESS_AUD": "audience-tag",
@@ -28,6 +29,7 @@ class LiveSettingsTests(unittest.TestCase):
 
     def test_history_settings_load_and_validate(self):
         with patch.dict("os.environ", {
+            "PLATFORM_ENVIRONMENT": "development",
             "MARKET_HISTORY_DAYS": "14",
             "MARKET_HISTORY_LIMIT": "800",
         }, clear=True):
@@ -41,7 +43,10 @@ class LiveSettingsTests(unittest.TestCase):
 
     def test_market_stale_threshold_loads_and_validates(self):
         with patch.dict(
-            "os.environ", {"MARKET_STALE_AFTER_SECONDS": "45"}, clear=True
+            "os.environ", {
+                "PLATFORM_ENVIRONMENT": "development",
+                "MARKET_STALE_AFTER_SECONDS": "45",
+            }, clear=True
         ):
             settings = LiveSettings.from_env()
         self.assertEqual(settings.stale_after_seconds, 45)
@@ -50,6 +55,7 @@ class LiveSettingsTests(unittest.TestCase):
 
     def test_market_data_settings_are_composed_not_flattened(self):
         with patch.dict("os.environ", {
+            "PLATFORM_ENVIRONMENT": "development",
             "MARKET_DATA_PROVIDER": "replay",
             "MARKET_SYMBOL": "TMF",
         }, clear=True):
@@ -62,6 +68,7 @@ class LiveSettingsTests(unittest.TestCase):
 
     def test_authorization_foundation_loads_bootstrap_admins(self):
         with patch.dict("os.environ", {
+            "PLATFORM_ENVIRONMENT": "development",
             "PLATFORM_AUTHORIZATION_MODE": "enforced",
             "PLATFORM_BOOTSTRAP_ADMIN_EMAILS": (
                 "Owner@Example.com, second@example.com"
@@ -81,6 +88,40 @@ class LiveSettingsTests(unittest.TestCase):
             ValueError, "PLATFORM_BOOTSTRAP_ADMIN_EMAILS"
         ):
             settings.validate()
+
+    def test_environment_defaults_to_fail_closed_production(self):
+        with patch.dict("os.environ", {}, clear=True):
+            settings = LiveSettings.from_env()
+        self.assertEqual(settings.environment, "production")
+        with self.assertRaisesRegex(
+            ValueError, "production requires MARKET_ACCESS_MODE=cloudflare"
+        ):
+            settings.validate()
+
+    def test_production_rejects_disabled_platform_authorization(self):
+        settings = LiveSettings(
+            environment="production",
+            access_mode="cloudflare",
+            cloudflare_access_team_domain="example.cloudflareaccess.com",
+            cloudflare_access_audience="audience-tag",
+            authorization_mode="disabled",
+            bootstrap_admin_emails=("owner@example.com",),
+        )
+        with self.assertRaisesRegex(
+            ValueError,
+            "production requires PLATFORM_AUTHORIZATION_MODE=enforced",
+        ):
+            settings.validate()
+
+    def test_secure_production_authorization_is_valid(self):
+        LiveSettings(
+            environment="production",
+            access_mode="cloudflare",
+            cloudflare_access_team_domain="example.cloudflareaccess.com",
+            cloudflare_access_audience="audience-tag",
+            authorization_mode="enforced",
+            bootstrap_admin_emails=("owner@example.com",),
+        ).validate()
 
 
 if __name__ == "__main__":
