@@ -56,13 +56,32 @@ docker compose \
 docker compose \
   --env-file "${COMPOSE_ENV}" \
   -f "${COMPOSE_FILE}" \
-  run --rm --no-deps market-api python -c \
+  run --rm --no-deps -T market-api python -c \
   'from tw_quant.live.settings import LiveSettings; LiveSettings.from_env().validate()'
 
 docker compose \
   --env-file "${COMPOSE_ENV}" \
   -f "${COMPOSE_FILE}" \
-  up --no-build --detach --remove-orphans
+  up --no-build --detach --remove-orphans --force-recreate
+
+for service in market-api gateway; do
+  built_image="$(docker compose \
+    --env-file "${COMPOSE_ENV}" \
+    -f "${COMPOSE_FILE}" images -q "${service}")"
+  container_id="$(docker compose \
+    --env-file "${COMPOSE_ENV}" \
+    -f "${COMPOSE_FILE}" ps -q "${service}")"
+  if [[ -z "${built_image}" || -z "${container_id}" ]]; then
+    echo "${service} image or running container is missing" >&2
+    exit 1
+  fi
+  expected_image="$(docker image inspect --format '{{.Id}}' "${built_image}")"
+  running_image="$(docker inspect --format '{{.Image}}' "${container_id}")"
+  if [[ "${running_image}" != "${expected_image}" ]]; then
+    echo "${service} is not running the newly built image" >&2
+    exit 1
+  fi
+done
 
 docker compose \
   --env-file "${COMPOSE_ENV}" \
