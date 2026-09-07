@@ -78,7 +78,6 @@ export default function HistoryDashboard() {
         if (!response.ok) throw new Error(body.detail ?? "無法取得回測紀錄");
         setRuns(body.runs);
         setHasMore(Boolean(body.has_more));
-        if (body.runs.length) void loadDetail(body.runs[0].run_id).catch(reason => setError(reason instanceof Error ? reason.message : "無法取得回測明細"));
       } catch (reason) { setError(reason instanceof Error ? reason.message : "無法取得回測紀錄"); }
       finally { setLoading(false); }
     })();
@@ -121,7 +120,7 @@ export default function HistoryDashboard() {
       {notice && <div className="history-notice">{notice}</div>}
       {error && <div className="live-error">{error}</div>}
       {detailLoading && <div className="panel history-loading">正在讀取回測明細…</div>}
-      {!detailLoading && !detail && runs.length > 0 && <div className="feature-state panel"><span>HISTORY</span><h2>請選擇一筆回測紀錄</h2></div>}
+      {!detailLoading && !detail && runs.length > 0 && <div className="feature-state panel"><span>HISTORY READY</span><h2>清單已載入，請選擇一筆回測紀錄</h2><p>完整交易與績效明細只會在點選後載入。</p></div>}
       {!detailLoading && detail && <>
       <header className="panel history-detail-head"><div><span>BACKTEST RUN · {detail.run_id.slice(0, 8)}</span><h2>{detail.strategy_name}{detail.strategy_version ? ` · v${detail.strategy_version}` : ""}</h2><p>{detail.symbol} · {detail.start_date} ～ {detail.end_date} · {formatTime(detail.created_at)}</p></div><div className="history-result-actions"><strong className={net >= 0 ? "profit" : "loss"}>{signedMoney(net)}</strong><button type="button" disabled={deleting} onClick={() => void deleteRun()}>{deleting ? "刪除中…" : "永久刪除"}</button></div></header>
       <div className="history-metrics"><article><span>總報酬</span><b>{decimal.format(Number(summary.return_pct ?? 0))}%</b></article><article><span>最大回撤</span><b>{decimal.format(Number(summary.max_drawdown_pct ?? 0))}%</b></article><article><span>勝率</span><b>{decimal.format(Number(summary.win_rate_pct ?? 0))}%</b></article><article><span>交易次數</span><b>{detail.trade_count}</b></article><article><span>Profit Factor</span><b>{summary.profit_factor == null ? "N/A" : decimal.format(Number(summary.profit_factor))}</b></article></div>
