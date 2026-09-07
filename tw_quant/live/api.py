@@ -70,8 +70,9 @@ from ..strategy import (
     validate_composite_definition,
     validate_strategy_parameters,
 )
-from .service import LiveMarketService
 from .monitoring import HostResourceMonitor
+from .rate_limit import RateLimitDecision, RateLimitRule, SlidingWindowRateLimiter
+from .service import LiveMarketService
 from .settings import LiveSettings
 from .storage import (
     DEFAULT_OWNER_ID,
@@ -217,6 +218,41 @@ def _page_permission(path: str) -> str | None:
     return None
 
 
+def _rate_limit_scope(method: str, path: str) -> str | None:
+    if method == "POST" and path == "/api/access-requests":
+        return "access_requests"
+    if (
+        (
+            method == "GET"
+            and path in {"/api/backtest", "/api/composite-backtest"}
+        )
+        or (method == "POST" and path == "/api/backtest-runs")
+    ):
+        return "backtests"
+    if method == "POST" and path == "/api/replay/prepare":
+        return "replay_prepares"
+    if method == "POST" and (
+        path == "/api/paper/orders"
+        or (
+            path.startswith("/api/replay/sessions/")
+            and path.endswith("/orders")
+        )
+    ):
+        return "orders"
+    return None
+
+
+def _rate_limit_headers(decision: RateLimitDecision) -> dict[str, str]:
+    headers = {
+        "X-RateLimit-Limit": str(decision.limit),
+        "X-RateLimit-Remaining": str(decision.remaining),
+        "X-RateLimit-Reset": str(decision.reset_after),
+    }
+    if not decision.allowed:
+        headers["Retry-After"] = str(decision.retry_after)
+    return headers
+
+
 def _authorization_denied_response(
     original_uri: str, error: AuthorizationError
 ) -> Response:
@@ -312,6 +348,7 @@ def create_app(
     repository: BarRepository | None = None,
     access_validator: AccessValidator | None = None,
     auth_repository: SQLiteAuthRepository | None = None,
+    rate_limiter: SlidingWindowRateLimiter | None = None,
 ) -> FastAPI:
     config = settings or LiveSettings.from_env()
     config.validate()
@@ -350,6 +387,22 @@ def create_app(
     paper = PaperTradingService(SQLitePaperRepository(config.db_path))
     replay_trading = ReplayTradingSessionRegistry()
     host_monitor = HostResourceMonitor(Path(config.db_path))
+    limiter = rate_limiter or SlidingWindowRateLimiter(
+        {
+            "access_requests": RateLimitRule(
+                config.rate_limit_access_requests_per_hour, 60 * 60
+            ),
+            "backtests": RateLimitRule(
+                config.rate_limit_backtests_per_minute, 60
+            ),
+            "replay_prepares": RateLimitRule(
+                config.rate_limit_replay_prepares_per_minute, 60
+            ),
+            "orders": RateLimitRule(
+                config.rate_limit_orders_per_minute, 60
+            ),
+        }
+    )
     service.add_bar_listener(paper.on_bar)
 
     @asynccontextmanager
@@ -378,6 +431,7 @@ def create_app(
     app.state.paper_trading = paper
     app.state.replay_trading = replay_trading
     app.state.host_monitor = host_monitor
+    app.state.rate_limiter = limiter
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(config.allowed_origins),
@@ -466,16 +520,39 @@ def create_app(
                         "missing authenticated request identity"
                     )
                 request.state.access_identity = identity
-                return await call_next(request)
-            user = user_from_headers(request.headers)
-            if permission:
-                auth_service.require_permission(user, permission)
-            request.state.auth_user = user
+                actor = identity.subject
+            else:
+                user = user_from_headers(request.headers)
+                if permission:
+                    auth_service.require_permission(user, permission)
+                request.state.auth_user = user
+                actor = user.user_id
         except AccessTokenError as exc:
-            return JSONResponse({"detail": str(exc)}, status_code=401)
+            return JSONResponse(
+                {"detail": str(exc)},
+                status_code=401,
+                headers={"Cache-Control": "no-store"},
+            )
         except AuthorizationError as exc:
-            return JSONResponse({"detail": str(exc)}, status_code=403)
-        return await call_next(request)
+            return JSONResponse(
+                {"detail": str(exc)},
+                status_code=403,
+                headers={"Cache-Control": "no-store"},
+            )
+        scope = _rate_limit_scope(request.method, request.url.path)
+        if scope is None:
+            return await call_next(request)
+        decision = limiter.check(scope, actor)
+        headers = _rate_limit_headers(decision)
+        if not decision.allowed:
+            return JSONResponse(
+                {"detail": "rate limit exceeded", "scope": scope},
+                status_code=429,
+                headers={**headers, "Cache-Control": "no-store"},
+            )
+        response = await call_next(request)
+        response.headers.update(headers)
+        return response
 
     @app.get("/health/live", include_in_schema=False)
     async def liveness():
@@ -543,6 +620,7 @@ def create_app(
             "system_status": system_status(market, paper_health, host),
             "paper_trading": paper_health,
             "host": host,
+            "rate_limiting": limiter.stats(),
         }
 
     @app.get("/api/admin/access-requests")
