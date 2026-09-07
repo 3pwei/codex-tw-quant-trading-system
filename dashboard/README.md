@@ -7,7 +7,7 @@ Dashboard 採功能導向 URL：
 | `/` | 系統總覽、目前行情與策略狀態 | 可使用 |
 | `/trade/` | 交易工作台 | 即時多週期 K 線、Paper 委託、持倉／損益、Kill Switch 與成交紀錄 |
 | `/backtest/` | 動態歷史回測 | 可使用 |
-| `/replay/` | 動態歷史回放 | 單日盤次快照、策略訊號、播放與逐根控制 |
+| `/replay/` | 動態歷史回放 | 單日盤次快照、策略訊號、虛擬時鐘與隔離的 Replay 模擬交易 |
 | `/history/` | 回測／交易執行紀錄 | 查詢、篩選、明細與永久刪除 |
 | `/strategies/` | 11 套基本策略與風險規則 | 可輸入並儲存參數 |
 | `/composite-strategies/` | 組合策略清單、版本與封存管理 | 可新增、搜尋、編輯與回測 |
@@ -21,6 +21,10 @@ Dashboard 採功能導向 URL：
 策略管理頁透過 `GET /api/strategies` 載入欄位規格，並以
 `PUT /api/strategies/{strategy}` 儲存到後端 SQLite；Live、Replay 與 Backtest
 下一次分析時都會使用這份共用設定。
+
+`/replay/` 建立快照時也會建立獨立 Replay Trading Session。下單價格與時間由
+伺服器目前游標決定，持倉、委託及成交只保存在該 Session 的暫存事件庫；時間軸
+倒退會清空 Replay 帳戶，且任何操作都不會寫入 `/trade/` 使用的正式 Paper 帳戶。
 
 `/trade/` 是唯一的即時交易入口。圖表與 Paper 委託票共用同一條 WebSocket
 行情，Paper 帳戶資料則每 5 秒更新；舊 `/live/`、`/paper/` 會自動導向工作台。

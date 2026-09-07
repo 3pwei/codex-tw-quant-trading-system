@@ -1,6 +1,6 @@
 # 台股分鐘線當沖量化回測 MVP
 
-這是一套可直接執行、可逐步擴充的 Python 回測與行情 Dashboard 骨架。行情來源透過 provider-neutral 介面接入，目前提供永豐 Shioaji 與 Mock Replay Adapter；微型臺指期貨 TMF Tick 會聚合成共用 1 分 K。目前只有行情，沒有任何下單端點或下單程式碼。
+這是一套可直接執行、可逐步擴充的 Python 回測與行情 Dashboard 骨架。行情來源透過 provider-neutral 介面接入，目前提供永豐 Shioaji 與 Mock Replay Adapter；微型臺指期貨 TMF Tick 會聚合成共用 1 分 K。平台提供隔離的 Paper 與 Replay 模擬下單，但不會送出任何外部券商委託。
 
 > 本專案僅供研究與工程驗證，不構成投資建議。合成示範資料不能用來判斷策略獲利能力。
 
@@ -79,6 +79,7 @@ CSV 1 分 K
 | `tw_quant/execution/event_simulator.py` | 統一事件引擎的模擬券商、訂單狀態與部位／PnL 帳本 |
 | `docs/level2-operations.md` | Level 2 重啟復原、監控、效能預算與正式驗收清單 |
 | `docs/paper-trading-guide.md` | Paper Trading 使用者操作與拒絕處理 |
+| `docs/replay-trading-guide.md` | Replay Trading 虛擬時鐘、下單與隔離規則 |
 | `docs/disaster-recovery.md` | FastAPI、主機與 SQLite 故障復原程序 |
 | `docs/deployment-acceptance-checklist.md` | 每次上線可留存的正式驗收清單 |
 | `docs/level2-definition-of-done.md` | Level 2 能力、效能門檻與完成證據 |
@@ -277,6 +278,19 @@ Trader 與具有明確 Paper 權限的 Admin 可由 `/trade/` 查看即時圖表
 - `GET /api/paper/events`
 - `POST /api/paper/kill-switch`
 - `POST /api/paper/kill-switch/reset`
+
+Replay 準備快照時會同時建立短生命週期的使用者專屬交易 Session。Session 使用
+獨立暫存 SQLite 事件庫及虛擬時鐘，重用 Paper 的成本、風控與模擬撮合元件，但
+不連接即時行情，也不讀寫正式 Paper Repository。相關 API：
+
+- `GET /api/replay/sessions/{session_id}`
+- `PUT /api/replay/sessions/{session_id}/cursor`
+- `POST /api/replay/sessions/{session_id}/orders`
+- `POST /api/replay/sessions/{session_id}/reset`
+
+時間軸向前時會逐根更新持倉損益；向後移動會建立新的空白 Replay 帳戶並清除舊
+委託與成交，防止 future leakage。每位使用者只保留最近 3 個 Session，服務重啟
+後自動清除。詳細操作見 [Replay Trading 操作手冊](docs/replay-trading-guide.md)。
 
 Level 2 短版效能驗收可執行：
 
