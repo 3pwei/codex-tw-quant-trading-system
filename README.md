@@ -1,333 +1,112 @@
-# 台股分鐘線當沖量化回測 MVP
+# TMF Level 2 系統化量化交易平台
 
-這是一套可直接執行、可逐步擴充的 Python 回測與行情 Dashboard 骨架。行情來源透過 provider-neutral 介面接入，目前提供永豐 Shioaji 與 Mock Replay Adapter；微型臺指期貨 TMF Tick 會聚合成共用 1 分 K。平台提供隔離的 Paper 與 Replay 模擬下單，但不會送出任何外部券商委託。
+[![CI](https://github.com/3pwei/codex-tw-quant-trading-system/actions/workflows/ci.yml/badge.svg)](https://github.com/3pwei/codex-tw-quant-trading-system/actions/workflows/ci.yml)
 
-> 本專案僅供研究與工程驗證，不構成投資建議。合成示範資料不能用來判斷策略獲利能力。
+以微型臺指期貨（TMF）為核心的研究與 Paper Trading 平台，整合 Shioaji 即時行情、歷史回測、動態回放、多週期策略、事件驅動模擬成交、帳戶風控及監控。正式環境部署於 AWS Lightsail，使用 Cloudflare Access 保護入口。
 
-## 已完成
+> 本專案僅供研究與工程驗證，不構成投資建議。目前不會向外部券商送出真實委託。
 
-- 讀取與驗證台股 1 分 K CSV，統一使用 `Asia/Taipei`
-- 開盤區間突破（Opening Range Breakout, ORB）策略
-- BNF 均值回歸策略（20 期均線／標準差、Z-score 與 RSI 確認）
-- 訊號於當根收盤產生，下一根開盤成交，避免未來函數
-- 多方，以及可選擇啟用的空方回測
-- 停損、停利、13:20 強制平倉（皆可調整）
-- 同一根 K 棒同時觸發停損／停利時，保守採停損優先
-- 台股手續費、最低手續費、當沖賣出交易稅與滑價
-- 交易明細、權益曲線、JSON 摘要與 PNG 圖表
-- 不依賴 `pytest` 的 `unittest` 測試
-- Shioaji TMF Tick callback → Queue → Worker 的非阻塞行情管線
-- 即時 1 分 K、SQLite、FastAPI REST/WebSocket 與獨立 heartbeat
-- 無憑證可執行的 Mock/Replay 模式
-- Next.js + TradingView Lightweight Charts 即時 K 線頁面
-- 11 套基本策略的 Multi-select 策略圖層與即時訊號標記
-- 策略管理頁可調整各策略與停損停利參數，SQLite 持久化後供即時與回測共用
-- 無程式碼多週期策略組合器：Setup／Entry／Exit／Risk、ALL／ANY 與版本追蹤
-- 具型別的統一事件模型、可重現事件 ID、虛擬時鐘與確定性事件迴圈
-- 事件式模擬成交與部位帳本：下一根開盤、期貨成本、多空、PnL、時段／換月平倉
-- Paper-only 帳戶風控：權限、部位／單筆／每日限制、連敗冷卻與 Kill Switch
+## 核心能力
 
-## 架構
-
-行情與券商帳戶採用不同邊界。Strategy、K 棒聚合、Replay、Backtest、REST、
-WebSocket 與 Dashboard 只依賴標準 `TickEvent`／`KBar`，不依賴 Shioaji SDK：
-
-```text
-Shioaji / Replay / future provider
-  → MarketDataProvider
-  → Tick Queue → 1m KBar → SQLite
-  → Typed Events → Strategy / Risk / Execution / Position
-  → Backtest / Replay / Paper（分階段接入）
-  → REST / WebSocket / Dashboard
-
-TradeSignal → Risk → ExecutionSimulator
-                         └→ BrokerAccount / OrderExecutor（未來，現在 Disabled）
-```
-
-即使未來同一家券商同時提供行情與下單，也必須以兩個 Adapter、兩組設定與
-獨立生命週期接入。個人 Shioaji 行情只適合私人測試；多人平台仍需另行確認行情
-展示與轉發授權，本架構解耦不代表自動取得轉授權。
-
-```text
-CSV 1 分 K
-  → 資料驗證與交易時段過濾
-  → 策略產生 entry signal
-  → 下一根 K 棒開盤撮合
-  → 停損／停利／收盤前平倉
-  → 手續費、交易稅與滑價
-  → trades / equity / summary / chart
-```
-
-主要模組：
-
-| 檔案 | 功能 |
+| 領域 | 已完成 |
 |---|---|
-| `tw_quant/data.py` | CSV 載入、時區與 OHLCV 品質檢查 |
-| `tw_quant/strategy/definitions.py` | ORB 與 BNF 均值回歸策略定義 |
-| `tw_quant/engine.py` | 事件式撮合、部位、風控與交易紀錄 |
-| `tw_quant/costs.py` | 台股交易成本與滑價 |
-| `tw_quant/metrics.py` | 勝率、淨利、PF、回撤與日頻 Sharpe |
-| `tw_quant/report.py` | 儲存 CSV、JSON 與權益曲線圖 |
-| `tw_quant/market/` | Live、Replay、CSV 共用的 Tick／KBar 與交易時段模型 |
-| `tw_quant/events/` | 統一事件契約、虛擬時鐘、去重與確定性執行迴圈 |
-| `tw_quant/strategy/engine.py` | 與資料來源無關的基本策略分析器 |
-| `tw_quant/strategy/parameters.py` | 共用參數規格、預設值與後端驗證 |
-| `tw_quant/strategy/composite.py` | 多週期規則驗證、原子訊號組合與共用執行核心 |
-| `tw_quant/risk/engine.py` | 共用停損、停利價格與觸發優先序 |
-| `tw_quant/risk/account.py` | Paper 權限、帳戶級限制、Kill Switch 與風控稽核 |
-| `tw_quant/execution/simulator.py` | 下一根開盤、風險出場與時段平倉模擬 |
-| `tw_quant/execution/event_simulator.py` | 統一事件引擎的模擬券商、訂單狀態與部位／PnL 帳本 |
-| `docs/level2-operations.md` | Level 2 重啟復原、監控、效能預算與正式驗收清單 |
-| `docs/paper-trading-guide.md` | Paper Trading 使用者操作與拒絕處理 |
-| `docs/replay-trading-guide.md` | Replay Trading 虛擬時鐘、下單與隔離規則 |
-| `docs/disaster-recovery.md` | FastAPI、主機與 SQLite 故障復原程序 |
-| `docs/deployment-acceptance-checklist.md` | 每次上線可留存的正式驗收清單 |
-| `docs/level2-definition-of-done.md` | Level 2 能力、效能門檻與完成證據 |
-| `tw_quant/backtest/runner.py` | 成本、交易、權益與績效報表 |
-| `tw_quant/market_data/ports.py` | 即時／歷史行情 Provider 介面與能力宣告 |
-| `tw_quant/market_data/factory.py` | Provider 組裝點；FastAPI 不認識供應商實作 |
-| `tw_quant/market_data/providers/` | Shioaji quote-only 與 Mock Replay Adapter |
-| `tw_quant/broker/` | 獨立 Broker／Order 介面；目前只提供拒絕下單的 DisabledBroker |
-| `tw_quant/live/feed.py` | 舊行情 import 相容層；新程式不應使用 |
-| `tw_quant/live/aggregator.py` | Tick 去重、亂序政策、缺漏分鐘與即時 1 分 K |
-| `tw_quant/live/storage.py` | SQLite repository；介面可替換 PostgreSQL |
-| `tw_quant/live/api.py` | FastAPI REST、WebSocket 與健康檢查 |
-| `tw_quant/live/models.py` | 舊匯入相容層；新程式不應使用 |
-| `tw_quant/live/strategy_analysis.py` | 舊策略名稱相容層；新程式不應使用 |
-| `tw_quant/live/backtest.py` | 舊回測名稱相容層；新程式不應使用 |
-| `tw_quant/futures.py` | 期交所逐筆 CSV 匯入與標準 KBar 轉換 |
-| `tw_quant/futures_costs.py` | 各 TMF 回測入口共用的契約乘數、手續費、稅與滑價 |
-| `dashboard/app/trade/` | 統一交易工作台路由；即時圖表與 Paper 委託同頁操作 |
-| `dashboard/app/live/` | 工作台共用行情連線、K 線、成交量、狀態與自動重連前端 |
-| `dashboard/app/strategies/` | 基本策略參數輸入、驗證訊息與儲存介面 |
-| `dashboard/app/composite-strategies/` | 組合策略清單、版本管理與獨立編輯流程 |
+| 行情 | Shioaji quote-only、Mock Replay、Tick callback → Queue → Worker、1 分 K 聚合、WebSocket |
+| 週期 | `1m`、`5m`、`10m`、`15m`、`30m`、`1h`、`1d`、`1w`，共用同一份 1 分 K 資料 |
+| 策略 | 11 套基本策略、多週期 Setup／Entry／Exit／Risk、ALL／ANY、三層組合策略引用 |
+| 版本 | 不可變版本、參數快照、名稱唯一、封存、引用保護及回測追溯 |
+| 執行 | Backtest／Replay／Paper 共用 Signal → Order → Risk → Fill → Position/PnL 事件語意 |
+| 風控 | 帳戶與資料隔離、停損停利、部位／每日限制、連敗冷卻、Kill Switch、行情過期禁止新倉 |
+| 平台 | Cloudflare OTP、FastAPI RBAC、申請與審核、Rate Limit、Request Size Limit、稽核紀錄 |
+| 穩定性 | 重啟復原、SQLite verified backup、Queue／WebSocket／DB／主機監控、五種服務狀態 |
+| UI | `/trade/` 整合即時圖表與 Paper 下單；成交點、均價、停損線、手機 Bottom Sheet |
+| 部署 | Docker、Caddy、AWS Lightsail、GitHub Actions、Python 套件鎖定 |
 
-## 安裝
+Level 2 工程能力已實作；每個正式候選版本仍須依 [Level 2 完成標準](docs/level2-definition-of-done.md) 留存四小時 soak 與人工驗收證據。本平台不宣稱具備實盤券商整合或 HFT 能力。
 
-支援 Python 3.10 至 3.12。專案以 `uv.lock` 固定 Python 套件版本，開發、CI 與正式 Docker 映像皆使用同一份鎖定結果。
+## 系統架構
+
+```mermaid
+flowchart TD
+    A["Shioaji quote-only 或 Replay"] --> B["MarketDataProvider"]
+    B --> C["Tick Queue 與 K 棒 Worker"]
+    C --> D["SQLite 1 分 K 與事件紀錄"]
+    D --> E["Strategy、Risk、Execution"]
+    E --> F["Backtest、Replay、Paper"]
+    F --> G["FastAPI REST 與 WebSocket"]
+    G --> H["Next.js 交易工作台"]
+```
+
+- 行情 Provider 與 Broker／Order Executor 是獨立邊界；Shioaji 憑證只用於行情。
+- Tick callback 只做正規化與非阻塞入 Queue，不寫 DB、不算指標、不推送前端。
+- Live、Replay、Backtest 共用 `KBar` 與策略；Backtest、Replay、Paper 共用事件、風控及成本模型。
+- 行情資料全平台共用；策略、版本、回測與 Paper 資料依 `owner_user_id` 隔離。
+
+主要程式位置：
+
+| 路徑 | 職責 |
+|---|---|
+| `tw_quant/market_data/` | Provider 介面與 Shioaji／Replay Adapter |
+| `tw_quant/market/` | Tick、KBar、交易時段與多週期聚合 |
+| `tw_quant/strategy/` | 基本策略、參數與組合策略 |
+| `tw_quant/events/` | 事件契約、虛擬時鐘與確定性事件迴圈 |
+| `tw_quant/risk/` | 策略與帳戶風控 |
+| `tw_quant/execution/` | 模擬成交、部位及損益帳本 |
+| `tw_quant/live/` | FastAPI、WebSocket、監控與 SQLite Repository |
+| `tw_quant/paper/`、`tw_quant/replay/` | Paper 與 Replay 交易 Session |
+| `dashboard/app/` | Next.js 操作介面 |
+| `deploy/lightsail/` | Caddy、Docker Compose 與部署腳本 |
+
+## AI-native 開發流程
+
+這個專案採用 **AI-assisted、human-governed** 的開發方式。我負責產品需求、架構決策、風險邊界、驗收標準及上線決策；Codex 協作完成程式、測試、文件與問題診斷。所有修改必須通過 PR 與自動化品質門檻，才允許部署。
+
+```mermaid
+flowchart TD
+    A["需求、風險與驗收標準（我）"] --> B["架構設計與任務拆分（我與 Codex）"]
+    B --> C["實作、測試與文件（Codex 協作）"]
+    C --> D["PR 與 CI 品質門檻"]
+    D --> E["功能驗收與上線決策（我）"]
+    E --> F["Lightsail 部署與正式監控"]
+    F --> A
+```
+
+每次迭代都保留需求脈絡、PR、測試結果、部署紀錄及正式環境回饋，讓 AI 產出的變更可審查、可重現、可回滾，而不是直接將生成程式碼送進正式環境。
+
+## 主要頁面
+
+| 路徑 | 功能 |
+|---|---|
+| `/` | 系統、行情與策略總覽 |
+| `/trade/` | 即時行情與 Paper Trading 工作台 |
+| `/backtest/` | 最長 31 天的歷史回測 |
+| `/replay/` | 動態歷史行情與隔離模擬交易 |
+| `/history/` | 回測執行紀錄與績效明細 |
+| `/strategies/` | 基本策略參數管理 |
+| `/composite-strategies/` | 多週期組合策略與版本管理 |
+| `/settings/` | 管理員監控與系統狀態 |
+| `/admin/users/` | 帳號申請、角色及交易模式管理 |
+
+舊 `/live/` 與 `/paper/` 會轉址至 `/trade/`，避免建立重複 WebSocket 連線。
+
+## 快速啟動
+
+需求：Python 3.10–3.12、Node.js 22。Python 依賴以 `uv.lock` 固定版本與雜湊。
 
 ```bash
+git clone https://github.com/3pwei/codex-tw-quant-trading-system.git
+cd codex-tw-quant-trading-system
+
 python -m venv .venv
-
-# Windows PowerShell
-.venv\Scripts\Activate.ps1
-
-# macOS / Linux
 source .venv/bin/activate
-
 python -m pip install "uv==0.11.33"
 uv sync --locked --extra server --extra test
-```
 
-若要連接 Shioaji 正式行情，再安裝可選套件：
-
-```bash
-uv sync --locked --extra server --extra shioaji
-```
-
-`pyproject.toml` 的版本範圍是相容性約束，實際安裝版本以提交至 Git 的 `uv.lock` 為準。變更套件後執行 `uv lock`；若要主動升級全部套件，使用 `uv lock --upgrade`，或以 `uv lock --upgrade-package <套件名稱>` 只升級指定套件。提交前須檢查 lock file 差異並完成測試，請勿手動編輯 `uv.lock`。
-
-## TMF 即時 1 分 K
-
-資料流刻意將券商 callback 保持最小：
-
-```text
-Shioaji Tick callback
-  → 驗證、標準化、asyncio.Queue.put_nowait
-  → 獨立 Worker
-  → 去重／亂序處理／1 分 K 聚合
-  → SQLite upsert
-  → REST 歷史查詢 + WebSocket 增量推送
-  → Next.js Lightweight Charts series.update()
-```
-
-K 棒使用 Tick 的交易所時間（`Asia/Taipei`）分桶，不使用瀏覽器時間。TMF 日盤設定為 08:45–13:45、夜盤為 15:00–次日 05:00；15:00 後的夜盤歸到下一交易日，跨午夜後維持同一交易日。週末會自動跳過；交易所特殊休市日仍應由部署端行事曆設定或在上線前驗證。
-
-處理政策：
-
-- 同一分鐘內亂序 Tick 仍會依最早／最晚交易所時間修正 Open／Close。
-- 已關閉分鐘收到遲到 Tick 時不回寫歷史 K 棒，會計入 `late_ticks`。
-- Tick 優先使用券商 sequence 去重；缺少 sequence 時使用契約、微秒時間、價格、單量與累積量雜湊。
-- 無成交分鐘在下一筆 Tick 抵達時補成前收價 OHLC、成交量 0、`no_trade=true`。
-- SQLite 同時保存形成中 K 棒與已處理 Tick ID，重啟後可續接且不重複累加。
-- TMFR1 解析出的實際近月契約會放在訊息 `contract`；Tick 契約變更時視為換月並關閉舊契約 K 棒。
-- 連線狀態取自獨立 heartbeat／Shioaji quote connection event，不會因為一段時間沒有成交就判斷斷線。
-
-### 交易策略圖層
-
-即時頁右上角的 Multi-select Dropdown 可以同時顯示或隱藏 11 套基本策略。
-除既有 BNF 外，策略類型包含：
-
-| 類型 | 策略 |
-|---|---|
-| Trend | MA Crossover、EMA Trend |
-| Breakout | Donchian Breakout、Opening Range Breakout（ORB） |
-| Mean Reversion | RSI Mean Reversion、Bollinger Mean Reversion、BNF |
-| Momentum | MACD Momentum、Volume Breakout |
-| Intraday | VWAP Reversion |
-| Volatility | ATR Breakout |
-
-其中既有策略的規則為：
-
-- `ORB 開盤突破`：每個日／夜盤以前 15 分鐘建立區間，收盤突破區間且
-  當根量達前 5 根均量的 1.2 倍時確認訊號。
-- `BNF 均值回歸`：20 期收盤均線與標準差；Z-score 向下穿越 `-2` 且
-  RSI(14) 不高於 30 時做多，向上穿越 `+2` 且 RSI 不低於 70 時做空；
-  回到 `±0.5Z` 內產生均值回歸出場訊號。
-
-所有策略只使用已收盤 K 棒確認，並在下一根 K 棒開盤建立訊號標記，
-不使用形成中 K 棒偷看結果。風控預設為停損 0.6%、停利 1.2%；標記
-只供研究與觀察，不會觸發模擬或真實訂單。
-
-`/strategies/` 可以修改上述策略條件以及各策略自己的停損／停利。前端只負責
-輸入；FastAPI 會依 `tw_quant/strategy/parameters.py` 再次驗證範圍與跨欄位規則，
-通過後寫入行情服務使用的 SQLite。Live、Replay 與 Backtest 都會將同一份設定
-傳入 `analyze_strategies()`，不會各自維護另一套參數。按「恢復預設」只會先更新
-畫面，仍需按「儲存參數」才會套用。
-
-### 多週期策略組合器
-
-`/composite-strategies/` 可管理組合策略，新增與編輯會進入獨立編輯頁，不需要也不允許輸入
-Python 程式碼。每個組合策略由四段構成：
-
-- `Setup`：市場背景或高週期啟動條件；可留空。
-- `Entry`：真正觸發進場的條件；至少一條。
-- `Exit`：策略出場條件；可留空，仍會受風控與時段結束平倉。
-- `Risk`：1 分 K 停損、停利與最長持有時間；必填。
-
-Setup、Entry 與 Exit 都能加入多條基本策略規則，個別選擇 `1m`、`5m`、
-`10m`、`15m`、`30m`、`1h`、`1d` 或 `1w`，並設定 `ALL`／`ANY` 及條件確認
-視窗。每個規則積木預設繼承策略管理頁上方已保存的原子策略參數，也可在積木內
-個別覆寫（例如 Entry BNF 與 Exit BNF 使用不同門檻）；後端保存時會把完整解析後
-的參數快照寫入組合策略版本，之後修改原子策略不會竄改既有版本。
-
-規則也能引用同一使用者的其他啟用中組合策略。引用會固定保存子策略的
-`strategy_id + version` 與完整定義快照，不會因子策略日後建立新版而改變；子策略
-自行決定內部週期，父策略的 Setup／Entry 使用其進場訊號，Exit 使用其出場訊號。
-系統禁止自己引用、循環引用及超過三層的巢狀組合。子策略封存後，既有父策略與
-歷史回測仍可依快照執行，但不能建立新的引用；仍被父策略引用的版本也不可永久刪除。
-
-儲存新策略會建立 v1；修改現有策略會新增 v2、v3，而不覆蓋舊版。策略管理頁
-可展開完整版本紀錄；歷史版本只能複製成另一個全新策略，不能原地修改。編輯時若
-變更策略名稱，系統會建立新的策略 ID 並從 v1 開始，原策略則保持不變；同一使用者
-的啟用與封存策略名稱皆不可重複。歷史
-回測頁會列出最新版本，執行結果同時記錄策略 ID 與版本。組合策略一律從原始已收盤
-1 分 K 產生各週期訊號，再於下一根 1 分 K 開盤模擬成交；停損與停利也以
-1 分 K 檢查，同根同時觸發時採停損優先。
-
-策略管理清單的「刪除」採封存方式：策略會立即從管理清單與新回測選單移除，
-但不會物理刪除 v1、v2 等既有版本，因此歷史結果仍可依原策略 ID／版本重現。
-已封存策略不可再修改，以免同一個策略 ID 出現不連續或被覆寫的版本歷史。
-封存庫預設收合，並支援勾選多筆永久刪除。永久刪除會移除整條版本鏈且無法
-復原；後端只允許刪除已封存且沒有 `backtest_runs` 引用的策略，只要批次中有
-一個策略被引用就會拒絕整批操作。SQLite 外鍵也使用 `ON DELETE RESTRICT` 作為
-第二層保護。使用者在 `/backtest/` 主動執行的回測會保存至 `backtest_runs`；頁面
-首次載入的預覽不保存，避免產生沒有決策價值的重複紀錄。
-
-相關 API：
-
-- `GET /api/composite-strategies`
-- `POST /api/composite-strategies`
-- `GET /api/composite-strategies/{id}/versions`
-- `GET /api/composite-strategies/{id}?version=1`
-- `PUT /api/composite-strategies/{id}`（建立新版本）
-- `DELETE /api/composite-strategies/{id}`（封存，不刪除版本）
-- `POST /api/composite-strategies/purge`（批次永久刪除未被引用的封存策略）
-- `GET /api/composite-strategy-signals/{id}?version=1`
-- `GET /api/composite-backtest?strategy_id={id}&version=1&start=2026-08-01&end=2026-08-31`
-
-### 回測執行紀錄
-
-`POST /api/backtest-runs` 是前端正式執行回測的統一入口，支援基本策略及組合
-策略。每一筆紀錄保存策略／參數快照、績效摘要、交易明細及權益曲線；行情 K 棒
-不重複寫入結果，仍由 `minute_bars` 管理。組合策略另外以 SQLite 外鍵固定引用
-`strategy_id + strategy_version`，因此有回測紀錄的版本不能被永久刪除。
-
-`/history/` 提供策略搜尋、基本／組合類型與有無交易篩選、績效摘要、逐筆交易
-明細及單筆永久刪除。刪除組合策略回測會同步解除該策略版本的引用；若仍有其他
-回測引用相同版本，該策略仍不能永久刪除。
-
-相關 API：
-
-- `POST /api/backtest-runs`（執行並保存）
-- `GET /api/backtest-runs?limit=100&offset=0`
-- `GET /api/backtest-runs/{run_id}`
-- `DELETE /api/backtest-runs/{run_id}`（永久刪除並解除該筆策略版本引用）
-
-目前可執行研究回測與平台內 Paper Trading，但不會連接外部 Broker 或送出真實
-委託。組合策略可在 Live／Replay 資料上呼叫相同訊號核心。
-
-`tw_quant/events/` 是 Level 2 的事件骨幹，Backtest 與 Replay 現已透過
-`run_historical_events()` 共用 Signal → Order → Risk → Fill → Position/PnL 管線。
-研究模式會明確注入 `ResearchRiskGate`，其事件絕不連接外部券商；Paper Trading
-注入 `AccountRiskGate`，且帳號為 active、paper 模式並具有 `orders.paper` 權限
-才會核准。既有 Backtest／Replay API 欄位維持相容，另提供事件計數及 Replay
-execution audit events。
-
-Paper API 的委託價格、契約、owner、權限及交易模式全部由伺服器取得，瀏覽器不能
-指定。每次 `POST /api/paper/orders` 必須帶 `Idempotency-Key`，避免網路重試或手機
-重複點擊產生第二筆委託。模擬市價單會以伺服器最新行情套用滑價與成本，依序產生
-Order → Risk → Fill → Position 事件並保存到 SQLite；風控拒絕時只留下拒絕紀錄。
-
-Trader 與具有明確 Paper 權限的 Admin 可由 `/trade/` 查看即時圖表、帳戶損益、持倉、委託與
-成交紀錄，手動送出模擬市價單、平倉及控制 Kill Switch。Admin 建立時仍預設為
-`disabled`，必須在帳號管理頁明確切換為 `paper`；Admin 永遠不能切換為 `live`。
-
-相關 API：
-
-- `GET /api/paper/account`
-- `GET|POST /api/paper/orders`
-- `GET /api/paper/fills`
-- `GET /api/paper/events`
-- `POST /api/paper/kill-switch`
-- `POST /api/paper/kill-switch/reset`
-
-Replay 準備快照時會同時建立短生命週期的使用者專屬交易 Session。Session 使用
-獨立暫存 SQLite 事件庫及虛擬時鐘，重用 Paper 的成本、風控與模擬撮合元件，但
-不連接即時行情，也不讀寫正式 Paper Repository。相關 API：
-
-- `GET /api/replay/sessions/{session_id}`
-- `PUT /api/replay/sessions/{session_id}/cursor`
-- `POST /api/replay/sessions/{session_id}/orders`
-- `POST /api/replay/sessions/{session_id}/reset`
-
-時間軸向前時會逐根更新持倉損益；向後移動會建立新的空白 Replay 帳戶並清除舊
-委託與成交，防止 future leakage。每位使用者只保留最近 3 個 Session，服務重啟
-後自動清除。詳細操作見 [Replay Trading 操作手冊](docs/replay-trading-guide.md)。
-
-Level 2 短版效能驗收可執行：
-
-```bash
-python -m tw_quant level2-soak \
-  --duration-seconds 60 \
-  --tick-interval-seconds 0.1 \
-  --output output/level2-soak.json
-```
-
-正式候選版本須依 [Level 2 完成標準](docs/level2-definition-of-done.md) 執行四小時
-soak 與正式站人工驗收；備份、復原及上線程序分別見
-[故障復原手冊](docs/disaster-recovery.md) 與
-[部署驗收清單](docs/deployment-acceptance-checklist.md)。
-
-### Mock／Replay 本機啟動
-
-複製環境變數範本；範本只有假資料，請勿把真實憑證提交到 GitHub：
-
-```bash
 cp .env.example .env
+uv run --locked --extra server uvicorn tw_quant.live.api:create_app \
+  --factory --host 0.0.0.0 --port 8000 --env-file .env
 ```
 
-Windows PowerShell：
-
-```powershell
-Copy-Item .env.example .env
-```
-
-啟動後端：
-
-```bash
-MARKET_DATA_PROVIDER=replay PLATFORM_ENVIRONMENT=development uvicorn tw_quant.live.api:create_app --factory --host 0.0.0.0 --port 8000 --env-file .env
-```
+Windows PowerShell 使用 `.venv\Scripts\Activate.ps1` 與 `Copy-Item .env.example .env`。
 
 另一個終端啟動 Dashboard：
 
@@ -337,19 +116,17 @@ npm ci
 NEXT_PUBLIC_MARKET_API_URL=http://localhost:8000 npm run dev
 ```
 
-Windows PowerShell 可先執行 `$env:NEXT_PUBLIC_MARKET_API_URL="http://localhost:8000"`，再執行 `npm run dev`。
+開啟 <http://localhost:3000/>；FastAPI 文件位於 <http://localhost:8000/docs>。
 
-開啟：
+Mock 模式預設重播 `data/mock_tmf_ticks.csv`，不需要券商憑證。
 
-- 系統總覽：<http://localhost:3000/>
-- 回測 Dashboard：<http://localhost:3000/backtest/>
-- 回測執行紀錄：<http://localhost:3000/history/>
-- 交易工作台：<http://localhost:3000/trade/>
-- API 文件：<http://localhost:8000/docs>
+### Shioaji 行情
 
-Mock 會重播 `data/mock_tmf_ticks.csv`。同一分鐘包含多筆 Tick，圖表應以 `series.update()` 反覆更新同一根形成中 K 棒，跨分鐘才新增 K 棒；15:02 沒有成交，會補成零量 K 棒。
+開發環境加入 Shioaji 時保留測試依賴：
 
-### Shioaji 正式行情模式
+```bash
+uv sync --locked --extra server --extra test --extra shioaji
+```
 
 `.env` 至少設定：
 
@@ -358,157 +135,38 @@ MARKET_DATA_PROVIDER=shioaji
 MARKET_CONTRACT=TMFR1
 MARKET_HISTORY_DAYS=30
 MARKET_HISTORY_LIMIT=50000
-SJ_API_KEY=your-real-key
-SJ_SEC_KEY=your-real-secret
+SJ_API_KEY=your-market-data-key
+SJ_SEC_KEY=your-market-data-secret
 SJ_PRODUCTION=true
 ```
 
-再啟動同一個 FastAPI 指令。啟動時會使用 Shioaji `kbars` 一次回補最近 30 日內
-最多 50,000 根已收盤 1 分 K，之後只依靠 Tick callback 即時更新；不會輪詢歷史 API。
-行情服務登入時停用 trade event subscription，只保留歷史／即時行情；不啟用 CA、
-不提供下單 API。正式 key 建議只授予 Market/Data 權限並限制來源 IP。
+服務只載入歷史與即時行情，不載入 CA、不啟用外部下單。個人 Shioaji 行情不代表具有多人展示或轉發授權。
 
-### API
+## 安全與權限
 
-- `GET /api/health`
-- `GET /api/me`（目前登入身分、角色、帳號／交易狀態與權限）
-- `GET /api/admin/health`（管理員：Provider、Queue、重複／遲到 Tick 診斷）
-- `POST /api/access-requests`（Cloudflare 已驗證、尚未開通的 Email）
-- `GET|POST /api/admin/users`、`PUT /api/admin/users/{user_id}`（管理員）
-- `GET /api/admin/access-requests`（管理員：待審核申請）
-- `POST /api/admin/access-requests/{request_id}/approve|reject`（管理員）
-- `GET /api/admin/audit`（管理員：帳號及申請異動稽核）
-- `GET /api/kbars?symbol=TMF&interval=5m&limit=500`
-- `GET /api/strategy-signals?symbol=TMF&strategies=orb,bnf&interval=5m&limit=500`
-- `GET /api/strategies`
-- `PUT /api/strategies/{strategy}`，JSON：`{"parameters": {...}}`
-- `GET /api/backtest/options?symbol=TMF`
-- `GET /api/backtest?symbol=TMF&strategy=orb&interval=5m&start=2026-08-01&end=2026-08-31`
-- `WS /ws/market/TMF?interval=5m`
+正式環境使用兩層控制：
 
-`interval` 支援 `1m`、`5m`、`10m`、`15m`、`30m`、`1h`、`1d`、`1w`。
-SQLite 仍只保存唯一一份 1 分 K；REST、WebSocket、策略訊號與回測會透過
-`tw_quant.market.timeframes` 共用聚合器產生所選週期，不重複儲存行情，也不在
-Live／Backtest 各寫一套。分鐘與小時 K 以日盤 08:45、夜盤 15:00 為分桶起點；
-日 K 依期交所 `trading_date` 合併前一晚夜盤與當日日盤，週 K 依交易日週次聚合，
-且合約換月時絕不合併不同契約。日／週 K 可顯示的長度取決於 1 分 K 實際保留範圍。
-ORB 與 VWAP Reversion 是日內策略；ORB 在日／週 K 不產生訊號。其他技術策略
-在日／週 K 會依契約連續累積指標視窗，仍使用相同的策略與風控函式。
+1. Cloudflare Access 以 One-time PIN 驗證 Email。
+2. FastAPI 以 `app_users`、角色、權限及帳號狀態決定功能存取。
 
-回測 Dashboard 與即時頁共用同一套基本策略訊號分析器，只使用 SQLite 內的
-1 分 K 作為來源。畫面可選 K 棒週期、策略與起訖交易日，單次最多 31 個日曆日；FastAPI 也會驗證
-相同上限，不能只靠瀏覽器繞過。夜盤跨日依 `trading_date` 查詢，而非日曆時間。
-既有 Lightsail 若仍使用舊版 `/opt/tw-quant/config/market.env`，需把
-`MARKET_HISTORY_DAYS` 改為 `30`、`MARKET_HISTORY_LIMIT` 改為 `50000`，重啟後
-才會嘗試回補一個月；實際可選日期仍以 Shioaji 回傳並成功寫入 SQLite 的範圍為準。
+Cloudflare Policy：
 
-WebSocket 的 K 棒訊息包含 symbol、實際契約、交易所／接收時間、延遲、OHLCV、forming/closed、日夜盤、交易日與行情連線狀態。獨立 heartbeat 即使無成交也會持續推送。
+- Action：`Allow`
+- Include：`Everyone`
+- Require：`Login Methods = One-time PIN`
 
-### 共用策略資料流
+任何 Email 都能驗證身分，但只有 `app_users` 中 `active` 的帳號能使用平台。未開通者可送出申請，由管理員在 `/admin/users/` 核准或拒絕。
 
-Live、歷史回放與 CSV 的差異只存在資料來源；三者先轉為
-`tw_quant.market.KBar`，再呼叫同一個 `analyze_strategies()`：
-
-```text
-Shioaji Live Feed ─┐
-Replay Feed ───────┼─→ canonical KBar → Strategy Engine → Risk Engine
-TAIFEX CSV Feed ───┘                                      ↓
-                                      Execution Simulator → Backtest Result
-```
-
-目前 Live 是 quote-only，策略訊號只推送至 Dashboard，不會連到 Broker 下單。
-未來若加入實盤，Broker adapter 必須與 `Execution Simulator` 分開，且必須先經過
-獨立的下單風控與使用者授權。
-
-### Docker 與本機部署
-
-```bash
-docker compose up --build -d
-curl http://localhost:8000/api/health
-```
-
-FastAPI、Shioaji callback 與 WebSocket 必須部署在可常駐執行 Python 的主機；GitHub Actions 只負責測試與建置，不能作為盤中行情 daemon。部署主機需掛載 `output/` 保存 SQLite，或日後將 `BarRepository` 換成 PostgreSQL。
-
-目前 GitHub Pages workflow 已停用；正式 Dashboard 與 FastAPI 統一由 Lightsail
-上的 Caddy 提供。GitHub Actions 負責 CI 與核准後部署，不負責盤中常駐行情。
-
-## AWS Lightsail 公開部署
-
-正式部署目標是東京區域的 AWS Lightsail Linux/Ubuntu x86 主機，建議至少
-2 GB RAM。GitHub 保存程式碼並執行測試；Lightsail 只負責常駐執行。公開流量
-透過 Caddy 進入同一個 HTTPS 網址：
-
-```text
-瀏覽器 ─HTTPS/WSS→ Caddy
-                     ├─ /、/live、/backtest 等 → 靜態 Dashboard
-                     ├─ /api     → FastAPI REST
-                     └─ /ws      → FastAPI WebSocket
-                                      └→ Shioaji Tick → Queue → Worker → SQLite Volume
-```
-
-前端在沒有設定 `NEXT_PUBLIC_MARKET_API_URL` 時會使用目前網頁的 origin，因此
-正式網站不會退回 `localhost`。GitHub Pages 模式仍可透過 Repository Variable
-指定獨立 API 網址；正式 Lightsail 同源部署不需要設定此變數。
-
-### 1. 建立 Lightsail 主機
-
-1. 建立 AWS 帳號並啟用 MFA、帳單預算警示。
-2. Lightsail 區域選 `Tokyo (ap-northeast-1)`。
-3. Blueprint 選 Ubuntu 24.04 LTS、架構選 x86_64。
-4. 建議方案為 2 GB RAM；不要選 ARM，Shioaji wheel 必須先驗證架構相容性。
-5. 建立並附掛 Static IP；Lightsail 防火牆只開 TCP 80、443，以及初始維護用 TCP 22。
-6. 將自己的 DNS `A` record 指向 Static IP。沒有網域時，可先用指向該 IP 的測試 DNS，但正式使用應購買並控制自己的網域。
-
-HTTPS 是必要條件；不要用裸 IP、HTTP 或自簽憑證傳送網站密碼與行情連線。
-
-### 2. 初始化主機
-
-以 Lightsail SSH 連入 Ubuntu，取得 Repository 後執行：
-
-```bash
-git clone --branch master https://github.com/3pwei/codex-tw-quant-trading-system.git
-cd codex-tw-quant-trading-system
-sudo bash deploy/lightsail/bootstrap.sh
-```
-
-Bootstrap 只安裝 Docker、Git，並建立 `/opt/tw-quant/config/`。真實 Secret 保存在
-Git checkout 外，權限為 `0600`。接著編輯：
-
-```text
-/opt/tw-quant/config/market.env
-/opt/tw-quant/config/gateway.env
-/opt/tw-quant/config/compose.env
-```
-
-先以 `MARKET_DATA_PROVIDER=replay` 驗證。既有 `MARKET_MODE=mock`／`shioaji`
-仍可作為過渡相容設定，但新部署應使用 `MARKET_DATA_PROVIDER`。正式站不使用共用 Basic Auth 密碼，而是使用
-Cloudflare Access 的核准 Email 與一次性驗證碼。先在 Cloudflare Zero Trust 建立：
-
-1. `Access controls` → `Applications` → `Create new application`。
-2. 類型選 `Self-hosted and private`，Public hostname 填 `tmf.example.com`。
-3. Bootstrap 階段先建立 `Allow` policy，Selector 選 `Emails`，只加入平台擁有者的完整 Email。
-4. 啟用 One-time PIN；在平台授權切換為 enforced 前，不要先放寬 Access policy。
-5. 複製 Team domain（例如 `team.cloudflareaccess.com`）與應用程式的
-   `Application Audience (AUD) Tag`。
-
-將 `/opt/tw-quant/config/gateway.env` 設為：
+Production 必要設定：
 
 ```dotenv
-MARKET_DOMAIN=tmf.example.com
-ACME_EMAIL=owner@example.com
-```
-
-並在 `/opt/tw-quant/config/market.env` 設定：
-
-```dotenv
-MARKET_DATA_PROVIDER=replay
-MARKET_ALLOWED_ORIGINS=https://tmf.example.com
 PLATFORM_ENVIRONMENT=production
 MARKET_ACCESS_MODE=cloudflare
 CF_ACCESS_TEAM_DOMAIN=team.cloudflareaccess.com
 CF_ACCESS_AUD=replace-with-application-audience-tag
 PLATFORM_AUTHORIZATION_MODE=enforced
 PLATFORM_BOOTSTRAP_ADMIN_EMAILS=owner@example.com
+
 RATE_LIMIT_ACCESS_REQUESTS_PER_HOUR=5
 RATE_LIMIT_BACKTESTS_PER_MINUTE=10
 RATE_LIMIT_REPLAY_PREPARES_PER_MINUTE=10
@@ -516,306 +174,80 @@ RATE_LIMIT_ORDERS_PER_MINUTE=30
 API_MAX_REQUEST_BODY_BYTES=262144
 ```
 
-Access 會在 Cloudflare 邊緣驗證 Email，FastAPI 源站再驗證
-`Cf-Access-Jwt-Assertion` 的簽章、issuer 與 audience。這可防止攻擊者用 Lightsail
-IP 和偽造 Host header 繞過登入。缺少或無效的 assertion 會在源站 fail closed。
+`API_MAX_REQUEST_BODY_BYTES` 必須同時設定於 `market.env` 與 `gateway.env`。Production 若缺少 Cloudflare、enforced authorization 或 Bootstrap Admin，服務會拒絕啟動。
 
-### 應用程式帳號與角色基礎
+角色：
 
-Cloudflare Access 負責確認 Email 身分；FastAPI 另以 SQLite 的 `app_users`、
-`permissions`、`role_permissions` 與 `audit_events` 保存平台帳號、角色、交易狀態及
-稽核紀錄。兩層不能互相取代：通過 Cloudflare 不代表已取得平台功能權限。
+- `researcher`：行情、策略與回測。
+- `trader`：研究功能及自己的 Paper Trading。
+- `admin`：帳號、設定、監控與稽核；必須明確切換為 `paper` 才能模擬下單。
 
-首次啟用時直接設定：
+## 部署與復原
 
-```dotenv
-PLATFORM_ENVIRONMENT=production
-MARKET_ACCESS_MODE=cloudflare
-PLATFORM_AUTHORIZATION_MODE=enforced
-PLATFORM_BOOTSTRAP_ADMIN_EMAILS=owner@example.com
-```
+正式環境使用 Caddy + FastAPI + Next.js static dashboard，資料保存在 Docker named volume `tw-quant-lightsail_market-data` 的 `/data`。
 
-服務會先建立指定的 Bootstrap Admin，再開始接受請求。登入 Dashboard 後，瀏覽器
-直接開啟 `https://tmf.example.com/api/me`，確認回傳 `registered: true`、
-`identity_bound: true`、`role: admin` 與 `authorization_enforced: true`。只有預先建立且
-為 `active` 的平台帳號可以使用系統。管理員可從
-`/admin/users/` 新增核准 Email、設定 `researcher`／`trader`／`admin`、暫停或撤銷
-帳號。設定頁、帳號管理、完整 Provider Health、OpenAPI 與文件頁均由 Caddy
-forward-auth 與 FastAPI RBAC 雙重限制；前端隱藏選單不是安全邊界。未知 API route
-在 enforced 模式下預設拒絕，WebSocket 也會在握手時驗證 `market.read`。
+部署有兩種觸發方式：
 
-`PLATFORM_ENVIRONMENT` 未設定時預設為 `production`。Production 強制要求
-`MARKET_ACCESS_MODE=cloudflare`、`PLATFORM_AUTHORIZATION_MODE=enforced` 與至少一個
-Bootstrap Admin；任一設定遺失時服務會拒絕啟動。只有本機開發或測試可明確設定
-`PLATFORM_ENVIRONMENT=development`／`test` 後使用 disabled 模式。
+- PR 合併後，`master` CI 成功即自動執行 Lightsail deployment。
+- `workflow_dispatch` 可指定一個屬於 `master` 的完整 commit SHA 手動部署。
 
-一般使用者的 `/api/health` 與 WebSocket heartbeat 不回傳 Provider 名稱、Queue、
-丟棄／重複／遲到 Tick 等內部診斷；完整資訊只由 `/api/admin/health` 提供。管理員健康
-頁另提供最新 Tick／K 棒、WebSocket 連線數、SQLite 寫入延遲、Paper 委託／成交／
-拒絕、Kill Switch，以及 CPU、記憶體與磁碟使用量。行情斷線或超過
-`MARKET_STALE_AFTER_SECONDS`（預設 120 秒）未更新時，新倉會在建立委託事件前被拒絕，
-既有持倉仍可查閱，恢復後也不會補送先前失敗的請求。
+部署流程會重新執行 Python 測試、Dashboard lint/build、SQLite Online Backup、容器健康檢查，以及公開 `/healthz` 的 `200 + ok` 驗證。Cloudflare 必須為 `/healthz` 設定精確的 Bypass policy。
 
-Backtest 執行、Replay prepare、Paper／Replay 模擬下單與帳號申請使用伺服器端
-sliding-window rate limit，並以 FastAPI 驗證出的平台 `user_id` 分別計算；尚未註冊的
-申請者則使用 Cloudflare Access `subject`，不採用可偽造或共用的來源 IP。超過額度時
-API 回傳 `429 Too Many Requests`、`Retry-After`、`X-RateLimit-Limit`、
-`X-RateLimit-Remaining` 與 `X-RateLimit-Reset`。管理員可在 `/api/admin/health` 的
-`rate_limiting` 查看各類請求的接受／拒絕累計，不會顯示使用者識別資料。上述四個
-環境變數必須是正整數；未設定時使用範例中的安全預設值。
+詳細程序：
 
-所有 HTTP Request Body 由 Caddy 與 FastAPI 兩層限制為 256 KiB；FastAPI 也會對
-chunked request 累計實際讀取量，超過時回傳 `413 Payload Too Large`。可透過
-`API_MAX_REQUEST_BODY_BYTES` 在 1 KiB～1 MiB 之間調整，Gateway 與 Market API
-必須使用相同值。策略名稱、描述、每組規則數、Email、控制原因、策略識別碼與
-Idempotency Key 另有欄位級上限，格式不符時回傳 `422`，不會寫入 SQLite。
+- [Level 2 正式運行與監控](docs/level2-operations.md)
+- [部署驗收清單](docs/deployment-acceptance-checklist.md)
+- [故障復原手冊](docs/disaster-recovery.md)
+- [Paper Trading 操作手冊](docs/paper-trading-guide.md)
+- [Replay Trading 操作手冊](docs/replay-trading-guide.md)
+- [帳戶風控](docs/account-risk.md)
+- [事件引擎](docs/event-engine.md)
 
-### 單一平台使用者名單
+## API 概覽
 
-確認 `/api/me` 回傳 `authorization_enforced: true`，並完成未註冊、停權及角色權限
-測試後，Cloudflare Access 只負責證明 Email 由登入者持有，`app_users` 則是唯一的
-平台授權名單。將 TMF Dashboard Access application 設為只提供 One-time PIN，並將
-policy 調整為：
+| 類別 | 主要端點 |
+|---|---|
+| 身分 | `GET /api/me`、`POST /api/access-requests` |
+| 行情 | `GET /api/health`、`GET /api/kbars`、`WS /ws/market/{symbol}` |
+| 策略 | `/api/strategies`、`/api/composite-strategies`、`/api/strategy-signals` |
+| 回測 | `/api/backtest`、`/api/backtest-runs` |
+| 回放 | `/api/replay/prepare`、`/api/replay/sessions/{session_id}` |
+| Paper | `/api/paper/account`、`/api/paper/orders`、`/api/paper/fills`、`/api/paper/kill-switch` |
+| 管理 | `/api/admin/users`、`/api/admin/access-requests`、`/api/admin/health`、`/api/admin/audit` |
 
-- Action：`Allow`
-- Include：`Everyone`
-- Require：Login Methods = `One-time PIN`
-
-不可在 `PLATFORM_AUTHORIZATION_MODE=disabled` 時使用此 policy。切換後，任何 Email
-都可向 Cloudflare 申請 OTP，但 Caddy 仍會對除 `/healthz` 外的每個頁面與 API 呼叫
-FastAPI forward-auth。未存在於 `app_users`、不是 `active` 或缺少所需 permission
-的帳號會收到 403；一般頁面顯示帳號尚未開通或沒有權限，並提供登出及切換 Email，
-API 則保留 JSON 錯誤。未註冊使用者可在拒絕頁按「申請開通」；系統只接受
-Cloudflare 已驗證的 Email，並以 Email 去重保存至 `app_user_requests`。管理員可在
-`/admin/users/` 的待審核清單核准或拒絕。核准會建立 `researcher / active /
-disabled` 帳號並直接綁定該 Cloudflare 身分，之後可再調整角色；拒絕與重新申請
-也會保存稽核事件。管理員不再需要同步維護 Cloudflare Email 清單。
-
-### 使用者資料所有權
-
-行情資料是平台共用資源，不會為每個帳號重複保存；策略參數、組合策略及其不可變
-版本、封存狀態與回測紀錄則全部以後端解析出的 `owner_user_id` 隔離。API 不接受
-瀏覽器傳入 owner，使用者即使猜到其他人的 strategy ID 或 run ID，查詢、更新、
-封存與刪除也只會得到 404。管理員預設同樣只能管理自己的研究資料，不能因為具有
-系統管理權就讀取其他人的策略或回測。
-
-升級既有 SQLite 時會自動加入 ownership 欄位，並將升級前的策略及回測資料一次歸屬
-給 `PLATFORM_BOOTSTRAP_ADMIN_EMAILS` 中第一個管理員。資料遷移不會更改策略版本、
-回測快照或 K 棒；重啟後再次執行也不會把資料轉交給另一位管理員。Lightsail 部署腳本
-會在換版前使用 SQLite Online Backup API，於同一個 named volume 建立帶 commit SHA
-的資料庫備份，避免 schema 遷移失敗時沒有可回復的快照。
-
-目前角色資料模型包含：
-
-- `researcher`：行情、策略與回測研究。
-- `trader`：研究功能，加上自己的 Broker、模擬交易；真實交易仍需另行啟用。
-- `admin`：平台帳號、系統設定、Provider 診斷與稽核管理；可明確啟用自己的 Paper
-  帳戶，但不能使用 live 模式。
-
-帳號狀態為 `active`、`suspended`、`revoked`；交易模式獨立保存為 `disabled`、
-`paper`、`live`。Researcher 只能使用 `disabled`；Admin 可使用 `disabled` 或
-`paper`；只有 Trader 可選擇 `live`。`audit_events` 僅提供 append 操作，Secret、
-API Key 與 Token 不得寫入事件內容。
-
-先保持 DNS `DNS only`，讓 Caddy 取得源站 HTTPS 憑證，然後啟動：
+## CLI 與測試
 
 ```bash
-sudo /opt/tw-quant/repo/deploy/lightsail/deploy.sh "$(git -C /opt/tw-quant/repo rev-parse HEAD)"
-curl https://tmf.example.com/healthz
+# 完整 Python 測試
+uv run --locked --extra server --extra test python -m unittest discover -s tests -v
+
+# 短版 Level 2 soak
+uv run --locked --extra server --extra test python -m tw_quant level2-soak \
+  --duration-seconds 60 \
+  --tick-interval-seconds 0.1 \
+  --output output/level2-soak.json
+
+# 前端驗證
+cd dashboard
+npm ci
+npm run lint
+npm run build
 ```
 
-`/healthz` 必須直接回傳 HTTP 200 與本文 `ok`，不能是 Cloudflare Access 的 302
-登入轉址。確認成功後，將 Cloudflare DNS 紀錄切成 Proxied（橘雲），SSL/TLS mode 設為
-`Full (strict)`。為讓 GitHub deployment health check 不需要使用者 Session，可另外建立
-更精確的 Access application `tmf.example.com/healthz`，Policy action 選 `Bypass`、
-Selector 選 `Everyone`；此路徑只回傳固定的 `ok`，不包含行情或系統狀態。
+其他 CLI：`demo`、`backtest`、`futures-night`、`sqlite-backup`、`sqlite-restore`。
 
-瀏覽器開啟 `https://tmf.example.com/trade/`，使用核准 Email 收取一次性驗證碼後，
-應看到 Mock 形成中的 1 分 K。Cloudflare Access Session 同時涵蓋 Dashboard、REST
-與 WebSocket。切換 Shioaji 前，將 `market.env` 改成：
+CI 會驗證 Python 3.10／3.12、Dashboard、Docker Compose、FastAPI + Shioaji image、Caddy 及 gateway health route。`pyproject.toml` 或套件版本變更後必須更新 `uv.lock`；`uv sync --locked` 會在鎖檔不一致時失敗。
 
-```dotenv
-MARKET_DATA_PROVIDER=shioaji
-MARKET_CONTRACT=TMFR1
-MARKET_HISTORY_DAYS=30
-MARKET_HISTORY_LIMIT=50000
-SJ_API_KEY=replace-on-server
-SJ_SEC_KEY=replace-on-server
-SJ_PRODUCTION=true
-```
+TMF 研究預設成本：契約乘數每點 NT$10、每邊手續費 NT$10、交易稅率 `0.00002`、每邊滑價 1 點。這些是可調整的研究假設，不是券商報價或成交保證。
 
-第一階段的 API Key 只能授予 Market/Data 權限，不能授予 Trading 權限；本服務也
-不載入 CA。設定永豐允許 IP 時使用 Lightsail Static IP。
+## 已知限制與 Roadmap
 
-### 3. GitHub Actions 部署
+目前限制：單一 TMF 商品、單機 SQLite、不含委託簿與部分成交、不處理漲跌停／暫緩撮合，也沒有外部 Broker Order Executor。
 
-`.github/workflows/deploy-lightsail.yml` 是手動觸發的 production deployment。每次
-部署會重新執行 Python 測試、前端 Lint 與 Build，通過後才透過 SSH 執行指定的
-`master` commit。建議在 GitHub Environment `lightsail-production` 啟用 required
-reviewer，避免盤中誤部署。
+下一階段優先順序：
 
-Environment Variables：
-
-```text
-LIGHTSAIL_HOST=<Static IP 或 DNS>
-LIGHTSAIL_USER=ubuntu
-PUBLIC_DASHBOARD_URL=https://tmf.example.com
-```
-
-Environment Secrets：
-
-```text
-LIGHTSAIL_SSH_PRIVATE_KEY=<僅部署使用的 SSH 私鑰>
-LIGHTSAIL_SSH_HOST_KEY=<事先核對過的 known_hosts 完整一行>
-```
-
-Shioaji API Key、Secret、未來可能使用的 CA 憑證都不能放進 GitHub Actions。
-GitHub workflow 只更新程式碼與容器，不能讀取 `/opt/tw-quant/config/market.env`。
-Cloudflare Team domain 與 AUD tag 不是登入密碼，但仍應由伺服器設定管理，不要傳到前端。
-
-### 4. 備份、更新與故障處理
-
-- SQLite 位於 Docker named volume `tw-quant-lightsail_market-data`，容器更新不會刪除。
-- 部署前應建立 Lightsail snapshot；若有真實下單需求，資料庫應升級 PostgreSQL。
-- 部署會短暫中斷行情，僅在休市時手動執行。
-- 重啟後 Worker 會讀取形成中 K 棒及 Tick 去重資料；恢復 Shioaji 後仍須檢查缺漏行情。
-- `/healthz` 只代表 HTTPS gateway 存活；部署流程會跟隨轉址並嚴格檢查回應本文為
-  `ok`，避免把 Cloudflare 登入頁誤判為健康。`/api/health` 才包含 Shioaji 連線、
-  最後 Tick 與延遲。
-- 若未來加入下單，必須先完成模擬交易、固定 IP 白名單、CA 安全保存、訂單冪等、持倉核對、最大虧損與 Kill Switch；目前版本仍完全不能下單。
-
-### 常見問題
-
-- `歷史 K 棒為空`：Shioaji 模式會在啟動時一次回補；查看 `/api/health` 的
-  `history_bars_loaded` 與 `history_error`。Mock 模式則從 Replay Tick 累積。
-- `Dashboard 顯示重新連線`：確認後端 URL、CORS 的 `MARKET_ALLOWED_ORIGINS`、TLS 憑證和 `/api/health`。
-- `沒有 Tick 但仍顯示連線`：這是預期行為；無成交不等於斷線，heartbeat 才是連線判斷依據。
-- `provider_disconnected`：Provider heartbeat 失敗，新倉立即禁止，先確認 Shioaji Session 與網路。
-- `market_stale`：Provider 仍連線但最新 Tick 超過設定門檻；恢復後須由使用者重新送單。
-- `重啟後 Mock 不再更新`：既有 SQLite 已記錄相同 replay Tick；測試新一輪可刪除測試用 DB，正式資料庫不要任意刪除。
-- `換月`：訂閱 `TMFR1`，健康檢查與 K 棒訊息的 `contract` 顯示實際契約；換月前應人工核對流動性與切換時間。
-
-## 立即執行示範
-
-```bash
-python -m tw_quant demo
-```
-
-使用 BNF 均值回歸回測自己的台股 1 分 K：
-
-```bash
-python -m tw_quant backtest \
-  --csv data/2330_1m.csv \
-  --strategy bnf \
-  --direction both \
-  --bnf-window 20 \
-  --bnf-entry-z 2.0 \
-  --bnf-exit-z 0.5 \
-  --bnf-rsi-period 14 \
-  --output output/2330_bnf
-```
-
-均值回歸訊號在 K 棒收盤確認，下一根開盤成交；回到均值區、停損、
-停利或收盤時間都可能觸發出場。同根同時碰到停損與停利時仍採停損優先。
-
-這會在 `output/demo/` 產生：
-
-- `demo_2330_1m.csv`：合成資料，不是真實 2330 行情
-- `trades.csv`：逐筆交易與成本
-- `equity.csv`：權益與回撤
-- `summary.json`：績效摘要
-- `equity.png`：權益曲線
-
-## 期交所逐筆 CSV 離線回測
-
-`tw_quant/futures.py` 只負責讀取期交所逐筆成交 CSV、篩選商品／契約及轉換
-OHLCV。`futures-night` 會把資料聚合成 1 分 K，再轉成與即時系統相同的
-`KBar` 模型，最後呼叫 `run_strategy_backtest()`。基本策略、停損與停利
-不在 CSV 匯入模組重複實作。
-
-2026/8/24 夜盤使用 `TMF 202609`，時段為 2026/8/24 15:00 至
-2026/8/25 05:00。期貨損益依契約乘數每點新臺幣 10 元計算；券商手續費、
-交易稅與滑價均為可調參數。官方逐筆檔的「成交數量(B+S)」為買賣雙方合計，
-聚合成交量時會除以 2。
-
-取得期交所逐筆 CSV 後，可選擇與即時 Dashboard 相同的 `orb` 或 `bnf`：
-
-```bash
-python -m tw_quant futures-night \
-  --csv Daily_2026_08_25.csv \
-  --product TMF \
-  --contract-month 202609 \
-  --session-start "2026-08-24 15:00" \
-  --session-end "2026-08-25 05:00" \
-  --strategy orb \
-  --output output/tmf_20260824_night
-```
-
-輸出包含 1 分 K `bars.csv`、`trades.csv`、`equity.csv` 與 `summary.json`。
-策略規則若在 `tw_quant/strategy/engine.py` 修改，即時訊號、動態回測與
-此離線 CSV 回測會一起更新。
-
-## 使用自己的 1 分 K
-
-CSV 欄位：
-
-```csv
-timestamp,symbol,open,high,low,close,volume
-2026-08-24 09:00:00,2330,1180,1185,1175,1182,2500
-2026-08-24 09:01:00,2330,1182,1184,1178,1180,1800
-```
-
-`timestamp` 若沒有時區，系統會視為台北時間。時間戳記假設代表該分鐘的起始時間。
-
-```bash
-python -m tw_quant backtest \
-  --csv data/2330_1m.csv \
-  --quantity 1000 \
-  --direction long \
-  --opening-minutes 15 \
-  --stop-loss 0.006 \
-  --take-profit 0.012 \
-  --commission-discount 0.28 \
-  --slippage-bps 2 \
-  --output output/2330_orb
-```
-
-Windows PowerShell 可改成單行執行，或以反引號取代 `\` 換行。
-
-## 2026 年預設交易成本
-
-| 成本 | 預設值 | 說明 |
-|---|---:|---|
-| 券商手續費 | 每邊 0.1425% | 預設無折扣；請用 `--commission-discount` 填實際折扣 |
-| 最低手續費 | 每筆 20 元 | 券商與交易管道可能不同，可調整 |
-| 現股當沖賣出稅 | 0.15% | 股票賣出端；優惠期限目前至 2027-12-31 |
-| 滑價 | 每邊 2 bps | 研究假設，不是法定費率 |
-
-官方參考：[臺灣證券交易所—當日沖銷交易](https://www.twse.com.tw/zh/products/system/day-trading.html)、[臺灣證券交易所—集中市場交易制度](https://www.twse.com.tw/zh/products/system/trading.html)、[財政部—當沖降稅延長公告](https://www.mof.gov.tw/singlehtml/384fb3077bb349ea973e7fc6f13b6974?cntId=4493245d64e5422887a375921e889465)。
-
-## 測試
-
-```bash
-python -m unittest discover -s tests -v
-```
-
-測試包含成本計算、OHLC 資料驗證、訊號下一根開盤成交，以及停損／停利同根觸發的保守處理。
-
-## 回測解讀原則
-
-1. 先看扣除全部成本後的 `net_profit`、`profit_factor` 與 `max_drawdown`，不要只看勝率。
-2. 用至少跨越多空循環的資料，並將訓練期、驗證期、樣本外測試分開。
-3. 分鐘 K 無法得知同一分鐘內先碰停損還是停利，本系統故意採最不利假設。
-4. 低流動性股票需加入成交量限制、市場衝擊與漲跌停無法成交模型。
-5. 空方回測前須確認標的可當沖、先賣後買資格、券源與券商規則。
-
-## 第一版限制與下一階段
-
-目前一次只處理一個 symbol，採固定股數，尚未模擬委託簿、部分成交、漲跌停、暫緩撮合、除權息與公司行動，也未連接券商。
-
-建議依序擴充：
-
-1. 接入合法授權的台股分鐘歷史資料，建立 Parquet 資料層與資料品質報告。
-2. 加入多標的選股、風險預算、單日最大虧損與 walk-forward 驗證。
-3. 串接券商行情做 paper trading，比較理論成交與真實模擬成交差異。
-4. 最後才啟用實盤下單，加入 kill switch、冪等訂單、對帳、告警與人工覆核。
+1. 接入合法授權的歷史資料，建立 Parquet 資料層與資料品質報告。
+2. 加入多標的、風險預算、walk-forward 與樣本外驗證。
+3. 增加外部告警與長時間正式環境監控證據。
+4. 實盤前升級 PostgreSQL，完成 Broker Adapter、CA 安全保存、對帳、人工覆核及法規／授權確認。
+5. 資料品質與研究流程成熟後，再評估 Regime Detection、Feature Store 與 ML 策略。
