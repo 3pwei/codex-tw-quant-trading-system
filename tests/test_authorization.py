@@ -100,6 +100,49 @@ class AuthorizationApiTests(unittest.TestCase):
             denied_api.json()["detail"], "platform account is not registered"
         )
 
+    def test_oversized_request_is_rejected_before_auth_and_json_parsing(self):
+        response = self.client.post(
+            "/api/access-requests",
+            content=b"x" * (256 * 1024 + 1),
+            headers={"Content-Type": "application/json"},
+        )
+
+        self.assertEqual(response.status_code, 413)
+        self.assertEqual(response.json()["detail"], "request body too large")
+        self.assertEqual(response.json()["max_bytes"], 256 * 1024)
+        self.assertEqual(response.headers["cache-control"], "no-store")
+
+    def test_chunked_oversized_request_is_also_rejected(self):
+        def chunks():
+            yield b"x" * (128 * 1024)
+            yield b"x" * (128 * 1024 + 1)
+
+        response = self.client.post(
+            "/api/access-requests",
+            content=chunks(),
+            headers={
+                **self.headers("cf-guest", "guest@example.com"),
+                "Content-Type": "application/json",
+                "Transfer-Encoding": "chunked",
+            },
+        )
+
+        self.assertEqual(response.status_code, 413)
+        self.assertEqual(response.json()["detail"], "request body too large")
+
+    def test_verified_access_request_email_length_is_limited(self):
+        response = self.client.post(
+            "/api/access-requests",
+            headers=self.headers(
+                "cf-long-email", f"{'a' * 250}@example.com"
+            ),
+        )
+
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(
+            response.json()["detail"], "a verified email is required"
+        )
+
     def test_verified_guest_can_request_and_admin_can_approve(self):
         guest = self.headers("cf-guest", "guest@example.com")
         forward_auth = self.client.get(
@@ -276,6 +319,15 @@ class AuthorizationApiTests(unittest.TestCase):
             "user.created", [event["action"] for event in audit.json()["events"]]
         )
 
+    def test_admin_user_email_length_is_limited(self):
+        response = self.client.post(
+            "/api/admin/users",
+            headers=self.headers("cf-admin", "admin@example.com"),
+            json={"email": f"{'a' * 250}@example.com"},
+        )
+
+        self.assertEqual(response.status_code, 422)
+
     def test_health_hides_provider_details_from_regular_users(self):
         reader = self.headers("cf-reader", "reader@example.com")
         public_health = self.client.get("/api/health", headers=reader)
@@ -295,6 +347,10 @@ class AuthorizationApiTests(unittest.TestCase):
         self.assertIn("system_status", admin_health.json())
         self.assertIn("host", admin_health.json())
         self.assertIn("rate_limiting", admin_health.json())
+        self.assertEqual(
+            admin_health.json()["request_limits"]["max_body_bytes"],
+            256 * 1024,
+        )
         self.assertEqual(
             admin_health.json()["rate_limiting"]["algorithm"],
             "sliding_window",

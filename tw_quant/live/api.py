@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from dataclasses import replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 from uuid import uuid4
 
 from fastapi import (
@@ -19,7 +19,7 @@ from fastapi import (
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ..auth import (
     AccessIdentity,
@@ -72,6 +72,7 @@ from ..strategy import (
 )
 from .monitoring import HostResourceMonitor
 from .rate_limit import RateLimitDecision, RateLimitRule, SlidingWindowRateLimiter
+from .request_limit import RequestBodyLimitMiddleware
 from .service import LiveMarketService
 from .settings import LiveSettings
 from .storage import (
@@ -84,33 +85,37 @@ from .storage import (
 )
 
 
+ShortIdentifier = Annotated[str, Field(min_length=1, max_length=80)]
+EmailAddress = Annotated[str, Field(min_length=3, max_length=254)]
+
+
 class StrategyParametersUpdate(BaseModel):
-    parameters: dict[str, object]
+    parameters: dict[str, object] = Field(max_length=50)
 
 
 class CompositeStrategyUpdate(BaseModel):
-    definition: dict[str, object]
+    definition: dict[str, object] = Field(max_length=20)
 
 
 class CompositeStrategyPurge(BaseModel):
-    strategy_ids: list[str]
+    strategy_ids: list[ShortIdentifier] = Field(min_length=1, max_length=100)
 
 
 class BacktestExecutionRequest(BaseModel):
-    symbol: str = "TMF"
-    strategy: str
-    interval: str = "1m"
+    symbol: Annotated[str, Field(min_length=1, max_length=32)] = "TMF"
+    strategy: ShortIdentifier
+    interval: Annotated[str, Field(min_length=1, max_length=16)] = "1m"
     start: date
     end: date
     version: int | None = None
 
 
 class ReplayPrepareRequest(BaseModel):
-    symbol: str = "TMF"
+    symbol: Annotated[str, Field(min_length=1, max_length=32)] = "TMF"
     trading_date: date
     session: Literal["day", "night"] = "day"
-    interval: str = "1m"
-    strategies: list[str]
+    interval: Annotated[str, Field(min_length=1, max_length=16)] = "1m"
+    strategies: list[ShortIdentifier] = Field(min_length=1, max_length=3)
 
 
 class ReplayCursorUpdate(BaseModel):
@@ -118,7 +123,7 @@ class ReplayCursorUpdate(BaseModel):
 
 
 class AdminUserCreate(BaseModel):
-    email: str
+    email: EmailAddress
     role: Role = Role.RESEARCHER
     status: AccountStatus = AccountStatus.ACTIVE
     trading_mode: TradingMode = TradingMode.DISABLED
@@ -131,7 +136,7 @@ class AdminUserUpdate(BaseModel):
 
 
 class PaperOrderCreate(BaseModel):
-    strategy_id: str = "manual"
+    strategy_id: ShortIdentifier = "manual"
     strategy_version: int = 1
     side: Literal["buy", "sell"]
     quantity: int = 1
@@ -140,7 +145,7 @@ class PaperOrderCreate(BaseModel):
 
 
 class PaperControlRequest(BaseModel):
-    reason: str
+    reason: Annotated[str, Field(min_length=1, max_length=500)]
 
 
 def system_status(
@@ -439,7 +444,6 @@ def create_app(
         allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
         allow_headers=["*"],
     )
-
     def identity_from_headers(headers):
         token = headers.get("cf-access-jwt-assertion")
         if token:
@@ -621,6 +625,9 @@ def create_app(
             "paper_trading": paper_health,
             "host": host,
             "rate_limiting": limiter.stats(),
+            "request_limits": {
+                "max_body_bytes": config.max_request_body_bytes,
+            },
         }
 
     @app.get("/api/admin/access-requests")
@@ -744,7 +751,9 @@ def create_app(
     def create_paper_order(
         payload: PaperOrderCreate,
         request: Request,
-        idempotency_key: str = Header(..., alias="Idempotency-Key"),
+        idempotency_key: str = Header(
+            ..., alias="Idempotency-Key", min_length=1, max_length=128
+        ),
     ):
         market = service.status_message()
         block_reason = market.get("trading_block_reason")
@@ -1252,7 +1261,9 @@ def create_app(
         session_id: str,
         payload: PaperOrderCreate,
         request: Request,
-        idempotency_key: str = Header(..., alias="Idempotency-Key"),
+        idempotency_key: str = Header(
+            ..., alias="Idempotency-Key", min_length=1, max_length=128
+        ),
     ):
         try:
             order, created, state = replay_session(session_id, request).submit(
@@ -1455,4 +1466,10 @@ def create_app(
         finally:
             service.hub.unsubscribe(queue)
 
+    # Added last so it is the outermost application middleware and rejects
+    # oversized bodies before authentication, JSON parsing, or route work.
+    app.add_middleware(
+        RequestBodyLimitMiddleware,
+        max_body_bytes=config.max_request_body_bytes,
+    )
     return app

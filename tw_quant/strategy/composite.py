@@ -15,6 +15,11 @@ ROLES = ("setup", "entry", "exit")
 OPERATORS = ("all", "any")
 DIRECTIONS = ("both", "long", "short")
 MAX_COMPOSITE_DEPTH = 3
+MAX_RULES_PER_GROUP = 20
+MAX_STRATEGY_NAME_LENGTH = 80
+MAX_STRATEGY_DESCRIPTION_LENGTH = 500
+MAX_RULE_ID_LENGTH = 80
+MAX_STRATEGY_ID_LENGTH = 80
 CompositeResolver = Callable[[str, int], Mapping[str, object] | None]
 
 
@@ -77,6 +82,8 @@ def _validate_group(
     raw_rules = raw.get("rules", [])
     if not isinstance(raw_rules, list):
         raise ValueError(f"{role}.rules 必須是陣列")
+    if len(raw_rules) > MAX_RULES_PER_GROUP:
+        raise ValueError(f"{role}.rules 最多 {MAX_RULES_PER_GROUP} 條")
     if role == "entry" and not raw_rules:
         raise ValueError("entry 至少需要一條規則")
     rules = []
@@ -88,6 +95,10 @@ def _validate_group(
             if composite_resolver is None:
                 raise ValueError("組合策略引用需要版本解析器")
             strategy_id = str(item.get("strategy_id", "")).strip()
+            if len(strategy_id) > MAX_STRATEGY_ID_LENGTH:
+                raise ValueError(
+                    f"組合策略 strategy_id 最多 {MAX_STRATEGY_ID_LENGTH} 個字元"
+                )
             try:
                 version = int(item.get("version", 0))
             except (TypeError, ValueError) as exc:
@@ -100,8 +111,11 @@ def _validate_group(
             child_definition = resolved.get("definition")
             if not isinstance(child_definition, Mapping):
                 raise ValueError("被引用的組合策略版本內容無效")
+            rule_id = str(item.get("id") or f"{role}-{index + 1}")
+            if len(rule_id) > MAX_RULE_ID_LENGTH:
+                raise ValueError(f"規則 id 最多 {MAX_RULE_ID_LENGTH} 個字元")
             rules.append({
-                "id": str(item.get("id") or f"{role}-{index + 1}"),
+                "id": rule_id,
                 "source": "composite",
                 "strategy_id": strategy_id,
                 "version": version,
@@ -120,8 +134,11 @@ def _validate_group(
             raise ValueError(f"{role} 第 {index + 1} 條規則參數格式錯誤")
         merged = dict(atomic_parameters.get(strategy, {}))
         merged.update(dict(overrides or {}))
+        rule_id = str(item.get("id") or f"{role}-{index + 1}")
+        if len(rule_id) > MAX_RULE_ID_LENGTH:
+            raise ValueError(f"規則 id 最多 {MAX_RULE_ID_LENGTH} 個字元")
         rules.append({
-            "id": str(item.get("id") or f"{role}-{index + 1}"),
+            "id": rule_id,
             "source": "atomic",
             "strategy": strategy,
             "interval": interval,
@@ -141,8 +158,15 @@ def validate_composite_definition(
 ) -> dict[str, object]:
     defaults = default_composite_definition()
     name = str(raw.get("name", "")).strip()
-    if not name or len(name) > 80:
-        raise ValueError("策略名稱必須為 1～80 個字元")
+    if not name or len(name) > MAX_STRATEGY_NAME_LENGTH:
+        raise ValueError(
+            f"策略名稱必須為 1～{MAX_STRATEGY_NAME_LENGTH} 個字元"
+        )
+    description = str(raw.get("description", "")).strip()
+    if len(description) > MAX_STRATEGY_DESCRIPTION_LENGTH:
+        raise ValueError(
+            f"策略描述最多 {MAX_STRATEGY_DESCRIPTION_LENGTH} 個字元"
+        )
     direction = str(raw.get("direction", "both")).lower()
     if direction not in DIRECTIONS:
         raise ValueError("direction 僅支援 both、long 或 short")
@@ -161,7 +185,7 @@ def validate_composite_definition(
         raise ValueError("第一版風險監控固定使用 1 分 K，避免漏過盤中停損")
     result = {
         "name": name,
-        "description": str(raw.get("description", "")).strip()[:500],
+        "description": description,
         "enabled": bool(raw.get("enabled", True)),
         "direction": direction,
         "setup": _validate_group(

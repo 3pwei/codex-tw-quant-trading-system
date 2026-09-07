@@ -132,6 +132,7 @@ class LiveSettingsTests(unittest.TestCase):
                 "RATE_LIMIT_BACKTESTS_PER_MINUTE": "8",
                 "RATE_LIMIT_REPLAY_PREPARES_PER_MINUTE": "9",
                 "RATE_LIMIT_ORDERS_PER_MINUTE": "40",
+                "API_MAX_REQUEST_BODY_BYTES": "131072",
             },
             clear=True,
         ):
@@ -141,12 +142,20 @@ class LiveSettingsTests(unittest.TestCase):
         self.assertEqual(settings.rate_limit_backtests_per_minute, 8)
         self.assertEqual(settings.rate_limit_replay_prepares_per_minute, 9)
         self.assertEqual(settings.rate_limit_orders_per_minute, 40)
+        self.assertEqual(settings.max_request_body_bytes, 131072)
 
     def test_rate_limits_must_be_positive(self):
         with self.assertRaisesRegex(
             ValueError, "RATE_LIMIT_BACKTESTS_PER_MINUTE must be positive"
         ):
             LiveSettings(rate_limit_backtests_per_minute=0).validate()
+
+    def test_request_body_limit_has_secure_bounds(self):
+        for value in (1023, 1024 * 1024 + 1):
+            with self.subTest(value=value), self.assertRaisesRegex(
+                ValueError, "API_MAX_REQUEST_BODY_BYTES"
+            ):
+                LiveSettings(max_request_body_bytes=value).validate()
 
 
 if __name__ == "__main__":

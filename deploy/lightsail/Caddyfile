@@ -10,6 +10,10 @@
 		@health path /healthz
 		respond @health "ok" 200
 
+		request_body {
+			max_size {$API_MAX_REQUEST_BODY_BYTES:262144}
+		}
+
 		forward_auth market-api:8000 {
 			uri /internal/auth/cloudflare
 			header_up X-Original-URI {orig_uri}

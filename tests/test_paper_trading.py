@@ -242,6 +242,22 @@ class PaperTradingApiTests(unittest.TestCase):
         self.assertEqual(reset.status_code, 200)
         self.assertFalse(reset.json()["kill_switch_active"])
 
+    def test_control_reason_and_idempotency_key_lengths_are_limited(self):
+        identity = self.headers("cf-trader", "trader@example.com")
+        reason = self.client.post(
+            "/api/paper/kill-switch",
+            headers=identity,
+            json={"reason": "x" * 501},
+        )
+        self.assertEqual(reason.status_code, 422)
+
+        order = self.client.post(
+            "/api/paper/orders",
+            headers={**identity, "Idempotency-Key": "x" * 129},
+            json={"side": "buy", "stop_loss_price": 19_950},
+        )
+        self.assertEqual(order.status_code, 422)
+
     def test_kill_switch_blocks_entry_but_allows_reduce_only_close(self):
         identity = self.headers("cf-trader", "trader@example.com")
         entry = self.client.post(
