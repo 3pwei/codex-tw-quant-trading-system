@@ -221,6 +221,56 @@ class LiveApiTests(unittest.TestCase):
                     for item in snapshot["strategies"]
                 ))
                 self.assertTrue(snapshot["snapshot_id"])
+                trading = snapshot["trading_session"]
+                self.assertEqual(trading["mode"], "replay")
+                self.assertTrue(trading["isolated_from_live_paper"])
+                self.assertEqual(trading["cursor"], 0)
+                self.assertEqual(trading["orders"], [])
+
+                order_headers = {"Idempotency-Key": "replay-order-1"}
+                replay_order = client.post(
+                    f"/api/replay/sessions/{trading['session_id']}/orders",
+                    headers=order_headers,
+                    json={
+                        "strategy_id": "manual-replay", "strategy_version": 1,
+                        "side": "buy", "quantity": 1,
+                        "stop_loss_price": 19_900,
+                    },
+                )
+                self.assertEqual(replay_order.status_code, 201, replay_order.text)
+                self.assertEqual(replay_order.json()["order"]["status"], "filled")
+                repeated = client.post(
+                    f"/api/replay/sessions/{trading['session_id']}/orders",
+                    headers=order_headers,
+                    json={
+                        "strategy_id": "manual-replay", "strategy_version": 1,
+                        "side": "buy", "quantity": 1,
+                        "stop_loss_price": 19_900,
+                    },
+                )
+                self.assertFalse(repeated.json()["created"])
+                self.assertEqual(
+                    client.get("/api/paper/fills").json()["fills"], [],
+                    "Replay fills must never enter the live Paper repository",
+                )
+
+                advanced = client.put(
+                    f"/api/replay/sessions/{trading['session_id']}/cursor",
+                    json={"cursor": 3},
+                )
+                self.assertEqual(advanced.status_code, 200)
+                self.assertEqual(advanced.json()["cursor"], 3)
+                rewound = client.put(
+                    f"/api/replay/sessions/{trading['session_id']}/cursor",
+                    json={"cursor": 1},
+                )
+                self.assertTrue(rewound.json()["rewound"])
+                self.assertEqual(rewound.json()["orders"], [])
+                invalid_cursor = client.put(
+                    f"/api/replay/sessions/{trading['session_id']}/cursor",
+                    json={"cursor": 999},
+                )
+                self.assertEqual(invalid_cursor.status_code, 422)
 
                 missing = client.post("/api/replay/prepare", json={
                     "trading_date": "2024-05-06", "session": "night",

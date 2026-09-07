@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Literal
@@ -57,6 +58,7 @@ from ..market_data import (
     build_market_data_provider,
 )
 from ..paper import PaperOrderCommand, PaperTradingService, SQLitePaperRepository
+from ..replay import ReplaySessionNotFound, ReplayTradingSessionRegistry
 from ..strategy import (
     SUPPORTED_STRATEGIES,
     analyze_strategies,
@@ -108,6 +110,10 @@ class ReplayPrepareRequest(BaseModel):
     session: Literal["day", "night"] = "day"
     interval: str = "1m"
     strategies: list[str]
+
+
+class ReplayCursorUpdate(BaseModel):
+    cursor: int
 
 
 class AdminUserCreate(BaseModel):
@@ -342,6 +348,7 @@ def create_app(
         stale_after_seconds=config.stale_after_seconds,
     )
     paper = PaperTradingService(SQLitePaperRepository(config.db_path))
+    replay_trading = ReplayTradingSessionRegistry()
     host_monitor = HostResourceMonitor(Path(config.db_path))
     service.add_bar_listener(paper.on_bar)
 
@@ -353,6 +360,7 @@ def create_app(
         finally:
             await service.stop()
             service.remove_bar_listener(paper.on_bar)
+            replay_trading.close()
             paper.close()
             repo.close()
             identity_repo.close()
@@ -368,6 +376,7 @@ def create_app(
     app.state.auth_repository = identity_repo
     app.state.auth_service = auth_service
     app.state.paper_trading = paper
+    app.state.replay_trading = replay_trading
     app.state.host_monitor = host_monitor
     app.add_middleware(
         CORSMiddleware,
@@ -1106,8 +1115,15 @@ def create_app(
                 "events": event_run.execution_events,
             }
 
+        snapshot_id = uuid4().hex
+        replay_owner = request.state.auth_user
+        if replay_owner.user_id != owner_id:
+            replay_owner = replace(replay_owner, user_id=owner_id)
+        trading_session = replay_trading.create(
+            snapshot_id, replay_owner, display_bars
+        )
         return {
-            "snapshot_id": uuid4().hex,
+            "snapshot_id": snapshot_id,
             "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
             "symbol": config.symbol,
             "trading_date": payload.trading_date.isoformat(),
@@ -1131,7 +1147,55 @@ def create_app(
                 for bar in display_bars
             ],
             "strategies": [by_key[key] for key in selected],
+            "trading_session": trading_session.state(),
         }
+
+    def replay_session(session_id: str, request: Request):
+        try:
+            return replay_trading.get(session_id, request_owner_id(request))
+        except ReplaySessionNotFound as exc:
+            raise HTTPException(status_code=404, detail="找不到回放交易 Session") from exc
+
+    @app.get("/api/replay/sessions/{session_id}")
+    def get_replay_session(session_id: str, request: Request):
+        return replay_session(session_id, request).state()
+
+    @app.put("/api/replay/sessions/{session_id}/cursor")
+    def update_replay_cursor(
+        session_id: str, payload: ReplayCursorUpdate, request: Request
+    ):
+        try:
+            return replay_session(session_id, request).seek(payload.cursor)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.post("/api/replay/sessions/{session_id}/orders", status_code=201)
+    def create_replay_order(
+        session_id: str,
+        payload: PaperOrderCreate,
+        request: Request,
+        idempotency_key: str = Header(..., alias="Idempotency-Key"),
+    ):
+        try:
+            order, created, state = replay_session(session_id, request).submit(
+                PaperOrderCommand(
+                    strategy_id=payload.strategy_id,
+                    strategy_version=payload.strategy_version,
+                    side=payload.side,
+                    quantity=payload.quantity,
+                    stop_loss_price=payload.stop_loss_price,
+                    reduce_only=payload.reduce_only,
+                    reason="manual_replay_order",
+                ),
+                idempotency_key=idempotency_key,
+            )
+            return {"mode": "replay", "created": created, "order": order, "session": state}
+        except (RuntimeError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.post("/api/replay/sessions/{session_id}/reset")
+    def reset_replay_session(session_id: str, request: Request):
+        return replay_session(session_id, request).reset()
 
     @app.get("/api/backtest")
     def backtest(
