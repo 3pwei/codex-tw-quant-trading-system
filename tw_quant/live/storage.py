@@ -146,6 +146,10 @@ class SQLiteBarRepository:
             """
         )
         self.connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_minute_bars_symbol_status_date_time "
+            "ON minute_bars(symbol, status, trading_date, time)"
+        )
+        self.connection.execute(
             """
             CREATE TABLE IF NOT EXISTS processed_ticks (
                 dedup_key TEXT PRIMARY KEY,
@@ -188,6 +192,7 @@ class SQLiteBarRepository:
         )
         self.connection.commit()
         self._ensure_backtest_schema()
+        self._ensure_backtest_summary_schema()
         self._ensure_ownership_schema()
         self._ensure_composite_dependency_schema()
 
@@ -220,6 +225,8 @@ class SQLiteBarRepository:
                 end_date TEXT NOT NULL,
                 strategy_snapshot_json TEXT NOT NULL,
                 result_json TEXT NOT NULL,
+                summary_json TEXT NOT NULL DEFAULT '{}',
+                trade_count INTEGER NOT NULL DEFAULT 0,
                 status TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 owner_user_id TEXT NOT NULL DEFAULT '__legacy__',
@@ -262,19 +269,60 @@ class SQLiteBarRepository:
                 "INSERT INTO backtest_runs("
                 "run_id,strategy_kind,strategy_key,strategy_version,strategy_name,"
                 "symbol,interval,start_date,end_date,strategy_snapshot_json,"
-                "result_json,status,created_at,owner_user_id"
-                ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "result_json,summary_json,trade_count,status,created_at,owner_user_id"
+                ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     row["run_id"], "composite", row["strategy_id"],
                     row["strategy_version"], row["strategy_id"], "TMF", "multi",
                     row["start_date"], row["end_date"],
                     row["strategy_snapshot_json"],
-                    json.dumps(result, ensure_ascii=False), row["status"],
+                    json.dumps(result, ensure_ascii=False),
+                    json.dumps(result["summary"], ensure_ascii=False), 0,
+                    row["status"],
                     row["created_at"], DEFAULT_OWNER_ID,
                 ),
             )
         if legacy_rows or "strategy_kind" not in columns and columns:
             self.connection.execute("DROP TABLE IF EXISTS backtest_runs_legacy")
+        self.connection.commit()
+
+    def _ensure_backtest_summary_schema(self) -> None:
+        columns = {
+            row["name"]
+            for row in self.connection.execute(
+                "PRAGMA table_info(backtest_runs)"
+            ).fetchall()
+        }
+        needs_backfill = False
+        if "summary_json" not in columns:
+            self.connection.execute(
+                "ALTER TABLE backtest_runs ADD COLUMN summary_json TEXT "
+                "NOT NULL DEFAULT '{}'"
+            )
+            needs_backfill = True
+        if "trade_count" not in columns:
+            self.connection.execute(
+                "ALTER TABLE backtest_runs ADD COLUMN trade_count INTEGER "
+                "NOT NULL DEFAULT 0"
+            )
+            needs_backfill = True
+        if needs_backfill:
+            rows = self.connection.execute(
+                "SELECT run_id, result_json FROM backtest_runs"
+            ).fetchall()
+            summaries = []
+            for row in rows:
+                result = json.loads(row["result_json"])
+                summaries.append((
+                    json.dumps(result.get("summary", {}), ensure_ascii=False),
+                    len(result.get("trades", [])),
+                    row["run_id"],
+                ))
+            self.connection.executemany(
+                "UPDATE backtest_runs SET summary_json=?, trade_count=? "
+                "WHERE run_id=?",
+                summaries,
+            )
         self.connection.commit()
 
     def _ensure_ownership_schema(self) -> None:
@@ -480,7 +528,7 @@ class SQLiteBarRepository:
         with self.lock:
             rows = self.connection.execute(
                 "SELECT * FROM minute_bars WHERE symbol=? AND status='closed' "
-                "AND trading_date BETWEEN ? AND ? ORDER BY time",
+                "AND trading_date BETWEEN ? AND ? ORDER BY trading_date, time",
                 (symbol, start.isoformat(), end.isoformat()),
             ).fetchall()
         return [self._to_bar(row) for row in rows]
@@ -888,8 +936,12 @@ class SQLiteBarRepository:
 
     @staticmethod
     def _backtest_row(row: sqlite3.Row, *, detail: bool = False) -> dict[str, object]:
-        result = json.loads(row["result_json"])
-        summary = result.get("summary", {})
+        result = json.loads(row["result_json"]) if detail else None
+        summary = (
+            result.get("summary", {})
+            if result is not None
+            else json.loads(row["summary_json"])
+        )
         item: dict[str, object] = {
             "run_id": row["run_id"],
             "strategy_kind": row["strategy_kind"],
@@ -902,7 +954,11 @@ class SQLiteBarRepository:
             "end_date": row["end_date"],
             "status": row["status"],
             "created_at": row["created_at"],
-            "trade_count": len(result.get("trades", [])),
+            "trade_count": (
+                len(result.get("trades", []))
+                if result is not None
+                else row["trade_count"]
+            ),
             "summary": summary,
         }
         if detail:
@@ -936,8 +992,8 @@ class SQLiteBarRepository:
                 "INSERT INTO backtest_runs("
                 "run_id,strategy_kind,strategy_key,strategy_version,strategy_name,"
                 "symbol,interval,start_date,end_date,strategy_snapshot_json,"
-                "result_json,status,created_at,owner_user_id"
-                ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "result_json,summary_json,trade_count,status,created_at,owner_user_id"
+                ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     run_id, strategy_kind, strategy_key, strategy_version,
                     metadata["strategy"], metadata["symbol"],
@@ -945,6 +1001,8 @@ class SQLiteBarRepository:
                     date_range[0], date_range[1],
                     json.dumps(strategy_snapshot, ensure_ascii=False, sort_keys=True),
                     json.dumps(stored_result, ensure_ascii=False),
+                    json.dumps(result.get("summary", {}), ensure_ascii=False),
+                    len(result.get("trades", [])),
                     "completed", created_at, owner,
                 ),
             )
@@ -961,7 +1019,11 @@ class SQLiteBarRepository:
         strategy_key: str | None = None,
         owner_user_id: str | None = None,
     ) -> list[dict[str, object]]:
-        sql = "SELECT * FROM backtest_runs WHERE owner_user_id=?"
+        sql = (
+            "SELECT run_id,strategy_kind,strategy_key,strategy_version,"
+            "strategy_name,symbol,interval,start_date,end_date,status,created_at,"
+            "summary_json,trade_count FROM backtest_runs WHERE owner_user_id=?"
+        )
         parameters: list[object] = [self._owner(owner_user_id)]
         if strategy_key:
             sql += " AND strategy_key=?"

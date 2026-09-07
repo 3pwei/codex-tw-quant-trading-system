@@ -1,5 +1,6 @@
 from datetime import date, datetime, timedelta
 from pathlib import Path
+import json
 import sqlite3
 import tempfile
 import unittest
@@ -69,11 +70,49 @@ class BacktestHistoryTests(unittest.TestCase):
                 self.assertEqual(detail["strategy_snapshot"]["opening_range_minutes"], 15)
                 self.assertNotIn("bars", detail["result"])
 
+                second = client.post(
+                    "/api/backtest-runs",
+                    json={
+                        "strategy": "orb", "interval": "1m",
+                        "start": "2026-08-25", "end": "2026-08-25",
+                    },
+                )
+                self.assertEqual(second.status_code, 201, second.text)
+                first_page = client.get("/api/backtest-runs?limit=1").json()
+                second_page = client.get(
+                    "/api/backtest-runs?limit=1&offset=1"
+                ).json()
+                self.assertTrue(first_page["has_more"])
+                self.assertFalse(second_page["has_more"])
+                self.assertNotEqual(
+                    first_page["runs"][0]["run_id"],
+                    second_page["runs"][0]["run_id"],
+                )
+
+                # List queries use denormalized summaries and never need to
+                # load or parse the potentially large result payload.
+                with repo.lock:
+                    repo.connection.execute(
+                        "UPDATE backtest_runs SET result_json='not-list-json' "
+                        "WHERE run_id=?",
+                        (run_id,),
+                    )
+                    repo.connection.commit()
+                lightweight = client.get("/api/backtest-runs").json()["runs"]
+                lightweight_run = next(
+                    item for item in lightweight if item["run_id"] == run_id
+                )
+                self.assertEqual(lightweight_run["summary"], listing[0]["summary"])
+                self.assertEqual(
+                    lightweight_run["trade_count"], listing[0]["trade_count"]
+                )
+
                 deleted = client.delete(f"/api/backtest-runs/{run_id}")
                 self.assertEqual(deleted.status_code, 200, deleted.text)
                 self.assertEqual(deleted.json()["deleted_run_id"], run_id)
                 self.assertFalse(deleted.json()["released_strategy_reference"])
-                self.assertEqual(client.get("/api/backtest-runs").json()["runs"], [])
+                remaining = client.get("/api/backtest-runs").json()["runs"]
+                self.assertEqual(len(remaining), 1)
                 self.assertEqual(
                     client.get(f"/api/backtest-runs/{run_id}").status_code, 404
                 )
@@ -113,7 +152,77 @@ class BacktestHistoryTests(unittest.TestCase):
                 }
                 self.assertIn("strategy_kind", columns)
                 self.assertIn("result_json", columns)
+                self.assertIn("summary_json", columns)
+                self.assertIn("trade_count", columns)
                 self.assertNotIn("strategy_id", columns)
+            finally:
+                repo.close()
+
+    def test_existing_results_are_backfilled_for_lightweight_listing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "current-schema.sqlite3"
+            connection = sqlite3.connect(path)
+            connection.execute(
+                """
+                CREATE TABLE backtest_runs (
+                    run_id TEXT PRIMARY KEY,
+                    strategy_kind TEXT NOT NULL,
+                    strategy_key TEXT NOT NULL,
+                    strategy_version INTEGER,
+                    strategy_name TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    interval TEXT NOT NULL,
+                    start_date TEXT NOT NULL,
+                    end_date TEXT NOT NULL,
+                    strategy_snapshot_json TEXT NOT NULL,
+                    result_json TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    owner_user_id TEXT NOT NULL
+                )
+                """
+            )
+            result = {
+                "summary": {"net_profit": 123.0},
+                "trades": [{"net_pnl": 123.0}],
+                "equity": [],
+            }
+            connection.execute(
+                "INSERT INTO backtest_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    "run-1", "atomic", "orb", None, "ORB", "TMF", "1m",
+                    "2026-08-25", "2026-08-25", "{}",
+                    json.dumps(result), "completed",
+                    "2026-08-25T00:00:00+08:00", "owner-1",
+                ),
+            )
+            connection.commit()
+            connection.close()
+
+            repo = SQLiteBarRepository(path)
+            try:
+                listing = repo.backtest_runs(50, 0, owner_user_id="owner-1")
+                self.assertEqual(listing[0]["summary"]["net_profit"], 123.0)
+                self.assertEqual(listing[0]["trade_count"], 1)
+            finally:
+                repo.close()
+
+    def test_backtest_date_query_uses_covering_order_index(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = SQLiteBarRepository(Path(directory) / "market.sqlite3")
+            try:
+                plan = repo.connection.execute(
+                    "EXPLAIN QUERY PLAN SELECT * FROM minute_bars "
+                    "WHERE symbol=? AND status='closed' "
+                    "AND trading_date BETWEEN ? AND ? "
+                    "ORDER BY trading_date, time",
+                    ("TMF", "2026-08-01", "2026-08-31"),
+                ).fetchall()
+                details = " ".join(row["detail"] for row in plan)
+                self.assertIn(
+                    "idx_minute_bars_symbol_status_date_time", details
+                )
+                self.assertNotIn("USE TEMP B-TREE", details)
             finally:
                 repo.close()
 
