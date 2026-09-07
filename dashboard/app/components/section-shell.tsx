@@ -18,7 +18,6 @@ export default function SectionShell({
     <main className="portal-shell">
       <header className="portal-header">
         <div className="brand">
-          <b>WQ</b>
           <div><span>{eyebrow}</span><h1>{title}</h1></div>
         </div>
         <p>{description}</p>

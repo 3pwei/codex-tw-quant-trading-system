@@ -2,7 +2,7 @@ import SectionShell from "../components/section-shell";
 import SystemHealthPanel from "./system-health";
 
 export default function SettingsPage() {
-  return <SectionShell active="/settings/" eyebrow="WADE QUANT LAB · SETTINGS" title="系統設定" description="行情來源、商品與部署環境摘要">
+  return <SectionShell active="/settings/" eyebrow="MILESPAPA LAB · SETTINGS" title="系統設定" description="行情來源、商品與部署環境摘要">
     <section className="settings-grid panel">
       <div><span>行情供應商</span><strong>永豐 Shioaji</strong><small>正式環境僅訂閱行情</small></div>
       <div><span>商品</span><strong>TMF 微型臺指期貨</strong><small>近月合約由後端識別</small></div>
