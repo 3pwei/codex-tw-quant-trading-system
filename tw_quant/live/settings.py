@@ -37,6 +37,10 @@ class LiveSettings:
     authorization_mode: str
     bootstrap_admin_emails: tuple[str, ...]
     environment: str
+    rate_limit_access_requests_per_hour: int
+    rate_limit_backtests_per_minute: int
+    rate_limit_replay_prepares_per_minute: int
+    rate_limit_orders_per_minute: int
 
     def __init__(
         self,
@@ -53,6 +57,10 @@ class LiveSettings:
         authorization_mode: str = "disabled",
         bootstrap_admin_emails: tuple[str, ...] = (),
         environment: str = "development",
+        rate_limit_access_requests_per_hour: int = 5,
+        rate_limit_backtests_per_minute: int = 10,
+        rate_limit_replay_prepares_per_minute: int = 10,
+        rate_limit_orders_per_minute: int = 30,
         # Compatibility inputs from the pre-provider settings model.
         mode: str | None = None,
         symbol: str | None = None,
@@ -102,6 +110,24 @@ class LiveSettings:
             self, "bootstrap_admin_emails", bootstrap_admin_emails
         )
         object.__setattr__(self, "environment", environment.lower().strip())
+        object.__setattr__(
+            self,
+            "rate_limit_access_requests_per_hour",
+            rate_limit_access_requests_per_hour,
+        )
+        object.__setattr__(
+            self,
+            "rate_limit_backtests_per_minute",
+            rate_limit_backtests_per_minute,
+        )
+        object.__setattr__(
+            self,
+            "rate_limit_replay_prepares_per_minute",
+            rate_limit_replay_prepares_per_minute,
+        )
+        object.__setattr__(
+            self, "rate_limit_orders_per_minute", rate_limit_orders_per_minute
+        )
 
     @classmethod
     def from_env(cls) -> "LiveSettings":
@@ -140,6 +166,18 @@ class LiveSettings:
             environment=os.getenv(
                 "PLATFORM_ENVIRONMENT", "production"
             ),
+            rate_limit_access_requests_per_hour=int(
+                os.getenv("RATE_LIMIT_ACCESS_REQUESTS_PER_HOUR", "5")
+            ),
+            rate_limit_backtests_per_minute=int(
+                os.getenv("RATE_LIMIT_BACKTESTS_PER_MINUTE", "10")
+            ),
+            rate_limit_replay_prepares_per_minute=int(
+                os.getenv("RATE_LIMIT_REPLAY_PREPARES_PER_MINUTE", "10")
+            ),
+            rate_limit_orders_per_minute=int(
+                os.getenv("RATE_LIMIT_ORDERS_PER_MINUTE", "30")
+            ),
         )
 
     def validate(self) -> None:
@@ -152,6 +190,23 @@ class LiveSettings:
             raise ValueError("MARKET_HEARTBEAT_SECONDS must be positive")
         if self.stale_after_seconds <= 0:
             raise ValueError("MARKET_STALE_AFTER_SECONDS must be positive")
+        for name, value in (
+            (
+                "RATE_LIMIT_ACCESS_REQUESTS_PER_HOUR",
+                self.rate_limit_access_requests_per_hour,
+            ),
+            (
+                "RATE_LIMIT_BACKTESTS_PER_MINUTE",
+                self.rate_limit_backtests_per_minute,
+            ),
+            (
+                "RATE_LIMIT_REPLAY_PREPARES_PER_MINUTE",
+                self.rate_limit_replay_prepares_per_minute,
+            ),
+            ("RATE_LIMIT_ORDERS_PER_MINUTE", self.rate_limit_orders_per_minute),
+        ):
+            if value <= 0:
+                raise ValueError(f"{name} must be positive")
         if self.access_mode not in {"disabled", "cloudflare"}:
             raise ValueError("MARKET_ACCESS_MODE must be disabled or cloudflare")
         if self.access_mode == "cloudflare" and not (

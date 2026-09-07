@@ -162,6 +162,33 @@ class AuthorizationApiTests(unittest.TestCase):
         )
         self.assertEqual(remaining.json()["requests"], [])
 
+    def test_access_requests_are_rate_limited_per_verified_identity(self):
+        first_guest = self.headers("cf-rate-1", "rate-1@example.com")
+        for remaining in range(4, -1, -1):
+            response = self.client.post(
+                "/api/access-requests", headers=first_guest
+            )
+            self.assertEqual(response.status_code, 201)
+            self.assertEqual(
+                response.headers["x-ratelimit-remaining"], str(remaining)
+            )
+
+        rejected = self.client.post(
+            "/api/access-requests", headers=first_guest
+        )
+        self.assertEqual(rejected.status_code, 429)
+        self.assertEqual(rejected.json()["scope"], "access_requests")
+        self.assertEqual(rejected.headers["x-ratelimit-remaining"], "0")
+        self.assertGreaterEqual(int(rejected.headers["retry-after"]), 1)
+        self.assertEqual(rejected.headers["cache-control"], "no-store")
+
+        other_guest = self.client.post(
+            "/api/access-requests",
+            headers=self.headers("cf-rate-2", "rate-2@example.com"),
+        )
+        self.assertEqual(other_guest.status_code, 201)
+        self.assertEqual(other_guest.headers["x-ratelimit-remaining"], "4")
+
     def test_admin_can_reject_an_access_request(self):
         guest = self.headers("cf-second-guest", "second@example.com")
         submitted = self.client.post("/api/access-requests", headers=guest)
@@ -267,6 +294,14 @@ class AuthorizationApiTests(unittest.TestCase):
         self.assertIn("average_tick_processing_ms", admin_health.json())
         self.assertIn("system_status", admin_health.json())
         self.assertIn("host", admin_health.json())
+        self.assertIn("rate_limiting", admin_health.json())
+        self.assertEqual(
+            admin_health.json()["rate_limiting"]["algorithm"],
+            "sliding_window",
+        )
+        self.assertIn(
+            "backtests", admin_health.json()["rate_limiting"]["scopes"]
+        )
         self.assertIn("websocket_connections", admin_health.json())
         self.assertIn("average_database_write_ms", admin_health.json())
         self.assertEqual(

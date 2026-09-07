@@ -123,6 +123,31 @@ class LiveSettingsTests(unittest.TestCase):
             bootstrap_admin_emails=("owner@example.com",),
         ).validate()
 
+    def test_rate_limits_load_from_environment(self):
+        with patch.dict(
+            "os.environ",
+            {
+                "PLATFORM_ENVIRONMENT": "development",
+                "RATE_LIMIT_ACCESS_REQUESTS_PER_HOUR": "7",
+                "RATE_LIMIT_BACKTESTS_PER_MINUTE": "8",
+                "RATE_LIMIT_REPLAY_PREPARES_PER_MINUTE": "9",
+                "RATE_LIMIT_ORDERS_PER_MINUTE": "40",
+            },
+            clear=True,
+        ):
+            settings = LiveSettings.from_env()
+        settings.validate()
+        self.assertEqual(settings.rate_limit_access_requests_per_hour, 7)
+        self.assertEqual(settings.rate_limit_backtests_per_minute, 8)
+        self.assertEqual(settings.rate_limit_replay_prepares_per_minute, 9)
+        self.assertEqual(settings.rate_limit_orders_per_minute, 40)
+
+    def test_rate_limits_must_be_positive(self):
+        with self.assertRaisesRegex(
+            ValueError, "RATE_LIMIT_BACKTESTS_PER_MINUTE must be positive"
+        ):
+            LiveSettings(rate_limit_backtests_per_minute=0).validate()
+
 
 if __name__ == "__main__":
     unittest.main()

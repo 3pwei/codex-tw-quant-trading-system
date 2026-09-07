@@ -506,6 +506,10 @@ CF_ACCESS_TEAM_DOMAIN=team.cloudflareaccess.com
 CF_ACCESS_AUD=replace-with-application-audience-tag
 PLATFORM_AUTHORIZATION_MODE=enforced
 PLATFORM_BOOTSTRAP_ADMIN_EMAILS=owner@example.com
+RATE_LIMIT_ACCESS_REQUESTS_PER_HOUR=5
+RATE_LIMIT_BACKTESTS_PER_MINUTE=10
+RATE_LIMIT_REPLAY_PREPARES_PER_MINUTE=10
+RATE_LIMIT_ORDERS_PER_MINUTE=30
 ```
 
 Access 會在 Cloudflare 邊緣驗證 Email，FastAPI 源站再驗證
@@ -547,6 +551,14 @@ Bootstrap Admin；任一設定遺失時服務會拒絕啟動。只有本機開�
 拒絕、Kill Switch，以及 CPU、記憶體與磁碟使用量。行情斷線或超過
 `MARKET_STALE_AFTER_SECONDS`（預設 120 秒）未更新時，新倉會在建立委託事件前被拒絕，
 既有持倉仍可查閱，恢復後也不會補送先前失敗的請求。
+
+Backtest 執行、Replay prepare、Paper／Replay 模擬下單與帳號申請使用伺服器端
+sliding-window rate limit，並以 FastAPI 驗證出的平台 `user_id` 分別計算；尚未註冊的
+申請者則使用 Cloudflare Access `subject`，不採用可偽造或共用的來源 IP。超過額度時
+API 回傳 `429 Too Many Requests`、`Retry-After`、`X-RateLimit-Limit`、
+`X-RateLimit-Remaining` 與 `X-RateLimit-Reset`。管理員可在 `/api/admin/health` 的
+`rate_limiting` 查看各類請求的接受／拒絕累計，不會顯示使用者識別資料。上述四個
+環境變數必須是正整數；未設定時使用範例中的安全預設值。
 
 ### 單一平台使用者名單
 
