@@ -36,6 +36,7 @@ class LiveSettings:
     cloudflare_access_audience: str | None
     authorization_mode: str
     bootstrap_admin_emails: tuple[str, ...]
+    environment: str
 
     def __init__(
         self,
@@ -51,6 +52,7 @@ class LiveSettings:
         cloudflare_access_audience: str | None = None,
         authorization_mode: str = "disabled",
         bootstrap_admin_emails: tuple[str, ...] = (),
+        environment: str = "development",
         # Compatibility inputs from the pre-provider settings model.
         mode: str | None = None,
         symbol: str | None = None,
@@ -99,6 +101,7 @@ class LiveSettings:
         object.__setattr__(
             self, "bootstrap_admin_emails", bootstrap_admin_emails
         )
+        object.__setattr__(self, "environment", environment.lower().strip())
 
     @classmethod
     def from_env(cls) -> "LiveSettings":
@@ -133,10 +136,18 @@ class LiveSettings:
             bootstrap_admin_emails=_split_emails(
                 os.getenv("PLATFORM_BOOTSTRAP_ADMIN_EMAILS", "")
             ),
+            # Secure by default: local development must explicitly opt out.
+            environment=os.getenv(
+                "PLATFORM_ENVIRONMENT", "production"
+            ),
         )
 
     def validate(self) -> None:
         self.market_data.validate()
+        if self.environment not in {"development", "test", "production"}:
+            raise ValueError(
+                "PLATFORM_ENVIRONMENT must be development, test or production"
+            )
         if self.heartbeat_seconds <= 0:
             raise ValueError("MARKET_HEARTBEAT_SECONDS must be positive")
         if self.stale_after_seconds <= 0:
@@ -160,6 +171,15 @@ class LiveSettings:
                 "PLATFORM_BOOTSTRAP_ADMIN_EMAILS is required when platform "
                 "authorization is enforced"
             )
+        if self.environment == "production":
+            if self.access_mode != "cloudflare":
+                raise ValueError(
+                    "production requires MARKET_ACCESS_MODE=cloudflare"
+                )
+            if self.authorization_mode != "enforced":
+                raise ValueError(
+                    "production requires PLATFORM_AUTHORIZATION_MODE=enforced"
+                )
 
     # Compatibility properties. New code should use ``settings.market_data``.
     @property

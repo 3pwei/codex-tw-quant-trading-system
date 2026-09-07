@@ -1378,6 +1378,3 @@ def create_app(
             service.hub.unsubscribe(queue)
 
     return app
-
-
-app = create_app()

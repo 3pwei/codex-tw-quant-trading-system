@@ -323,7 +323,7 @@ Copy-Item .env.example .env
 啟動後端：
 
 ```bash
-MARKET_DATA_PROVIDER=replay uvicorn tw_quant.live.api:app --host 0.0.0.0 --port 8000 --env-file .env
+MARKET_DATA_PROVIDER=replay PLATFORM_ENVIRONMENT=development uvicorn tw_quant.live.api:create_app --factory --host 0.0.0.0 --port 8000 --env-file .env
 ```
 
 另一個終端啟動 Dashboard：
@@ -500,10 +500,11 @@ ACME_EMAIL=owner@example.com
 ```dotenv
 MARKET_DATA_PROVIDER=replay
 MARKET_ALLOWED_ORIGINS=https://tmf.example.com
+PLATFORM_ENVIRONMENT=production
 MARKET_ACCESS_MODE=cloudflare
 CF_ACCESS_TEAM_DOMAIN=team.cloudflareaccess.com
 CF_ACCESS_AUD=replace-with-application-audience-tag
-PLATFORM_AUTHORIZATION_MODE=disabled
+PLATFORM_AUTHORIZATION_MODE=enforced
 PLATFORM_BOOTSTRAP_ADMIN_EMAILS=owner@example.com
 ```
 
@@ -517,26 +518,28 @@ Cloudflare Access 負責確認 Email 身分；FastAPI 另以 SQLite 的 `app_use
 `permissions`、`role_permissions` 與 `audit_events` 保存平台帳號、角色、交易狀態及
 稽核紀錄。兩層不能互相取代：通過 Cloudflare 不代表已取得平台功能權限。
 
-首次啟用時保持：
+首次啟用時直接設定：
 
 ```dotenv
-PLATFORM_AUTHORIZATION_MODE=disabled
+PLATFORM_ENVIRONMENT=production
+MARKET_ACCESS_MODE=cloudflare
+PLATFORM_AUTHORIZATION_MODE=enforced
 PLATFORM_BOOTSTRAP_ADMIN_EMAILS=owner@example.com
 ```
 
-這會建立指定的第一位管理員、提供 `GET /api/me`，但暫不封鎖既有頁面與 API。
-登入 Dashboard 後，瀏覽器直接開啟 `https://tmf.example.com/api/me`，確認回傳
-`registered: true`、`identity_bound: true`、`role: admin`。接著把伺服器設定改為：
-
-```dotenv
-PLATFORM_AUTHORIZATION_MODE=enforced
-```
-
-重新部署後，只有預先建立且為 `active` 的平台帳號可以使用系統。管理員可從
+服務會先建立指定的 Bootstrap Admin，再開始接受請求。登入 Dashboard 後，瀏覽器
+直接開啟 `https://tmf.example.com/api/me`，確認回傳 `registered: true`、
+`identity_bound: true`、`role: admin` 與 `authorization_enforced: true`。只有預先建立且
+為 `active` 的平台帳號可以使用系統。管理員可從
 `/admin/users/` 新增核准 Email、設定 `researcher`／`trader`／`admin`、暫停或撤銷
 帳號。設定頁、帳號管理、完整 Provider Health、OpenAPI 與文件頁均由 Caddy
 forward-auth 與 FastAPI RBAC 雙重限制；前端隱藏選單不是安全邊界。未知 API route
 在 enforced 模式下預設拒絕，WebSocket 也會在握手時驗證 `market.read`。
+
+`PLATFORM_ENVIRONMENT` 未設定時預設為 `production`。Production 強制要求
+`MARKET_ACCESS_MODE=cloudflare`、`PLATFORM_AUTHORIZATION_MODE=enforced` 與至少一個
+Bootstrap Admin；任一設定遺失時服務會拒絕啟動。只有本機開發或測試可明確設定
+`PLATFORM_ENVIRONMENT=development`／`test` 後使用 disabled 模式。
 
 一般使用者的 `/api/health` 與 WebSocket heartbeat 不回傳 Provider 名稱、Queue、
 丟棄／重複／遲到 Tick 等內部診斷；完整資訊只由 `/api/admin/health` 提供。管理員健康
