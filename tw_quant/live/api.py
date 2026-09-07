@@ -1399,10 +1399,12 @@ def create_app(
         offset: int = Query(0, ge=0),
         strategy_key: str | None = None,
     ):
+        runs = repo.backtest_runs(
+            limit + 1, offset, strategy_key, request_owner_id(request)
+        )
         return {
-            "runs": repo.backtest_runs(
-                limit, offset, strategy_key, request_owner_id(request)
-            ),
+            "runs": runs[:limit],
+            "has_more": len(runs) > limit,
             "limit": limit,
             "offset": offset,
         }
