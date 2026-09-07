@@ -510,6 +510,7 @@ RATE_LIMIT_ACCESS_REQUESTS_PER_HOUR=5
 RATE_LIMIT_BACKTESTS_PER_MINUTE=10
 RATE_LIMIT_REPLAY_PREPARES_PER_MINUTE=10
 RATE_LIMIT_ORDERS_PER_MINUTE=30
+API_MAX_REQUEST_BODY_BYTES=262144
 ```
 
 Access 會在 Cloudflare 邊緣驗證 Email，FastAPI 源站再驗證
@@ -559,6 +560,12 @@ API 回傳 `429 Too Many Requests`、`Retry-After`、`X-RateLimit-Limit`、
 `X-RateLimit-Remaining` 與 `X-RateLimit-Reset`。管理員可在 `/api/admin/health` 的
 `rate_limiting` 查看各類請求的接受／拒絕累計，不會顯示使用者識別資料。上述四個
 環境變數必須是正整數；未設定時使用範例中的安全預設值。
+
+所有 HTTP Request Body 由 Caddy 與 FastAPI 兩層限制為 256 KiB；FastAPI 也會對
+chunked request 累計實際讀取量，超過時回傳 `413 Payload Too Large`。可透過
+`API_MAX_REQUEST_BODY_BYTES` 在 1 KiB～1 MiB 之間調整，Gateway 與 Market API
+必須使用相同值。策略名稱、描述、每組規則數、Email、控制原因、策略識別碼與
+Idempotency Key 另有欄位級上限，格式不符時回傳 `422`，不會寫入 SQLite。
 
 ### 單一平台使用者名單
 

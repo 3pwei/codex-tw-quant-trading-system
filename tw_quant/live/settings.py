@@ -41,6 +41,7 @@ class LiveSettings:
     rate_limit_backtests_per_minute: int
     rate_limit_replay_prepares_per_minute: int
     rate_limit_orders_per_minute: int
+    max_request_body_bytes: int
 
     def __init__(
         self,
@@ -61,6 +62,7 @@ class LiveSettings:
         rate_limit_backtests_per_minute: int = 10,
         rate_limit_replay_prepares_per_minute: int = 10,
         rate_limit_orders_per_minute: int = 30,
+        max_request_body_bytes: int = 256 * 1024,
         # Compatibility inputs from the pre-provider settings model.
         mode: str | None = None,
         symbol: str | None = None,
@@ -128,6 +130,9 @@ class LiveSettings:
         object.__setattr__(
             self, "rate_limit_orders_per_minute", rate_limit_orders_per_minute
         )
+        object.__setattr__(
+            self, "max_request_body_bytes", max_request_body_bytes
+        )
 
     @classmethod
     def from_env(cls) -> "LiveSettings":
@@ -178,6 +183,9 @@ class LiveSettings:
             rate_limit_orders_per_minute=int(
                 os.getenv("RATE_LIMIT_ORDERS_PER_MINUTE", "30")
             ),
+            max_request_body_bytes=int(
+                os.getenv("API_MAX_REQUEST_BODY_BYTES", str(256 * 1024))
+            ),
         )
 
     def validate(self) -> None:
@@ -207,6 +215,10 @@ class LiveSettings:
         ):
             if value <= 0:
                 raise ValueError(f"{name} must be positive")
+        if not 1024 <= self.max_request_body_bytes <= 1024 * 1024:
+            raise ValueError(
+                "API_MAX_REQUEST_BODY_BYTES must be between 1024 and 1048576"
+            )
         if self.access_mode not in {"disabled", "cloudflare"}:
             raise ValueError("MARKET_ACCESS_MODE must be disabled or cloudflare")
         if self.access_mode == "cloudflare" and not (

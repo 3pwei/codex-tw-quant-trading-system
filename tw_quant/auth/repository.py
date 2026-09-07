@@ -27,6 +27,13 @@ def normalize_email(email: str) -> str:
     return email.strip().casefold()
 
 
+def validate_email(email: str) -> str:
+    normalized = normalize_email(email)
+    if not normalized or "@" not in normalized or len(normalized) > 254:
+        raise ValueError("a valid email of at most 254 characters is required")
+    return normalized
+
+
 def validate_trading_mode(role: Role, trading_mode: TradingMode) -> None:
     if role is Role.RESEARCHER and trading_mode is not TradingMode.DISABLED:
         raise ValueError("researcher accounts cannot enable trading modes")
@@ -180,9 +187,7 @@ class SQLiteAuthRepository:
         trading_mode: TradingMode = TradingMode.DISABLED,
         actor_user_id: str | None = None,
     ) -> AuthUser:
-        normalized = normalize_email(email)
-        if not normalized or "@" not in normalized:
-            raise ValueError("a valid email is required")
+        normalized = validate_email(email)
         validate_trading_mode(role, trading_mode)
         user_id = str(uuid4())
         now = _now()
@@ -346,9 +351,12 @@ class SQLiteAuthRepository:
     def submit_access_request(
         self, identity: AccessIdentity
     ) -> AccessRequest:
-        email = normalize_email(identity.email or "")
-        if not email or "@" not in email:
-            raise ValueError("a verified email is required")
+        try:
+            email = validate_email(identity.email or "")
+        except ValueError as exc:
+            raise ValueError("a verified email is required") from exc
+        if len(identity.subject) > 255:
+            raise ValueError("verified identity subject is too long")
         now = _now()
         request_id = str(uuid4())
         with self.lock:

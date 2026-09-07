@@ -116,6 +116,24 @@ class CompositeDefinitionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "entry"):
             validate_composite_definition(value)
 
+    def test_text_and_rule_collection_sizes_are_limited(self):
+        value = orb_composite()
+        value["description"] = "x" * 501
+        with self.assertRaisesRegex(ValueError, "策略描述最多 500"):
+            validate_composite_definition(value)
+
+        value = orb_composite()
+        value["entry"]["rules"] = [
+            dict(value["entry"]["rules"][0]) for _ in range(21)
+        ]
+        with self.assertRaisesRegex(ValueError, "entry.rules 最多 20"):
+            validate_composite_definition(value)
+
+        value = orb_composite()
+        value["entry"]["rules"][0]["id"] = "x" * 81
+        with self.assertRaisesRegex(ValueError, "規則 id 最多 80"):
+            validate_composite_definition(value)
+
     def test_composite_uses_atomic_signal_then_next_1m_open(self):
         bars = [make_bar(0, 100), make_bar(1, 100)]
         bars += [make_bar(2, 102, 500), make_bar(3, 103), make_bar(4, 104)]
