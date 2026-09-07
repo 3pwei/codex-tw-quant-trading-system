@@ -103,7 +103,28 @@ export default function HistoryDashboard() {
     return matchesKind && matchesOutcome && (!needle || `${run.strategy_name} ${run.strategy_key}`.toLowerCase().includes(needle));
   }), [runs, query, kind, outcome]);
 
-  if (loading) return <section className="panel history-loading">正在讀取回測紀錄…</section>;
+  if (loading) return <div className="history-layout history-layout-loading" aria-busy="true" aria-label="正在讀取回測紀錄">
+    <aside className="panel history-index history-index-loading">
+      <div className="history-skeleton history-skeleton-control" />
+      <div className="history-skeleton history-skeleton-count" />
+      <div className="history-skeleton-list">
+        {Array.from({ length: 6 }, (_, index) => <div className="history-skeleton history-skeleton-run" key={index} />)}
+      </div>
+    </aside>
+    <section className="history-detail history-detail-loading">
+      <div className="panel history-skeleton-detail">
+        <div className="history-skeleton history-skeleton-kicker" />
+        <div className="history-skeleton history-skeleton-title" />
+        <div className="history-skeleton history-skeleton-copy" />
+      </div>
+      <div className="history-skeleton-metrics">
+        {Array.from({ length: 5 }, (_, index) => <div className="history-skeleton" key={index} />)}
+      </div>
+      <div className="panel history-skeleton-ledger">
+        <span className="history-loading-label">正在讀取回測紀錄…</span>
+      </div>
+    </section>
+  </div>;
   if (error && !runs.length) return <section className="feature-state panel"><span>HISTORY ERROR</span><h2>無法載入回測紀錄</h2><p>{error}</p></section>;
   if (!runs.length) return <section className="feature-state panel"><span>HISTORY READY</span><h2>{notice || "尚無已保存的回測"}</h2><p>到歷史回測頁選擇策略與期間，按下「執行回測」後，結果就會保存在這裡。</p><div><Link href="/backtest/">建立第一筆回測</Link></div></section>;
 
