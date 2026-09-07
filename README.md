@@ -104,7 +104,7 @@ CSV 1 分 K
 
 ## 安裝
 
-建議 Python 3.10 以上。
+支援 Python 3.10 至 3.12。專案以 `uv.lock` 固定 Python 套件版本，開發、CI 與正式 Docker 映像皆使用同一份鎖定結果。
 
 ```bash
 python -m venv .venv
@@ -115,14 +115,17 @@ python -m venv .venv
 # macOS / Linux
 source .venv/bin/activate
 
-python -m pip install -e ".[server,test]"
+python -m pip install "uv==0.11.33"
+uv sync --locked --extra server --extra test
 ```
 
 若要連接 Shioaji 正式行情，再安裝可選套件：
 
 ```bash
-python -m pip install -e ".[server,shioaji]"
+uv sync --locked --extra server --extra shioaji
 ```
+
+`pyproject.toml` 的版本範圍是相容性約束，實際安裝版本以提交至 Git 的 `uv.lock` 為準。變更套件後執行 `uv lock`；若要主動升級全部套件，使用 `uv lock --upgrade`，或以 `uv lock --upgrade-package <套件名稱>` 只升級指定套件。提交前須檢查 lock file 差異並完成測試，請勿手動編輯 `uv.lock`。
 
 ## TMF 即時 1 分 K
 
