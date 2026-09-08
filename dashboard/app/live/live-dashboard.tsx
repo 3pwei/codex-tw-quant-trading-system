@@ -187,12 +187,27 @@ export default function TradingWorkspace() {
   const [marketHealth, setMarketHealth] = useState<MarketHealth | null>(null);
   const [clock, setClock] = useState(() => Date.now());
   const [paperOverlay, setPaperOverlay] = useState<PaperOverlaySnapshot>(EMPTY_PAPER_OVERLAY);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const selectedInterval = selection.interval;
   const selectedStrategies = selection.strategies;
   const updatePaperOverlay = useCallback((snapshot: PaperOverlaySnapshot) => {
     setPaperOverlay(snapshot);
   }, []);
+
+  useEffect(() => {
+    if (!settingsOpen) return;
+    const previousOverflow = document.body.style.overflow;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setSettingsOpen(false);
+    };
+    document.body.style.overflow = "hidden";
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [settingsOpen]);
 
   useEffect(() => {
     let active = true;
@@ -535,6 +550,7 @@ export default function TradingWorkspace() {
   return <main className="live-shell">
     <header className="live-header">
       <div><span>MILESPAPA QUANT LAB · TRADE WORKSPACE</span><h1>{selection.symbol} 交易工作台</h1></div>
+      <button className="mobile-trade-settings-trigger" type="button" aria-haspopup="dialog" aria-expanded={settingsOpen} onClick={() => setSettingsOpen(true)}>交易設定</button>
       <div className="live-header-actions">
         <label className="timeframe-select"><span>商品</span><select value={selection.symbol} onChange={event => setSelection(current => ({ ...current, symbol: event.target.value as SymbolKey }))}>{PRODUCT_OPTIONS.map(option => <option key={option.key} value={option.key}>{option.key} · {option.name}</option>)}</select></label>
         <label className="timeframe-select"><span>K 棒週期</span><select value={selectedInterval} onChange={event => setSelection(current => ({ ...current, interval: event.target.value as Timeframe }))}>{TIMEFRAME_OPTIONS.map(option => <option key={option.key} value={option.key}>{option.name}</option>)}</select></label>
@@ -554,6 +570,33 @@ export default function TradingWorkspace() {
         <div className={`connection-pill ${status}`}><i />{status === "connected" ? "即時連線" : status === "reconnecting" ? "重新連線中" : status === "connecting" ? "連線中" : "行情中斷"}</div>
       </div>
     </header>
+    {settingsOpen && <>
+      <button className="trade-settings-backdrop" type="button" aria-label="關閉交易設定" onClick={() => setSettingsOpen(false)} />
+      <section className="trade-settings-sheet" role="dialog" aria-modal="true" aria-labelledby="trade-settings-title">
+        <header>
+          <div><span>TRADING SETTINGS</span><h2 id="trade-settings-title">交易設定</h2></div>
+          <button type="button" aria-label="關閉交易設定" onClick={() => setSettingsOpen(false)}>×</button>
+        </header>
+        <div className="trade-settings-grid">
+          <label><span>商品</span><select value={selection.symbol} onChange={event => setSelection(current => ({ ...current, symbol: event.target.value as SymbolKey }))}>{PRODUCT_OPTIONS.map(option => <option key={option.key} value={option.key}>{option.key} · {option.name}</option>)}</select></label>
+          <label><span>K 棒週期</span><select value={selectedInterval} onChange={event => setSelection(current => ({ ...current, interval: event.target.value as Timeframe }))}>{TIMEFRAME_OPTIONS.map(option => <option key={option.key} value={option.key}>{option.name}</option>)}</select></label>
+        </div>
+        <fieldset className="trade-settings-strategies">
+          <legend>交易策略 · 已啟用 {selectedStrategies.length} 套</legend>
+          {strategyOptions.map(option => <label key={option.key}>
+            <input type="checkbox" checked={selectedStrategies.includes(option.key)} onChange={() => toggleStrategy(option.key)} />
+            <i style={{ background: option.color }} />
+            <span><b>{option.name}</b><small>{option.category} · {option.description}</small></span>
+          </label>)}
+        </fieldset>
+        <div className="trade-settings-status">
+          <div className="paper-mode-pill">PAPER</div>
+          <div className={`freshness-pill ${quoteFresh ? "fresh" : "stale"}`}>報價 {quoteAgeSeconds == null ? "等待中" : `${quoteAgeSeconds} 秒前`}</div>
+          <div className={`connection-pill ${status}`}><i />{status === "connected" ? "即時連線" : status === "reconnecting" ? "重新連線中" : status === "connecting" ? "連線中" : "行情中斷"}</div>
+        </div>
+        <button className="trade-settings-done" type="button" onClick={() => setSettingsOpen(false)}>完成</button>
+      </section>
+    </>}
     <SystemNav active="/trade/" />
     <section className="live-summary">
       <div><span>商品／契約</span><b>{selection.symbol} · {latest?.contract ?? "等待行情"}</b></div>
