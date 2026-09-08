@@ -14,6 +14,7 @@ from .parameters import (
     strategy_catalog,
     validate_strategy_parameters,
 )
+from .linear_channel import detect_linear_channels, serialize_channel_overlay
 
 
 def _frame(bars: Iterable[KBar]) -> pd.DataFrame:
@@ -119,6 +120,37 @@ def _rsi(close: pd.Series, period: int) -> pd.Series:
     return result.mask((gain == 0) & (loss == 0), 50.0)
 
 
+def _linear_channel_signals(
+    bars: pd.DataFrame, parameters: dict[str, int | float]
+) -> tuple[pd.Series, pd.DataFrame, pd.DataFrame]:
+    channels = detect_linear_channels(
+        bars,
+        minimum_lookback=int(parameters["minimum_lookback"]),
+        maximum_lookback=int(parameters["maximum_lookback"]),
+        lookback_step=int(parameters["lookback_step"]),
+        boundary_quantile=float(parameters["boundary_quantile"]),
+        minimum_r_squared=float(parameters["minimum_r_squared"]),
+        minimum_containment=float(parameters["minimum_containment"]),
+    )
+    close = bars["close"].astype(float)
+    available = channels["upper"].notna() & channels["lower"].notna()
+    entries = pd.Series(0, index=bars.index, dtype="int8")
+    previous_close = close.shift(1)
+    previous_upper = channels["upper"] - channels["slope"]
+    previous_lower = channels["lower"] - channels["slope"]
+    entries.loc[
+        available & (previous_close <= previous_upper) & (close > channels["upper"])
+    ] = 1
+    entries.loc[
+        available & (previous_close >= previous_lower) & (close < channels["lower"])
+    ] = -1
+    exits = pd.DataFrame({
+        "long": available & (close < channels["center"]),
+        "short": available & (close > channels["center"]),
+    }, index=bars.index)
+    return entries, exits, channels
+
+
 def _technical_signals(
     key: str, bars: pd.DataFrame, parameters: dict[str, int | float]
 ) -> tuple[pd.Series, pd.DataFrame | None]:
@@ -146,6 +178,8 @@ def _technical_signals(
         entries.loc[close < lower] = -1
         midpoint = (upper + lower) / 2
         exits = pd.DataFrame({"long": close < midpoint, "short": close > midpoint}, index=bars.index)
+    elif key == "linear_channel_breakout":
+        entries, exits, _ = _linear_channel_signals(bars, parameters)
     elif key == "rsi_mean_reversion":
         indicator = _rsi(close, int(parameters["rsi_period"]))
         entries = pd.Series(0, index=bars.index, dtype="int8")
@@ -246,6 +280,7 @@ def analyze_strategies(
             "color": item["color"],
             "parameters": resolved[item["key"]],
             "signals": [],
+            "overlays": [],
         }
         for item in strategy_catalog(resolved)
         if item["key"] in requested
@@ -297,7 +332,13 @@ def analyze_strategies(
             if higher_timeframe and key == "vwap_reversion":
                 continue
             values = resolved[key]
-            entries, exits = _technical_signals(key, session_bars, values)
+            if key == "linear_channel_breakout":
+                entries, exits, channels = _linear_channel_signals(session_bars, values)
+                catalog[key]["overlays"].append(
+                    serialize_channel_overlay(session_bars, channels)
+                )
+            else:
+                entries, exits = _technical_signals(key, session_bars, values)
             catalog[key]["signals"].extend(
                 simulate_signals(
                     session_bars,

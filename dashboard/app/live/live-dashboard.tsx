@@ -7,6 +7,7 @@ import {
   createChart,
   createSeriesMarkers,
   HistogramSeries,
+  LineSeries,
   LineStyle,
   type CandlestickData,
   type HistogramData,
@@ -81,7 +82,10 @@ type StrategyResult = {
   color: string;
   parameters: Record<string, number>;
   signals: StrategySignal[];
+  overlays: StrategyOverlay[];
 };
+type LinearChannelPoint = { time: string; upper: number; center: number; lower: number; score: number; r_squared: number; lookback: number; slope: number };
+type StrategyOverlay = { type: "linear_channel"; points: LinearChannelPoint[] };
 type StrategyOption = {
   key: StrategyKey;
   name: string;
@@ -164,6 +168,7 @@ export default function TradingWorkspace() {
   const candleRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const volumeRef = useRef<ISeriesApi<"Histogram"> | null>(null);
   const markerRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
+  const channelSeriesRef = useRef<ISeriesApi<"Line">[]>([]);
   const priceLinesRef = useRef<IPriceLine[]>([]);
   const barTimesRef = useRef<UTCTimestamp[]>([]);
   const socketRef = useRef<WebSocket | null>(null);
@@ -320,9 +325,35 @@ export default function TradingWorkspace() {
       candleRef.current = null;
       volumeRef.current = null;
       markerRef.current = null;
+      channelSeriesRef.current = [];
       priceLinesRef.current = [];
     };
   }, []);
+
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart) return;
+    channelSeriesRef.current.forEach(series => chart.removeSeries(series));
+    channelSeriesRef.current = [];
+    const overlay = strategyResults
+      .flatMap(strategy => strategy.overlays ?? [])
+      .find(item => item.type === "linear_channel");
+    if (!overlay?.points.length) return;
+    const definitions: { key: "upper" | "center" | "lower"; color: string; style: LineStyle }[] = [
+      { key: "upper", color: "#fbbf24", style: LineStyle.Solid },
+      { key: "center", color: "rgba(251,191,36,.65)", style: LineStyle.Dashed },
+      { key: "lower", color: "#fbbf24", style: LineStyle.Solid },
+    ];
+    channelSeriesRef.current = definitions.map(definition => {
+      const series = chart.addSeries(LineSeries, {
+        color: definition.color, lineWidth: definition.key === "center" ? 1 : 2,
+        lineStyle: definition.style, priceLineVisible: false, lastValueVisible: false,
+        crosshairMarkerVisible: false,
+      }, 0);
+      series.setData(overlay.points.map(point => ({ time: toTime(point.time), value: point[definition.key] })));
+      return series;
+    });
+  }, [strategyResults]);
 
   useEffect(() => {
     const strategyMarkers: SeriesMarker<Time>[] = strategyResults.flatMap(strategy =>
