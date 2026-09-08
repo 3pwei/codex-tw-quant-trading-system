@@ -334,9 +334,12 @@ def analyze_strategies(
             values = resolved[key]
             if key == "linear_channel_breakout":
                 entries, exits, channels = _linear_channel_signals(session_bars, values)
-                catalog[key]["overlays"].append(
-                    serialize_channel_overlay(session_bars, channels)
-                )
+                overlay = serialize_channel_overlay(session_bars, channels)
+                existing_overlays = catalog[key]["overlays"]
+                if existing_overlays:
+                    existing_overlays[0]["points"].extend(overlay["points"])
+                else:
+                    existing_overlays.append(overlay)
             else:
                 entries, exits = _technical_signals(key, session_bars, values)
             catalog[key]["signals"].extend(
