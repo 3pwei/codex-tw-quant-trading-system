@@ -84,8 +84,8 @@ type StrategyResult = {
   signals: StrategySignal[];
   overlays: StrategyOverlay[];
 };
-type LinearChannelPoint = { time: string; upper: number; center: number; lower: number; score: number; r_squared: number; lookback: number; slope: number };
-type StrategyOverlay = { type: "linear_channel"; points: LinearChannelPoint[] };
+type LinearChannelPoint = { time: string; upper: number; center: number; lower: number; slope: number; direction?: "up" | "down"; channel_id?: string };
+type StrategyOverlay = { type: "linear_channel"; model?: "dow_theory"; points: LinearChannelPoint[] };
 type StrategyOption = {
   key: StrategyKey;
   name: string;
@@ -344,15 +344,22 @@ export default function TradingWorkspace() {
       { key: "center", color: "rgba(251,191,36,.65)", style: LineStyle.Dashed },
       { key: "lower", color: "#fbbf24", style: LineStyle.Solid },
     ];
-    channelSeriesRef.current = definitions.map(definition => {
-      const series = chart.addSeries(LineSeries, {
-        color: definition.color, lineWidth: definition.key === "center" ? 1 : 2,
-        lineStyle: definition.style, priceLineVisible: false, lastValueVisible: false,
-        crosshairMarkerVisible: false,
-      }, 0);
-      series.setData(overlay.points.map(point => ({ time: toTime(point.time), value: point[definition.key] })));
-      return series;
+    const segments = new Map<string, LinearChannelPoint[]>();
+    overlay.points.forEach(point => {
+      const key = point.channel_id ?? "channel";
+      segments.set(key, [...(segments.get(key) ?? []), point]);
     });
+    channelSeriesRef.current = [...segments.values()].flatMap(points =>
+      definitions.map(definition => {
+        const series = chart.addSeries(LineSeries, {
+          color: definition.color, lineWidth: definition.key === "center" ? 1 : 2,
+          lineStyle: definition.style, priceLineVisible: false, lastValueVisible: false,
+          crosshairMarkerVisible: false,
+        }, 0);
+        series.setData(points.map(point => ({ time: toTime(point.time), value: point[definition.key] })));
+        return series;
+      }),
+    );
   }, [strategyResults]);
 
   useEffect(() => {

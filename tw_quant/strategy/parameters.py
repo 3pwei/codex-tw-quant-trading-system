@@ -218,17 +218,17 @@ STRATEGY_DEFINITIONS: dict[str, dict[str, object]] = {
     },
     "linear_channel_breakout": {
         "key": "linear_channel_breakout",
-        "name": "自動線性通道突破",
+        "name": "Dow Theory 自動軌道突破",
         "category": "Breakout",
-        "description": "自動比較不同回看區間，找出最佳平行回歸通道並在收盤突破時進場。",
+        "description": "以確認波峰波谷、HH/HL 或 LH/LL 市場結構建立並鎖定平行軌道。",
         "color": "#fbbf24",
         "fields": {
-            "minimum_lookback": {"label": "最短通道", "kind": "integer", "unit": "根 K", "default": 20, "min": 10, "max": 300, "step": 1},
-            "maximum_lookback": {"label": "最長通道", "kind": "integer", "unit": "根 K", "default": 100, "min": 20, "max": 500, "step": 1},
-            "lookback_step": {"label": "候選間隔", "kind": "integer", "unit": "根 K", "default": 10, "min": 1, "max": 100, "step": 1},
-            "boundary_quantile": {"label": "通道包覆分位數", "kind": "number", "unit": "", "default": 0.95, "min": 0.5, "max": 1.0, "step": 0.01},
-            "minimum_r_squared": {"label": "最低 R²", "kind": "number", "unit": "", "default": 0.55, "min": 0.0, "max": 1.0, "step": 0.01},
-            "minimum_containment": {"label": "最低包覆率", "kind": "number", "unit": "", "default": 0.85, "min": 0.5, "max": 1.0, "step": 0.01},
+            "atr_period": {"label": "ATR 週期", "kind": "integer", "unit": "根 K", "default": 14, "min": 2, "max": 200, "step": 1},
+            "pivot_reversal_atr": {"label": "轉折幅度", "kind": "number", "unit": "倍 ATR", "default": 1.5, "min": 0.1, "max": 10, "step": 0.1},
+            "confirmation_bars": {"label": "轉折確認", "kind": "integer", "unit": "根 K", "default": 2, "min": 1, "max": 20, "step": 1},
+            "minimum_pivot_distance": {"label": "轉折最小間距", "kind": "integer", "unit": "根 K", "default": 5, "min": 1, "max": 100, "step": 1},
+            "minimum_channel_bars": {"label": "軌道最小跨度", "kind": "integer", "unit": "根 K", "default": 10, "min": 2, "max": 300, "step": 1},
+            "invalidation_bars": {"label": "失效確認", "kind": "integer", "unit": "根 K", "default": 2, "min": 1, "max": 10, "step": 1},
             **RISK_FIELDS,
         },
     },
@@ -331,6 +331,22 @@ def validate_strategy_parameters(
     fields = definition["fields"]
     assert isinstance(fields, dict)
     supplied = dict(values or {})
+    legacy_linear_channel_fields = {
+        "minimum_lookback", "maximum_lookback", "lookback_step",
+        "boundary_quantile", "minimum_r_squared", "minimum_containment",
+        "stop_loss_pct", "take_profit_pct",
+    }
+    if key == "linear_channel_breakout" and (
+        set(supplied) - {"stop_loss_pct", "take_profit_pct"}
+    ) <= legacy_linear_channel_fields and any(
+        name in supplied for name in legacy_linear_channel_fields - {
+            "stop_loss_pct", "take_profit_pct"
+        }
+    ):
+        supplied = {
+            name: value for name, value in supplied.items()
+            if name in {"stop_loss_pct", "take_profit_pct"}
+        }
     unknown = sorted(set(supplied) - set(fields))
     if unknown:
         raise ValueError(f"不支援的參數：{', '.join(unknown)}")
@@ -385,13 +401,6 @@ def validate_strategy_parameters(
         result["entry_deviation_pct"]
     ):
         raise ValueError("VWAP 出場偏離必須小於進場偏離")
-    if key == "linear_channel_breakout":
-        if int(result["minimum_lookback"]) >= int(result["maximum_lookback"]):
-            raise ValueError("最短通道必須小於最長通道")
-        if int(result["lookback_step"]) > (
-            int(result["maximum_lookback"]) - int(result["minimum_lookback"])
-        ):
-            raise ValueError("候選間隔不可大於通道搜尋範圍")
     return result
 
 
