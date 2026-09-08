@@ -14,10 +14,14 @@ from tw_quant.strategy import (
 TAIPEI = ZoneInfo("Asia/Taipei")
 
 
-def bars(values: list[float], volumes: list[int] | None = None) -> list[KBar]:
+def bars(
+    values: list[float],
+    volumes: list[int] | None = None,
+    start: datetime | None = None,
+) -> list[KBar]:
     result = []
     for index, value in enumerate(values):
-        timestamp = datetime(2026, 9, 1, 15, 0, tzinfo=TAIPEI) + timedelta(
+        timestamp = (start or datetime(2026, 9, 1, 15, 0, tzinfo=TAIPEI)) + timedelta(
             minutes=index
         )
         result.append(KBar(
@@ -170,6 +174,25 @@ class BasicStrategyTests(unittest.TestCase):
         self.assertEqual(points[0]["time"], bars([0] * 11)[-1].time.isoformat(timespec="milliseconds"))
         self.assertGreater(points[-1]["upper"], points[-1]["center"])
         self.assertGreater(points[-1]["center"], points[-1]["lower"])
+
+    def test_linear_channel_overlay_combines_all_trading_sessions(self):
+        values = [100 + index for index in range(21)]
+        result = analyze_strategies(
+            bars(values) + bars(
+                values,
+                start=datetime(2026, 9, 2, 15, 0, tzinfo=TAIPEI),
+            ),
+            ["linear_channel_breakout"],
+            parameters={"linear_channel_breakout": {
+                "minimum_lookback": 10,
+                "maximum_lookback": 20,
+                "lookback_step": 5,
+                "minimum_r_squared": 0.5,
+            }},
+        )["strategies"][0]
+        self.assertEqual(len(result["overlays"]), 1)
+        point_dates = {point["time"][:10] for point in result["overlays"][0]["points"]}
+        self.assertEqual(point_dates, {"2026-09-01", "2026-09-02"})
 
 
 if __name__ == "__main__":
