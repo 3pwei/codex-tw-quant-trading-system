@@ -125,28 +125,32 @@ def _linear_channel_signals(
 ) -> tuple[pd.Series, pd.DataFrame, pd.DataFrame]:
     channels = detect_linear_channels(
         bars,
-        minimum_lookback=int(parameters["minimum_lookback"]),
-        maximum_lookback=int(parameters["maximum_lookback"]),
-        lookback_step=int(parameters["lookback_step"]),
-        boundary_quantile=float(parameters["boundary_quantile"]),
-        minimum_r_squared=float(parameters["minimum_r_squared"]),
-        minimum_containment=float(parameters["minimum_containment"]),
+        atr_period=int(parameters["atr_period"]),
+        pivot_reversal_atr=float(parameters["pivot_reversal_atr"]),
+        confirmation_bars=int(parameters["confirmation_bars"]),
+        minimum_pivot_distance=int(parameters["minimum_pivot_distance"]),
+        minimum_channel_bars=int(parameters["minimum_channel_bars"]),
+        invalidation_bars=int(parameters["invalidation_bars"]),
     )
     close = bars["close"].astype(float)
     available = channels["upper"].notna() & channels["lower"].notna()
     entries = pd.Series(0, index=bars.index, dtype="int8")
     previous_close = close.shift(1)
-    previous_upper = channels["upper"] - channels["slope"]
-    previous_lower = channels["lower"] - channels["slope"]
+    previous_upper = channels["upper"] - channels["slope"].astype(float)
+    previous_lower = channels["lower"] - channels["slope"].astype(float)
+    uptrend = channels["direction"] == "up"
+    downtrend = channels["direction"] == "down"
     entries.loc[
-        available & (previous_close <= previous_upper) & (close > channels["upper"])
+        available & uptrend & (previous_close <= previous_upper)
+        & (close > channels["upper"])
     ] = 1
     entries.loc[
-        available & (previous_close >= previous_lower) & (close < channels["lower"])
+        available & downtrend & (previous_close >= previous_lower)
+        & (close < channels["lower"])
     ] = -1
     exits = pd.DataFrame({
-        "long": available & (close < channels["center"]),
-        "short": available & (close > channels["center"]),
+        "long": available & uptrend & (close < channels["lower"]),
+        "short": available & downtrend & (close > channels["upper"]),
     }, index=bars.index)
     return entries, exits, channels
 

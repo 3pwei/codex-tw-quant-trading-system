@@ -14,8 +14,8 @@ type Trade = {
 type Timeframe = "1m" | "5m" | "10m" | "15m" | "30m" | "1h" | "1d" | "1w";
 type BacktestOptions = { available_start: string | null; available_end: string | null; max_days: number; strategies: { key: string; name: string; kind?: "composite" }[]; intervals: { key: Timeframe; name: string }[] };
 type EquityPoint = { timestamp: string; equity: number; net_pnl: number; peak: number; drawdown: number; drawdown_pct: number };
-type LinearChannelPoint = { time: string; upper: number; center: number; lower: number; score: number; r_squared: number; lookback: number; slope: number };
-type StrategyOverlay = { type: "linear_channel"; points: LinearChannelPoint[] };
+type LinearChannelPoint = { time: string; upper: number; center: number; lower: number; slope: number; direction?: "up" | "down"; channel_id?: string };
+type StrategyOverlay = { type: "linear_channel"; model?: "dow_theory"; points: LinearChannelPoint[] };
 type DashboardData = {
   metadata: { symbol: string; display_name: string; strategy: string; strategy_version?: number; interval: string; date_range: string; is_synthetic: boolean; source?: string; session_start?: string; session_end?: string };
   config: { initial_capital: number; quantity: number; quantity_unit?: string; opening_range_minutes?: number; bar_minutes?: number; stop_loss_pct: number; take_profit_pct: number; force_exit_time: string; commission_rate: number; commission_per_side?: number; sell_tax_rate: number; slippage_bps: number; slippage_points?: number; contract_multiplier?: number };
@@ -50,6 +50,11 @@ function CandleChart({ bars, trade, config, overlays = [] }: { bars: Bar[]; trad
     return index == null ? [] : [{ ...point, index }];
   });
   const channelPrices = channelPoints.flatMap(point => [point.upper, point.center, point.lower]);
+  const channelSegments = [...channelPoints.reduce((groups, point) => {
+    const key = point.channel_id ?? "channel";
+    groups.set(key, [...(groups.get(key) ?? []), point]);
+    return groups;
+  }, new Map<string, typeof channelPoints>()).values()];
   const rawLow = Math.min(...bars.map(b => b.low), stop, target, ...channelPrices);
   const rawHigh = Math.max(...bars.map(b => b.high), stop, target, ...channelPrices);
   const pad = Math.max((rawHigh - rawLow) * .08, rawHigh * .001);
@@ -61,7 +66,7 @@ function CandleChart({ bars, trade, config, overlays = [] }: { bars: Bar[]; trad
   const cw = Math.max(1.2, Math.min(4, pw / bars.length * .7));
 
   return <div className="chart-box">
-    <div className="legend"><span className="lg-entry">● 進場</span><span className="lg-exit">● 出場</span><span className="lg-stop">┄ 停損</span><span className="lg-target">┄ 停利</span>{channelPoints.length > 0 && <span className="lg-channel">━ 自動通道</span>}</div>
+    <div className="legend"><span className="lg-entry">● 進場</span><span className="lg-exit">● 出場</span><span className="lg-stop">┄ 停損</span><span className="lg-target">┄ 停利</span>{channelPoints.length > 0 && <span className="lg-channel">━ Dow 軌道</span>}</div>
     <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label="分鐘 K 線與進出場位置">
       <rect width={W} height={H} rx="12" className="chart-bg" />
       <rect x={left} y={top} width={((config.opening_range_minutes ?? 0) / (config.bar_minutes ?? 1)) / Math.max(bars.length - 1, 1) * pw} height={ph} className="opening-zone" />
@@ -73,10 +78,12 @@ function CandleChart({ bars, trade, config, overlays = [] }: { bars: Bar[]; trad
         const up = b.close >= b.open, cx = x(i), bodyTop = y(Math.max(b.open, b.close)), bodyH = Math.max(1, Math.abs(y(b.open)-y(b.close)));
         return <g key={b.timestamp} className={up ? "candle up" : "candle down"}><line x1={cx} x2={cx} y1={y(b.high)} y2={y(b.low)} /><rect x={cx-cw/2} y={bodyTop} width={cw} height={bodyH} /></g>;
       })}
-      {(["upper", "center", "lower"] as const).map(key => {
-        const path = channelPoints.map((point, index) => `${index ? "L" : "M"}${x(point.index)} ${y(point[key])}`).join(" ");
-        return path ? <path key={key} d={path} className={`channel-line ${key}`} /> : null;
-      })}
+      {channelSegments.flatMap((segment, segmentIndex) =>
+        (["upper", "center", "lower"] as const).map(key => {
+          const path = segment.map((point, index) => `${index ? "L" : "M"}${x(point.index)} ${y(point[key])}`).join(" ");
+          return path ? <path key={`${segmentIndex}-${key}`} d={path} className={`channel-line ${key}`} /> : null;
+        }),
+      )}
       <line x1={left} x2={W-right} y1={y(stop)} y2={y(stop)} className="risk-line stop" /><text x={left+8} y={y(stop)-7} className="risk-text stop-text">停損 {decimal.format(stop)}</text>
       <line x1={left} x2={W-right} y1={y(target)} y2={y(target)} className="risk-line target" /><text x={left+8} y={y(target)-7} className="risk-text target-text">停利 {decimal.format(target)}</text>
       <g transform={`translate(${x(entryIndex)},${y(trade.entry_price)})`}><path d="M0 -11 L9 7 L-9 7 Z" className="entry-marker" /><text y="-17" textAnchor="middle" className="marker-label">進</text></g>

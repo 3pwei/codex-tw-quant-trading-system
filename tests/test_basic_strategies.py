@@ -85,9 +85,9 @@ class BasicStrategyTests(unittest.TestCase):
                 {"lookback_period": 3},
             ),
             "linear_channel_breakout": (
-                [100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 125, 126],
+                [100, 102, 106, 110, 108, 106, 105, 107, 111, 115, 113, 111, 110, 112, 116, 120, 125, 126],
                 {},
-                {"minimum_lookback": 10, "maximum_lookback": 20, "lookback_step": 5, "minimum_r_squared": 0.5},
+                {"atr_period": 2, "pivot_reversal_atr": 0.1, "confirmation_bars": 1, "minimum_pivot_distance": 1, "minimum_channel_bars": 2},
             ),
             "rsi_mean_reversion": (
                 [100, 101, 102, 90, 91],
@@ -158,25 +158,29 @@ class BasicStrategyTests(unittest.TestCase):
             with self.subTest(strategy=key), self.assertRaises(ValueError):
                 validate_strategy_parameters(key, parameters)
 
-    def test_linear_channel_overlay_is_as_of_and_matches_bars(self):
+    def test_dow_channel_requires_confirmed_market_structure(self):
+        values = [100, 102, 106, 110, 108, 106, 105, 107, 111, 115, 113, 111, 110, 112, 116, 120, 125, 126]
         result = analyze_strategies(
-            bars([100 + index for index in range(21)]),
+            bars(values),
             ["linear_channel_breakout"],
             parameters={"linear_channel_breakout": {
-                "minimum_lookback": 10,
-                "maximum_lookback": 20,
-                "lookback_step": 5,
-                "minimum_r_squared": 0.5,
+                "atr_period": 2,
+                "pivot_reversal_atr": 0.1,
+                "confirmation_bars": 1,
+                "minimum_pivot_distance": 1,
+                "minimum_channel_bars": 2,
             }},
         )["strategies"][0]
         points = result["overlays"][0]["points"]
         self.assertTrue(points)
-        self.assertEqual(points[0]["time"], bars([0] * 11)[-1].time.isoformat(timespec="milliseconds"))
+        self.assertEqual(result["overlays"][0]["model"], "dow_theory")
+        self.assertEqual(points[0]["direction"], "up")
+        self.assertGreater(points[0]["channel_start"], points[0]["anchor_2"])
         self.assertGreater(points[-1]["upper"], points[-1]["center"])
         self.assertGreater(points[-1]["center"], points[-1]["lower"])
 
-    def test_linear_channel_overlay_combines_all_trading_sessions(self):
-        values = [100 + index for index in range(21)]
+    def test_dow_channel_overlay_combines_all_trading_sessions(self):
+        values = [100, 102, 106, 110, 108, 106, 105, 107, 111, 115, 113, 111, 110, 112, 116, 120, 125, 126]
         result = analyze_strategies(
             bars(values) + bars(
                 values,
@@ -184,15 +188,30 @@ class BasicStrategyTests(unittest.TestCase):
             ),
             ["linear_channel_breakout"],
             parameters={"linear_channel_breakout": {
-                "minimum_lookback": 10,
-                "maximum_lookback": 20,
-                "lookback_step": 5,
-                "minimum_r_squared": 0.5,
+                "atr_period": 2,
+                "pivot_reversal_atr": 0.1,
+                "confirmation_bars": 1,
+                "minimum_pivot_distance": 1,
+                "minimum_channel_bars": 2,
             }},
         )["strategies"][0]
         self.assertEqual(len(result["overlays"]), 1)
         point_dates = {point["time"][:10] for point in result["overlays"][0]["points"]}
         self.assertEqual(point_dates, {"2026-09-01", "2026-09-02"})
+
+    def test_legacy_regression_channel_parameters_migrate_to_dow_defaults(self):
+        migrated = validate_strategy_parameters("linear_channel_breakout", {
+            "minimum_lookback": 20,
+            "maximum_lookback": 100,
+            "lookback_step": 10,
+            "boundary_quantile": 0.95,
+            "minimum_r_squared": 0.55,
+            "minimum_containment": 0.85,
+            "stop_loss_pct": 0.01,
+            "take_profit_pct": 0.02,
+        })
+        self.assertEqual(migrated["atr_period"], 14)
+        self.assertEqual(migrated["stop_loss_pct"], 0.01)
 
 
 if __name__ == "__main__":
