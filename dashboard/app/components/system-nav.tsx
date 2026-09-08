@@ -80,6 +80,20 @@ export default function SystemNav({ active }: { active: SystemRoute }) {
           登出
         </a>
       </div>
+      <details className="system-account-mobile">
+        <summary aria-label="開啟帳號選單">帳號</summary>
+        <div className="system-account-menu">
+          {currentUser && (
+            <span title={currentUser.email}>
+              {currentUser.email}
+              <small>{currentUser.role}</small>
+            </span>
+          )}
+          <a className="logout-link" href="/cdn-cgi/access/logout">
+            登出
+          </a>
+        </div>
+      </details>
     </nav>
   );
 }
