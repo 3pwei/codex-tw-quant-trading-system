@@ -99,7 +99,7 @@ export default function ReplayDashboard() {
     if (!hostRef.current) return;
     const chart = createChart(hostRef.current, {
       width: hostRef.current.clientWidth, height: 560,
-      layout: { background: { type: ColorType.Solid, color: "#07111f" }, textColor: "#9fb0c7", panes: { separatorColor: "#17283b" } },
+      layout: { background: { type: ColorType.Solid, color: "#07111f" }, textColor: "#9fb0c7", panes: { separatorColor: "#17283b" }, attributionLogo: true },
       grid: { vertLines: { color: "#132237" }, horzLines: { color: "#132237" } },
       timeScale: { borderColor: "#26384d", timeVisible: true, secondsVisible: false, rightOffset: 8, tickMarkFormatter: chartClock },
       rightPriceScale: { borderColor: "#26384d" }, localization: { locale: "zh-TW", timeFormatter: chartClock },

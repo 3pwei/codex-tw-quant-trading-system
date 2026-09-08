@@ -283,7 +283,7 @@ export default function TradingWorkspace() {
       autoSize: false,
       width: hostRef.current.clientWidth,
       height: window.matchMedia("(max-width: 840px)").matches ? 500 : 610,
-      layout: { background: { type: ColorType.Solid, color: "#07111f" }, textColor: "#9fb0c7", panes: { separatorColor: "#17283b" } },
+      layout: { background: { type: ColorType.Solid, color: "#07111f" }, textColor: "#9fb0c7", panes: { separatorColor: "#17283b" }, attributionLogo: true },
       grid: { vertLines: { color: "#132237" }, horzLines: { color: "#132237" } },
       crosshair: { vertLine: { color: "#94a3b8" }, horzLine: { color: "#94a3b8" } },
       timeScale: {
