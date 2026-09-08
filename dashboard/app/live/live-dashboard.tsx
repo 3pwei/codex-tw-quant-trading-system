@@ -534,7 +534,7 @@ export default function TradingWorkspace() {
   );
   return <main className="live-shell">
     <header className="live-header">
-      <div><span>MILESPAPA LAB · TRADE WORKSPACE</span><h1>{selection.symbol} 交易工作台</h1></div>
+      <div><span>MILESPAPA QUANT LAB · TRADE WORKSPACE</span><h1>{selection.symbol} 交易工作台</h1></div>
       <div className="live-header-actions">
         <label className="timeframe-select"><span>商品</span><select value={selection.symbol} onChange={event => setSelection(current => ({ ...current, symbol: event.target.value as SymbolKey }))}>{PRODUCT_OPTIONS.map(option => <option key={option.key} value={option.key}>{option.key} · {option.name}</option>)}</select></label>
         <label className="timeframe-select"><span>K 棒週期</span><select value={selectedInterval} onChange={event => setSelection(current => ({ ...current, interval: event.target.value as Timeframe }))}>{TIMEFRAME_OPTIONS.map(option => <option key={option.key} value={option.key}>{option.name}</option>)}</select></label>
