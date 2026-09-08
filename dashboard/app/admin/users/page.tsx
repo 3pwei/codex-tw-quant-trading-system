@@ -7,7 +7,6 @@ export default function AdminUsersPage() {
       active="/admin/users/"
       eyebrow="MILESPAPA QUANT LAB · ACCESS CONTROL"
       title="帳號與權限"
-      description="管理平台使用者角色、狀態與交易模式"
     >
       <UserManagement />
     </SectionShell>

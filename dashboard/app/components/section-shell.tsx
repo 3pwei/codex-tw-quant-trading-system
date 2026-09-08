@@ -5,13 +5,11 @@ export default function SectionShell({
   active,
   eyebrow,
   title,
-  description,
   children,
 }: {
   active: SystemRoute;
   eyebrow: string;
   title: string;
-  description: string;
   children: ReactNode;
 }) {
   return (
@@ -20,7 +18,6 @@ export default function SectionShell({
         <div className="brand">
           <div><span>{eyebrow}</span><h1>{title}</h1></div>
         </div>
-        <p>{description}</p>
       </header>
       <SystemNav active={active} />
       {children}

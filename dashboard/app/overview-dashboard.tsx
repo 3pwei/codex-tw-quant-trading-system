@@ -70,7 +70,7 @@ export default function OverviewDashboard() {
 
   const connected = health?.connection_status === "connected";
   return (
-    <SectionShell active="/" eyebrow="MILESPAPA QUANT LAB · SYSTEM" title="TMF 量化交易系統" description="系統總覽、目前行情與策略狀態">
+    <SectionShell active="/" eyebrow="MILESPAPA QUANT LAB · SYSTEM" title="TMF 量化交易系統">
       <section className="overview-status">
         <article><span>行情連線</span><strong className={connected ? "profit" : "warning"}>{connected ? "即時連線" : health?.connection_status ?? "讀取中"}</strong><small>{health?.contract ?? "TMF"}</small></article>
         <article><span>最新成交價</span><strong>{bar ? number.format(bar.close) : "—"}</strong><small>{bar?.session === "night" ? "夜盤" : bar?.session === "day" ? "日盤" : "尚無行情"} · {bar?.status === "forming" ? "形成中" : "已收盤"}</small></article>
