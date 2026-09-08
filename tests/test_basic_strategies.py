@@ -48,6 +48,7 @@ class BasicStrategyTests(unittest.TestCase):
             "ma_crossover": "Trend",
             "ema_trend": "Trend",
             "donchian_breakout": "Breakout",
+            "linear_channel_breakout": "Breakout",
             "orb": "Breakout",
             "rsi_mean_reversion": "Mean Reversion",
             "bollinger_mean_reversion": "Mean Reversion",
@@ -78,6 +79,11 @@ class BasicStrategyTests(unittest.TestCase):
                 [100, 100, 100, 102, 103],
                 {},
                 {"lookback_period": 3},
+            ),
+            "linear_channel_breakout": (
+                [100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 125, 126],
+                {},
+                {"minimum_lookback": 10, "maximum_lookback": 20, "lookback_step": 5, "minimum_r_squared": 0.5},
             ),
             "rsi_mean_reversion": (
                 [100, 101, 102, 90, 91],
@@ -147,6 +153,23 @@ class BasicStrategyTests(unittest.TestCase):
         for key, parameters in invalid.items():
             with self.subTest(strategy=key), self.assertRaises(ValueError):
                 validate_strategy_parameters(key, parameters)
+
+    def test_linear_channel_overlay_is_as_of_and_matches_bars(self):
+        result = analyze_strategies(
+            bars([100 + index for index in range(21)]),
+            ["linear_channel_breakout"],
+            parameters={"linear_channel_breakout": {
+                "minimum_lookback": 10,
+                "maximum_lookback": 20,
+                "lookback_step": 5,
+                "minimum_r_squared": 0.5,
+            }},
+        )["strategies"][0]
+        points = result["overlays"][0]["points"]
+        self.assertTrue(points)
+        self.assertEqual(points[0]["time"], bars([0] * 11)[-1].time.isoformat(timespec="milliseconds"))
+        self.assertGreater(points[-1]["upper"], points[-1]["center"])
+        self.assertGreater(points[-1]["center"], points[-1]["lower"])
 
 
 if __name__ == "__main__":

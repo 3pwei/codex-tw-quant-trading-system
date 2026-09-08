@@ -14,6 +14,7 @@ SUPPORTED_STRATEGIES = (
     "ma_crossover",
     "ema_trend",
     "donchian_breakout",
+    "linear_channel_breakout",
     "rsi_mean_reversion",
     "bollinger_mean_reversion",
     "macd_momentum",
@@ -215,6 +216,22 @@ STRATEGY_DEFINITIONS: dict[str, dict[str, object]] = {
             **RISK_FIELDS,
         },
     },
+    "linear_channel_breakout": {
+        "key": "linear_channel_breakout",
+        "name": "自動線性通道突破",
+        "category": "Breakout",
+        "description": "自動比較不同回看區間，找出最佳平行回歸通道並在收盤突破時進場。",
+        "color": "#fbbf24",
+        "fields": {
+            "minimum_lookback": {"label": "最短通道", "kind": "integer", "unit": "根 K", "default": 20, "min": 10, "max": 300, "step": 1},
+            "maximum_lookback": {"label": "最長通道", "kind": "integer", "unit": "根 K", "default": 100, "min": 20, "max": 500, "step": 1},
+            "lookback_step": {"label": "候選間隔", "kind": "integer", "unit": "根 K", "default": 10, "min": 1, "max": 100, "step": 1},
+            "boundary_quantile": {"label": "通道包覆分位數", "kind": "number", "unit": "", "default": 0.95, "min": 0.5, "max": 1.0, "step": 0.01},
+            "minimum_r_squared": {"label": "最低 R²", "kind": "number", "unit": "", "default": 0.55, "min": 0.0, "max": 1.0, "step": 0.01},
+            "minimum_containment": {"label": "最低包覆率", "kind": "number", "unit": "", "default": 0.85, "min": 0.5, "max": 1.0, "step": 0.01},
+            **RISK_FIELDS,
+        },
+    },
     "rsi_mean_reversion": {
         "key": "rsi_mean_reversion",
         "name": "RSI Mean Reversion",
@@ -368,6 +385,13 @@ def validate_strategy_parameters(
         result["entry_deviation_pct"]
     ):
         raise ValueError("VWAP 出場偏離必須小於進場偏離")
+    if key == "linear_channel_breakout":
+        if int(result["minimum_lookback"]) >= int(result["maximum_lookback"]):
+            raise ValueError("最短通道必須小於最長通道")
+        if int(result["lookback_step"]) > (
+            int(result["maximum_lookback"]) - int(result["minimum_lookback"])
+        ):
+            raise ValueError("候選間隔不可大於通道搜尋範圍")
     return result
 
 
