@@ -22,6 +22,13 @@ from .shioaji import (
     ShioajiBrokerAdapter,
     ShioajiExecutionClient,
 )
+from .shioaji_simulation import (
+    ShioajiCallbackBridge,
+    ShioajiCallbackEvent,
+    ShioajiSimulationExecutionClient,
+    normalize_callback,
+    normalize_trade,
+)
 
 __all__ = [
     "BrokerAccount",
@@ -41,9 +48,14 @@ __all__ = [
     "OrderExecutor",
     "OrderPurpose",
     "ShioajiBrokerAdapter",
+    "ShioajiCallbackBridge",
+    "ShioajiCallbackEvent",
     "ShioajiExecutionClient",
+    "ShioajiSimulationExecutionClient",
     "SQLiteLiveOrderRepository",
     "canonical_paper_status",
+    "normalize_callback",
+    "normalize_trade",
     "transition_order",
     "build_broker",
 ]

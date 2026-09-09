@@ -46,16 +46,26 @@ boundary，再由 `PaperTradingService` 轉為現有事件鏈。`PaperBrokerAdap
 不是會在後續行情觸發的保護委託；目前也沒有 Paper `take_profit_price`。在真正的
 Protective Order／OCO 完成前，任何 UI 或文件都不得宣稱 Paper 部位已有自動保護。
 
-### Live
+### Shioaji Simulation 與 Live
 
 Live execution foundation 已包含型別化 `BrokerPort`、不可變訂單狀態、SQLite
-order/outbox、`LiveOrderManager` 與 `ShioajiBrokerAdapter` 的 SDK seam。這些元件尚未接入
-API 或背景 Worker，也沒有真實 Shioaji client，因此正式站仍由 `DisabledBroker`
-拒絕所有外部送單。
+order/outbox、`LiveOrderManager`、`ShioajiBrokerAdapter` 與 simulation-only SDK client。
+SDK client 只會以 `Shioaji(simulation=True)` 登入，支援期貨市價／限價送單、撤單、
+委託查詢與部位快照；不載入 CA，也沒有 production 建構路徑。
+
+這些元件尚未接入 API 或背景 Worker，因此正式站仍由 `DisabledBroker` 拒絕所有外部
+送單。Simulation client 是整合測試邊界，不代表正式站已啟用 Paper 或 Live 自動下單。
 
 送單前，`LiveOrderManager.create()` 會在同一個 transaction 保存 order 與 outbox；
 Worker 只能領取 `pending` 工作一次。送單逾時、程序中斷或結果不明會轉成 `UNKNOWN`
 並將 outbox 設為 `blocked`，必須先透過券商查詢完成 reconciliation，不得自動重送。
+`LiveOrderManager.reconcile_nonterminal()` 可批次查詢所有非終態委託；callback bridge
+只把 `FORDER`／`FDEAL` 正規化並放進記憶體 queue，不直接寫資料庫。queue 滿載或程序
+中斷時，週期性 reconciliation 是復原來源。
+
+Shioaji 期貨委託目前沒有採用已驗證、可持久化的 client order ID 欄位。因此若送單
+逾時且尚未取得 `broker_order_id`，系統會保持 `UNKNOWN` 並要求人工核對，不會以價格、
+時間或數量猜測同一筆委託，更不會自動補送。
 
 ## 目標生命週期
 
@@ -100,3 +110,17 @@ Paper API 保留舊的 `status` 以維持相容，並額外回傳 `lifecycle_sta
 8. 本地與券商持倉不一致時 fail closed，留下稽核紀錄並要求人工處理。
 9. 啟用 Shioaji adapter 必須同時滿足 provider、enable flag、確認字串與帳號 allowlist；
    任一缺失都維持 fail closed。
+10. Simulation 與 Production 使用不同 client 組裝路徑；未來 production client 必須
+    另外完成 CA、交易帳號、權限、Kill Switch 與操作人員解鎖，不得替換 simulation
+    旗標後直接沿用。
+
+## 尚未完成的實盤能力
+
+- 持久化 Strategy Runner、帳戶 Risk Gate 與 LiveOrderManager Worker 的正式串接。
+- callback consumer、raw broker event audit log，以及 callback 漏失監控。
+- order／deal／position 三方對帳；目前只做非終態 order refresh。
+- 本地 Position Ledger 與券商部位差異的自動停機及人工解除流程。
+- 原生保護委託／OCO、部分成交後保護數量調整，以及撤單競態處理。
+- Shioaji production client、CA 憑證生命週期、金鑰輪替與真實帳號 allowlist。
+- 每日額度、單筆額度、最大曝險、行情新鮮度、交易時段與全域 Kill Switch。
+- UNKNOWN 無 broker order ID 的營運對帳介面；完成前不得自動重送。

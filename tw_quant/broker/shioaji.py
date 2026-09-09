@@ -14,19 +14,20 @@ from .models import (
 
 
 LIVE_CONFIRMATION = "I_UNDERSTAND_LIVE_ORDERS"
+ExternalReportStatus = Literal[
+    "accepted",
+    "partially_filled",
+    "filled",
+    "cancelled",
+    "rejected",
+    "expired",
+]
 
 
 @dataclass(frozen=True)
 class ExternalOrderReport:
     broker_order_id: str | None
-    status: Literal[
-        "accepted",
-        "partially_filled",
-        "filled",
-        "cancelled",
-        "rejected",
-        "expired",
-    ]
+    status: ExternalReportStatus
     occurred_at: datetime
     filled_quantity: int = 0
     average_fill_price: float | None = None
@@ -86,7 +87,7 @@ _REPORT_STATUS = {
 
 
 class ShioajiBrokerAdapter:
-    """Fail-closed live adapter with process-local duplicate suppression.
+    """Fail-closed live adapter backed by a durable caller-owned outbox.
 
     Durable outbox reservation remains the caller's responsibility. An ambiguous
     SDK failure becomes UNKNOWN and is never automatically resubmitted.
