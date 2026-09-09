@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Mapping, Protocol
+from typing import Mapping, Protocol, runtime_checkable
 
 from .models import BrokerOrder, BrokerOrderRequest
 
@@ -16,6 +16,7 @@ class BrokerAccount(Protocol):
     async def positions(self) -> list[Mapping[str, object]]: ...
 
 
+@runtime_checkable
 class BrokerPort(BrokerAccount, Protocol):
     """Typed trading adapter boundary; it must never supply market quotes."""
 

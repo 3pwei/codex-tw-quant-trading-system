@@ -53,7 +53,8 @@ Market Data Provider，成交、持倉與風控結果則寫入平台 SQLite。
 | `kill_switch_active` | 確認風險後由本人解除；Recovery Lock 不可直接繞過 |
 | 行情過期／Provider 中斷 | 等待行情恢復後重新確認價格 |
 | 超過持倉、交易次數或風險限制 | 不要反覆重送，先檢查帳戶風控狀態 |
-| 相同 Idempotency-Key | 系統回傳原委託，這是防止重複成交的正常行為 |
+| 相同 Idempotency-Key、相同內容 | 系統回傳原委託，這是防止重複成交的正常行為 |
+| 相同 Idempotency-Key、不同內容 | 回傳 `409 Conflict`；呼叫端必須產生新的 key 或修正重送邏輯 |
 
 正式驗收時至少使用兩個 Trader 帳號交錯操作，確認彼此看不到對方的委託、成交與
 持倉。

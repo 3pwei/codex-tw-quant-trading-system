@@ -8,6 +8,7 @@ from typing import Literal
 
 OrderSide = Literal["buy", "sell"]
 OrderType = Literal["market", "limit", "stop"]
+OrderPurpose = Literal["entry", "exit", "liquidation"]
 
 
 class ExecutionMode(str, Enum):
@@ -71,7 +72,11 @@ class BrokerOrderRequest:
     order_type: OrderType = "market"
     limit_price: float | None = None
     stop_price: float | None = None
+    reference_price: float | None = None
+    risk_stop_price: float | None = None
     reduce_only: bool = False
+    purpose: OrderPurpose = "entry"
+    reason: str = "order_request"
     correlation_id: str | None = None
 
     def __post_init__(self) -> None:
@@ -92,13 +97,24 @@ class BrokerOrderRequest:
             raise ValueError("side must be buy or sell")
         if self.order_type not in {"market", "limit", "stop"}:
             raise ValueError("unsupported order_type")
+        if self.purpose not in {"entry", "exit", "liquidation"}:
+            raise ValueError("unsupported order purpose")
+        if not self.reason.strip():
+            raise ValueError("order reason is required")
+        if self.reduce_only and self.purpose == "entry":
+            raise ValueError("reduce_only orders cannot have entry purpose")
         if not isinstance(self.mode, ExecutionMode):
             raise ValueError("mode must be an ExecutionMode")
         if self.order_type == "limit" and not self.limit_price:
             raise ValueError("limit orders require limit_price")
         if self.order_type == "stop" and not self.stop_price:
             raise ValueError("stop orders require stop_price")
-        for price in (self.limit_price, self.stop_price):
+        for price in (
+            self.limit_price,
+            self.stop_price,
+            self.reference_price,
+            self.risk_stop_price,
+        ):
             if price is not None and price <= 0:
                 raise ValueError("order prices must be positive")
 

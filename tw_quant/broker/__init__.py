@@ -10,6 +10,7 @@ from .models import (
     BrokerOrderRequest,
     BrokerOrderStatus,
     ExecutionMode,
+    OrderPurpose,
     canonical_paper_status,
 )
 from .ports import BrokerAccount, BrokerPort, LiveOrderStore, OrderExecutor
@@ -38,6 +39,7 @@ __all__ = [
     "LiveOrderManager",
     "LiveOrderStore",
     "OrderExecutor",
+    "OrderPurpose",
     "ShioajiBrokerAdapter",
     "ShioajiExecutionClient",
     "SQLiteLiveOrderRepository",
