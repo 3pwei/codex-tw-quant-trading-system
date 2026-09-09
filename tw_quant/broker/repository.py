@@ -59,6 +59,9 @@ class SQLiteLiveOrderRepository:
                 );
                 CREATE INDEX IF NOT EXISTS idx_live_orders_owner_updated
                     ON live_orders(owner_user_id, updated_at DESC);
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_live_orders_broker_order
+                    ON live_orders(broker_order_id)
+                    WHERE broker_order_id IS NOT NULL;
 
                 CREATE TABLE IF NOT EXISTS live_order_outbox (
                     client_order_id TEXT PRIMARY KEY,
@@ -146,6 +149,16 @@ class SQLiteLiveOrderRepository:
             row = self.connection.execute(
                 "SELECT * FROM live_orders WHERE owner_user_id=? AND client_order_id=?",
                 (owner_id, client_order_id),
+            ).fetchone()
+        return self._order(row) if row else None
+
+    def get_by_broker_order_id(self, broker_order_id: str) -> BrokerOrder | None:
+        if not broker_order_id.strip():
+            raise ValueError("broker_order_id is required")
+        with self.lock:
+            row = self.connection.execute(
+                "SELECT * FROM live_orders WHERE broker_order_id=?",
+                (broker_order_id,),
             ).fetchone()
         return self._order(row) if row else None
 

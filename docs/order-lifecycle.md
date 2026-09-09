@@ -60,8 +60,14 @@ SDK client 只會以 `Shioaji(simulation=True)` 登入，支援期貨市價／�
 Worker 只能領取 `pending` 工作一次。送單逾時、程序中斷或結果不明會轉成 `UNKNOWN`
 並將 outbox 設為 `blocked`，必須先透過券商查詢完成 reconciliation，不得自動重送。
 `LiveOrderManager.reconcile_nonterminal()` 可批次查詢所有非終態委託；callback bridge
-只把 `FORDER`／`FDEAL` 正規化並放進記憶體 queue，不直接寫資料庫。queue 滿載或程序
-中斷時，週期性 reconciliation 是復原來源。
+只把 `FORDER`／`FDEAL` 正規化並放進記憶體 queue，不直接寫資料庫。callback consumer
+先以內容雜湊的 `event_id` 將事件寫入 `live_broker_events`，再以 `broker_order_id` 查找
+本地委託並向券商 refresh；它不會直接相信 callback 內的狀態或成交價格。重複 callback
+只會完成一次成功對帳，較早到達、尚未配對的 callback 仍可在委託落庫後重試。
+
+queue 滿載、callback 漏失或程序中斷時，週期性 reconciliation 仍是復原來源。找不到
+本地委託、缺少券商委託 ID 或 refresh 失敗都會留下 `unmatched`／`failed` audit 狀態，
+不會建立或補送委託。
 
 Shioaji 期貨委託目前沒有採用已驗證、可持久化的 client order ID 欄位。因此若送單
 逾時且尚未取得 `broker_order_id`，系統會保持 `UNKNOWN` 並要求人工核對，不會以價格、
@@ -117,7 +123,7 @@ Paper API 保留舊的 `status` 以維持相容，並額外回傳 `lifecycle_sta
 ## 尚未完成的實盤能力
 
 - 持久化 Strategy Runner、帳戶 Risk Gate 與 LiveOrderManager Worker 的正式串接。
-- callback consumer、raw broker event audit log，以及 callback 漏失監控。
+- callback consumer 的正式 Worker 組裝、audit retention 與 callback 漏失監控。
 - order／deal／position 三方對帳；目前只做非終態 order refresh。
 - 本地 Position Ledger 與券商部位差異的自動停機及人工解除流程。
 - 原生保護委託／OCO、部分成交後保護數量調整，以及撤單競態處理。

@@ -1,6 +1,14 @@
 """Broker-account boundaries, intentionally separate from market data."""
 
+from .audit import (
+    BrokerEventAuditRecord,
+    BrokerEventAuditStatus,
+    BrokerEventAuditStore,
+    SQLiteBrokerEventAuditRepository,
+)
+from .callback_consumer import BrokerCallbackConsumer
 from .disabled import DisabledBroker
+from .events import BrokerEvent, broker_event_id
 from .factory import build_broker
 from .lifecycle import InvalidOrderTransition, transition_order
 from .manager import LiveOrderManager
@@ -33,6 +41,11 @@ from .shioaji_simulation import (
 __all__ = [
     "BrokerAccount",
     "BrokerAccountSnapshot",
+    "BrokerCallbackConsumer",
+    "BrokerEvent",
+    "BrokerEventAuditRecord",
+    "BrokerEventAuditStatus",
+    "BrokerEventAuditStore",
     "BrokerOrder",
     "BrokerOrderRequest",
     "BrokerOrderStatus",
@@ -52,10 +65,12 @@ __all__ = [
     "ShioajiCallbackEvent",
     "ShioajiExecutionClient",
     "ShioajiSimulationExecutionClient",
+    "SQLiteBrokerEventAuditRepository",
     "SQLiteLiveOrderRepository",
     "canonical_paper_status",
     "normalize_callback",
     "normalize_trade",
     "transition_order",
     "build_broker",
+    "broker_event_id",
 ]

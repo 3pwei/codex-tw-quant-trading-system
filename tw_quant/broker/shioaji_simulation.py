@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import asdict, dataclass, is_dataclass
+from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from functools import partial
 from typing import Any, Callable, Mapping
 
+from .events import BrokerEvent, broker_event_id
 from .models import BrokerOrderRequest
 from .shioaji import ExternalOrderReport, ExternalReportStatus
 
@@ -26,6 +27,21 @@ _STATUS_MAP: dict[str, ExternalReportStatus] = {
 
 def _value(value: object) -> object:
     return value.value if isinstance(value, Enum) else value
+
+
+def _json_value(value: object) -> object:
+    raw = _value(value)
+    if raw is None or isinstance(raw, (str, int, float, bool)):
+        return raw
+    if isinstance(raw, datetime):
+        return raw.isoformat()
+    if isinstance(raw, Mapping):
+        return {str(key): _json_value(item) for key, item in raw.items()}
+    if isinstance(raw, (list, tuple)):
+        return [_json_value(item) for item in raw]
+    if is_dataclass(raw):
+        return _json_value(asdict(raw))
+    return str(raw)
 
 
 def _field(source: object, name: str, default: object = None) -> object:
@@ -67,7 +83,9 @@ def _timestamp(value: object, fallback: datetime) -> datetime:
 
 
 def _status_name(value: object) -> str:
-    return "".join(character for character in _text(value).lower() if character.isalnum())
+    return "".join(
+        character for character in _text(value).lower() if character.isalnum()
+    )
 
 
 def _order_id(trade: object) -> str | None:
@@ -81,7 +99,10 @@ def _order_id(trade: object) -> str | None:
     return None
 
 
-def _deal_values(status: object) -> tuple[int, float | None, datetime | None]:
+def _deal_values(
+    status: object,
+    fallback_time: datetime,
+) -> tuple[int, float | None, datetime | None]:
     deals = _field(status, "deals", ()) or ()
     quantity = 0
     notional = 0.0
@@ -95,7 +116,7 @@ def _deal_values(status: object) -> tuple[int, float | None, datetime | None]:
         notional += deal_quantity * deal_price
         occurred_at = _timestamp(
             _field(deal, "ts", _field(deal, "timestamp")),
-            datetime.now(timezone.utc),
+            fallback_time,
         )
         latest = max(latest, occurred_at) if latest else occurred_at
     return quantity, (notional / quantity if quantity else None), latest
@@ -113,7 +134,7 @@ def normalize_trade(
     canonical = _STATUS_MAP.get(_status_name(raw_status))
     if canonical is None:
         raise ValueError(f"unsupported Shioaji order status: {raw_status or '<empty>'}")
-    filled_quantity, average_fill_price, deal_time = _deal_values(status)
+    filled_quantity, average_fill_price, deal_time = _deal_values(status, received_at)
     if canonical in {"partially_filled", "filled"} and not filled_quantity:
         raise ValueError("filled Shioaji status has no valid deals")
     message = _text(
@@ -159,7 +180,9 @@ class ShioajiSimulationExecutionClient:
         now: Callable[[], datetime] | None = None,
     ):
         if simulation is not True:
-            raise ValueError("ShioajiSimulationExecutionClient requires simulation=True")
+            raise ValueError(
+                "ShioajiSimulationExecutionClient requires simulation=True"
+            )
         self.api = api
         self.sdk = sdk
         self.account = account
@@ -180,7 +203,11 @@ class ShioajiSimulationExecutionClient:
         import shioaji as sj  # type: ignore[import-not-found]
 
         api = sj.Shioaji(simulation=True)
-        accounts = api.login(api_key=api_key, secret_key=secret_key, subscribe_trade=True)
+        accounts = api.login(
+            api_key=api_key,
+            secret_key=secret_key,
+            subscribe_trade=True,
+        )
         account = next(
             (
                 item
@@ -194,7 +221,12 @@ class ShioajiSimulationExecutionClient:
             raise ValueError("configured Shioaji simulation account was not returned")
         return cls(api, sj, account=account, simulation=True)
 
-    async def _call(self, function: Callable[..., Any], *args: object, **kwargs: object) -> Any:
+    async def _call(
+        self,
+        function: Callable[..., Any],
+        *args: object,
+        **kwargs: object,
+    ) -> Any:
         async with self._sdk_lock:
             return await asyncio.to_thread(partial(function, *args, **kwargs))
 
@@ -295,12 +327,7 @@ class ShioajiSimulationExecutionClient:
         return None
 
 
-@dataclass(frozen=True)
-class ShioajiCallbackEvent:
-    event_type: str
-    broker_order_id: str | None
-    received_at: datetime
-    payload: Mapping[str, object]
+ShioajiCallbackEvent = BrokerEvent
 
 
 def normalize_callback(
@@ -313,18 +340,27 @@ def normalize_callback(
 
     event_type = _text(state).upper()
     if event_type not in {"FORDER", "FDEAL"}:
-        raise ValueError(f"unsupported Shioaji callback state: {event_type or '<empty>'}")
+        raise ValueError(
+            f"unsupported Shioaji callback state: {event_type or '<empty>'}"
+        )
     if not isinstance(message, Mapping):
         raise ValueError("Shioaji callback message must be a mapping")
     clock = now or (lambda: datetime.now(timezone.utc))
-    payload = {str(key): _value(value) for key, value in message.items()}
+    payload = {str(key): _json_value(value) for key, value in message.items()}
     candidates = (
         payload.get("id"),
         payload.get("order_id"),
         payload.get("ordno"),
     )
     broker_order_id = next((str(value) for value in candidates if value), None)
-    return ShioajiCallbackEvent(event_type, broker_order_id, clock(), payload)
+    return BrokerEvent(
+        event_id=broker_event_id("shioaji", event_type, broker_order_id, payload),
+        broker_name="shioaji",
+        event_type=event_type,
+        broker_order_id=broker_order_id,
+        received_at=clock(),
+        payload=payload,
+    )
 
 
 class ShioajiCallbackBridge:
