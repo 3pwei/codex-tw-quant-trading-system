@@ -48,7 +48,8 @@ def trade(
     deals: list[object] | None = None,
 ) -> object:
     return SimpleNamespace(
-        order=SimpleNamespace(id=broker_order_id),
+        contract=SimpleNamespace(code="TMF202609"),
+        order=SimpleNamespace(id=broker_order_id, action="Buy"),
         status=SimpleNamespace(
             id=broker_order_id,
             status=status,
@@ -100,7 +101,12 @@ class FakeAPI:
 
     def list_positions(self, account: object) -> list[object]:
         self.calls.append(("list_positions", account))
-        return [SimpleNamespace(dict=lambda: {"code": "TMF", "quantity": 1})]
+        return [SimpleNamespace(
+            code="TMF202609",
+            quantity=1,
+            direction="Buy",
+            dict=lambda: {"code": "TMF", "quantity": 1},
+        )]
 
 
 class TradeNormalizationTests(unittest.TestCase):
@@ -215,6 +221,17 @@ class SimulationClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await client.account_state())["simulation"], True)
         self.assertEqual(await client.positions(), [{"code": "TMF", "quantity": 1}])
 
+    async def test_builds_typed_order_fill_and_position_snapshot(self):
+        deals = [SimpleNamespace(price=20_000, quantity=2, ts=NOW, seq="deal-1")]
+        api = FakeAPI([trade("Filled", deals=deals)])
+        snapshot = await self.client(api).reconciliation_snapshot()
+        self.assertEqual(snapshot.broker_name, "shioaji")
+        self.assertEqual(snapshot.account_id, "sim-1")
+        self.assertEqual(snapshot.orders[0].status, BrokerOrderStatus.FILLED)
+        self.assertEqual(snapshot.fills[0].fill_id, "broker-1:deal-1")
+        self.assertEqual(snapshot.fills[0].quantity, 2)
+        self.assertEqual(snapshot.positions[0].quantity, 1)
+
 
 class CallbackBridgeTests(unittest.IsolatedAsyncioTestCase):
     async def test_normalizes_and_enqueues_supported_callbacks(self):
@@ -246,7 +263,7 @@ class CallbackBridgeTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ReconciliationTests(unittest.IsolatedAsyncioTestCase):
-    async def test_reconciles_all_nonterminal_orders_without_resubmission(self):
+    async def test_reconciles_broker_orders_without_resubmission(self):
         api = FakeAPI([trade("Submitted")])
         client = ShioajiSimulationExecutionClient(
             api,
@@ -278,7 +295,7 @@ class ReconciliationTests(unittest.IsolatedAsyncioTestCase):
             manager = LiveOrderManager(
                 repository, ShioajiBrokerAdapter(client, safety)
             )
-            results = await manager.reconcile_nonterminal("owner-1")
+            results = await manager.reconcile_broker_orders("owner-1")
             self.assertEqual([item.status for item in results], [BrokerOrderStatus.ACCEPTED])
             self.assertFalse(any(call[0] == "place_order" for call in api.calls))
             self.assertEqual(repository.outbox_state("client-1"), "resolved")

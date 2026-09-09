@@ -8,7 +8,13 @@ from functools import partial
 from typing import Any, Callable, Mapping
 
 from .events import BrokerEvent, broker_event_id
-from .models import BrokerOrderRequest
+from .models import BrokerOrderRequest, BrokerOrderStatus, OrderSide
+from .reconciliation import (
+    BrokerFillSnapshot,
+    BrokerOrderSnapshot,
+    BrokerPositionSnapshot,
+    BrokerReconciliationSnapshot,
+)
 from .shioaji import ExternalOrderReport, ExternalReportStatus
 
 
@@ -22,6 +28,15 @@ _STATUS_MAP: dict[str, ExternalReportStatus] = {
     "canceled": "cancelled",
     "failed": "rejected",
     "inactive": "expired",
+}
+
+_CANONICAL_STATUS = {
+    "accepted": BrokerOrderStatus.ACCEPTED,
+    "partially_filled": BrokerOrderStatus.PARTIALLY_FILLED,
+    "filled": BrokerOrderStatus.FILLED,
+    "cancelled": BrokerOrderStatus.CANCELLED,
+    "rejected": BrokerOrderStatus.REJECTED,
+    "expired": BrokerOrderStatus.EXPIRED,
 }
 
 
@@ -97,6 +112,28 @@ def _order_id(trade: object) -> str | None:
             if value not in (None, ""):
                 return str(value)
     return None
+
+
+def _contract_code(value: object) -> str:
+    contract = _field(value, "contract", {})
+    for source, names in (
+        (contract, ("code", "symbol")),
+        (value, ("code", "contract_code")),
+    ):
+        for name in names:
+            result = _text(_field(source, name))
+            if result:
+                return result
+    return ""
+
+
+def _side(value: object) -> OrderSide:
+    action = _status_name(_field(_field(value, "order", value), "action"))
+    if action.endswith("buy") or action == "b":
+        return "buy"
+    if action.endswith("sell") or action == "s":
+        return "sell"
+    raise ValueError("Shioaji trade direction is unavailable")
 
 
 def _deal_values(
@@ -325,6 +362,79 @@ class ShioajiSimulationExecutionClient:
         # FuturesOrder does not document a durable client-order-id field. Guessing
         # after an ambiguous submission could duplicate a real order, so fail closed.
         return None
+
+    def _raw_reconciliation_snapshot(self) -> tuple[list[object], list[object]]:
+        self.api.update_status(self.account)
+        trades = list(self.api.list_trades())
+        positions = list(self.api.list_positions(self.account))
+        return trades, positions
+
+    async def reconciliation_snapshot(self) -> BrokerReconciliationSnapshot:
+        """Read orders, deals, and positions as one serialized SDK operation."""
+
+        captured_at = self.now()
+        trades, raw_positions = await self._call(self._raw_reconciliation_snapshot)
+        orders: list[BrokerOrderSnapshot] = []
+        fills: list[BrokerFillSnapshot] = []
+        for trade_index, trade in enumerate(trades):
+            self._remember(trade)
+            report = normalize_trade(trade, now=lambda: captured_at)
+            orders.append(BrokerOrderSnapshot(
+                broker_order_id=report.broker_order_id,
+                status=_CANONICAL_STATUS[report.status],
+                filled_quantity=report.filled_quantity,
+            ))
+            status = _field(trade, "status", {})
+            contract = _contract_code(trade)
+            side = _side(trade)
+            for deal_index, deal in enumerate(_field(status, "deals", ()) or ()):
+                if not report.broker_order_id:
+                    raise ValueError("Shioaji deal has no broker order ID")
+                deal_quantity = int(
+                    _field(deal, "quantity", _field(deal, "qty", 0)) or 0
+                )
+                deal_price = float(_field(deal, "price", 0) or 0)
+                deal_time = _timestamp(
+                    _field(deal, "ts", _field(deal, "timestamp")),
+                    captured_at,
+                )
+                raw_fill_id = _field(
+                    deal,
+                    "trade_id",
+                    _field(deal, "seq", f"{trade_index}-{deal_index}"),
+                )
+                fills.append(BrokerFillSnapshot(
+                    fill_id=f"{report.broker_order_id}:{raw_fill_id}",
+                    broker_order_id=report.broker_order_id,
+                    contract=contract,
+                    side=side,
+                    quantity=deal_quantity,
+                    price=deal_price,
+                    occurred_at=deal_time,
+                ))
+        positions: list[BrokerPositionSnapshot] = []
+        for position in raw_positions:
+            contract = _contract_code(position)
+            quantity = int(_field(position, "quantity", 0) or 0)
+            direction = _status_name(
+                _field(position, "direction", _field(position, "action"))
+            )
+            if direction.endswith("sell") or direction == "s":
+                quantity = -abs(quantity)
+            elif direction.endswith("buy") or direction == "b":
+                quantity = abs(quantity)
+            elif quantity > 0:
+                raise ValueError("Shioaji position direction is unavailable")
+            positions.append(BrokerPositionSnapshot(contract, quantity))
+        account_id = _text(_field(self.account, "account_id"))
+        return BrokerReconciliationSnapshot(
+            broker_name="shioaji",
+            account_id=account_id,
+            captured_at=captured_at,
+            orders=tuple(orders),
+            fills=tuple(fills),
+            positions=tuple(positions),
+        )
 
 
 ShioajiCallbackEvent = BrokerEvent

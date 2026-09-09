@@ -59,7 +59,8 @@ SDK client 只會以 `Shioaji(simulation=True)` 登入，支援期貨市價／�
 送單前，`LiveOrderManager.create()` 會在同一個 transaction 保存 order 與 outbox；
 Worker 只能領取 `pending` 工作一次。送單逾時、程序中斷或結果不明會轉成 `UNKNOWN`
 並將 outbox 設為 `blocked`，必須先透過券商查詢完成 reconciliation，不得自動重送。
-`LiveOrderManager.reconcile_nonterminal()` 可批次查詢所有非終態委託；callback bridge
+`LiveOrderManager.reconcile_broker_orders()` 只查詢可能已到達券商的委託；尚在 outbox
+等待、狀態為 `risk_approved` 的訂單不會被誤判為券商遺失。callback bridge
 只把 `FORDER`／`FDEAL` 正規化並放進記憶體 queue，不直接寫資料庫。callback consumer
 先以內容雜湊的 `event_id` 將事件寫入 `live_broker_events`，再以 `broker_order_id` 查找
 本地委託並向券商 refresh；它不會直接相信 callback 內的狀態或成交價格。重複 callback
@@ -68,6 +69,25 @@ Worker 只能領取 `pending` 工作一次。送單逾時、程序中斷或結�
 queue 滿載、callback 漏失或程序中斷時，週期性 reconciliation 仍是復原來源。找不到
 本地委託、缺少券商委託 ID 或 refresh 失敗都會留下 `unmatched`／`failed` audit 狀態，
 不會建立或補送委託。
+
+### Recovery Lock 與三方對帳
+
+Live execution 啟動時預設為 `locked`，不得建立新委託，也不得 dispatch 已在 outbox
+等待的委託。`LiveReconciliationService` 先 refresh 本地非終態訂單，再一次擷取券商
+orders、deals 與 positions，依序檢查：
+
+1. broker 與 account identity 必須完全相同。
+2. 每筆券商委託必須有唯一 `broker_order_id` 並能對應本地訂單。
+3. 本地與券商的訂單狀態、累計成交量必須一致。
+4. deal 不得重複或成為 orphan，deal 數量總和必須等於券商委託累計成交量。
+5. 由本地累計成交推導的各契約淨部位必須等於券商 positions。
+
+全部一致才把狀態改為 `ready`。任何 mismatch、snapshot 失敗或 `UNKNOWN` 無券商 ID
+都維持 `locked`，並保存穩定 issue code。程序若在對帳途中停止，資料庫會保留
+`reconciling`，下次啟動仍視為未解鎖。
+
+目前 Recovery Lock、對帳 service 與 Shioaji simulation snapshot 已具備可測試的組裝
+邊界，但正式站尚未啟動 execution worker，因此不會進行外部送單。
 
 Shioaji 期貨委託目前沒有採用已驗證、可持久化的 client order ID 欄位。因此若送單
 逾時且尚未取得 `broker_order_id`，系統會保持 `UNKNOWN` 並要求人工核對，不會以價格、
@@ -124,7 +144,7 @@ Paper API 保留舊的 `status` 以維持相容，並額外回傳 `lifecycle_sta
 
 - 持久化 Strategy Runner、帳戶 Risk Gate 與 LiveOrderManager Worker 的正式串接。
 - callback consumer 的正式 Worker 組裝、audit retention 與 callback 漏失監控。
-- order／deal／position 三方對帳；目前只做非終態 order refresh。
+- 三方對帳的正式排程、監控告警與人工 mismatch 處理介面。
 - 本地 Position Ledger 與券商部位差異的自動停機及人工解除流程。
 - 原生保護委託／OCO、部分成交後保護數量調整，以及撤單競態處理。
 - Shioaji production client、CA 憑證生命週期、金鑰輪替與真實帳號 allowlist。

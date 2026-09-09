@@ -4,21 +4,31 @@ from datetime import datetime, timezone
 
 from .lifecycle import transition_order
 from .models import BrokerOrder, BrokerOrderRequest, BrokerOrderStatus
-from .ports import BrokerPort, LiveOrderStore
+from .ports import BrokerPort, LiveOrderStore, OrderAdmissionGate
 
 
 class LiveOrderManager:
     """Durable outbox coordinator. It never retries an ambiguous submission."""
 
-    def __init__(self, repository: LiveOrderStore, broker: BrokerPort):
+    def __init__(
+        self,
+        repository: LiveOrderStore,
+        broker: BrokerPort,
+        admission_gate: OrderAdmissionGate | None = None,
+    ):
         self.repository = repository
         self.broker = broker
+        self.admission_gate = admission_gate
         self.interrupted_dispatches = repository.recover_interrupted_dispatches()
 
     def create(self, request: BrokerOrderRequest) -> tuple[BrokerOrder, bool]:
+        if self.admission_gate is not None:
+            self.admission_gate.assert_ordering_allowed()
         return self.repository.reserve(request)
 
     async def dispatch_once(self) -> BrokerOrder | None:
+        if self.admission_gate is not None:
+            self.admission_gate.assert_ordering_allowed()
         reserved = self.repository.claim_next()
         if reserved is None:
             return None
@@ -56,13 +66,13 @@ class LiveOrderManager:
         self.repository.save_reconciliation(refreshed)
         return refreshed
 
-    async def reconcile_nonterminal(
+    async def reconcile_broker_orders(
         self, owner_id: str | None = None
     ) -> list[BrokerOrder]:
-        """Refresh every unresolved order without submitting replacement orders."""
+        """Refresh orders that may have reached the broker, without resubmission."""
 
         reconciled: list[BrokerOrder] = []
-        for current in self.repository.nonterminal_orders(owner_id):
+        for current in self.repository.reconciliation_candidates(owner_id):
             try:
                 refreshed = await self.broker.refresh_order(current)
             except Exception:

@@ -31,6 +31,12 @@ class OrderExecutor(BrokerPort, Protocol):
     """Backward-compatible name for :class:`BrokerPort`."""
 
 
+class OrderAdmissionGate(Protocol):
+    """Application gate checked before a request is durably reserved."""
+
+    def assert_ordering_allowed(self) -> None: ...
+
+
 class LiveOrderStore(Protocol):
     """Persistence port used by the order manager and implemented by adapters."""
 
@@ -42,7 +48,11 @@ class LiveOrderStore(Protocol):
 
     def get_by_broker_order_id(self, broker_order_id: str) -> BrokerOrder | None: ...
 
-    def nonterminal_orders(self, owner_id: str | None = None) -> list[BrokerOrder]: ...
+    def orders(self, owner_id: str | None = None) -> list[BrokerOrder]: ...
+
+    def reconciliation_candidates(
+        self, owner_id: str | None = None
+    ) -> list[BrokerOrder]: ...
 
     def claim_next(self) -> BrokerOrder | None: ...
 

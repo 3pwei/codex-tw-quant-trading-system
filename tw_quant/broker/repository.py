@@ -162,11 +162,30 @@ class SQLiteLiveOrderRepository:
             ).fetchone()
         return self._order(row) if row else None
 
-    def nonterminal_orders(self, owner_id: str | None = None) -> list[BrokerOrder]:
-        terminal = tuple(status.value for status in BrokerOrderStatus if status.terminal)
-        placeholders = ", ".join("?" for _ in terminal)
-        query = f"SELECT * FROM live_orders WHERE status NOT IN ({placeholders})"
-        parameters: tuple[object, ...] = terminal
+    def orders(self, owner_id: str | None = None) -> list[BrokerOrder]:
+        query = "SELECT * FROM live_orders"
+        parameters: tuple[object, ...] = ()
+        if owner_id is not None:
+            query += " WHERE owner_user_id=?"
+            parameters = (owner_id,)
+        query += " ORDER BY updated_at, client_order_id"
+        with self.lock:
+            rows = self.connection.execute(query, parameters).fetchall()
+        return [self._order(row) for row in rows]
+
+    def reconciliation_candidates(
+        self, owner_id: str | None = None
+    ) -> list[BrokerOrder]:
+        statuses = (
+            BrokerOrderStatus.SUBMITTING,
+            BrokerOrderStatus.ACCEPTED,
+            BrokerOrderStatus.PARTIALLY_FILLED,
+            BrokerOrderStatus.CANCEL_PENDING,
+            BrokerOrderStatus.UNKNOWN,
+        )
+        placeholders = ", ".join("?" for _ in statuses)
+        query = f"SELECT * FROM live_orders WHERE status IN ({placeholders})"
+        parameters: tuple[object, ...] = tuple(status.value for status in statuses)
         if owner_id is not None:
             query += " AND owner_user_id=?"
             parameters += (owner_id,)
