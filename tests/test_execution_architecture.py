@@ -48,6 +48,29 @@ class ExecutionArchitectureTests(unittest.TestCase):
                 )
                 self.assertNotIn(".event_simulator", imported_modules)
 
+    def test_broker_domain_does_not_depend_on_storage_sdk_or_interfaces(self):
+        core_modules = ("models.py", "lifecycle.py", "ports.py", "manager.py")
+        forbidden = ("fastapi", "sqlite3", "shioaji", "tw_quant.live")
+        for filename in core_modules:
+            with self.subTest(module=filename):
+                path = ROOT / "tw_quant" / "broker" / filename
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+                imported_modules = {
+                    node.module or ""
+                    for node in ast.walk(tree)
+                    if isinstance(node, ast.ImportFrom)
+                }
+                imported_modules.update(
+                    alias.name
+                    for node in ast.walk(tree)
+                    if isinstance(node, ast.Import)
+                    for alias in node.names
+                )
+                self.assertFalse(
+                    any(module.startswith(forbidden) for module in imported_modules),
+                    imported_modules,
+                )
+
     def test_legacy_execution_imports_keep_the_same_public_types(self):
         public_names = (
             "DisabledRiskGate",

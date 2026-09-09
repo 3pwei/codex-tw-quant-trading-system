@@ -119,6 +119,8 @@ class PaperTradingApiTests(unittest.TestCase):
         self.assertTrue(first.json()["created"])
         order = first.json()["order"]
         self.assertEqual(order["status"], "filled")
+        self.assertEqual(order["lifecycle_status"], "filled")
+        self.assertEqual(order["client_order_id"], "mobile-tap-1")
         self.assertEqual(order["reference_price"], 20_000)
 
         repeated = self.client.post("/api/paper/orders", headers=headers, json=payload)

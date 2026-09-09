@@ -167,6 +167,7 @@ class OrderIntent:
     reference_price: float = 0.0
     stop_loss_price: float | None = None
     trading_date: date | None = None
+    client_order_id: str | None = None
     kind: Literal["order_intent"] = field(default="order_intent", init=False)
 
     def __post_init__(self) -> None:
@@ -180,6 +181,10 @@ class OrderIntent:
             raise ValueError("reference_price cannot be negative")
         if self.stop_loss_price is not None and self.stop_loss_price <= 0:
             raise ValueError("stop_loss_price must be positive when provided")
+        if self.client_order_id is not None and (
+            not self.client_order_id.strip() or len(self.client_order_id) > 128
+        ):
+            raise ValueError("client_order_id must contain 1 to 128 characters")
 
 
 @dataclass(frozen=True)

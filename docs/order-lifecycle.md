@@ -43,7 +43,14 @@ Protective Order／OCO 完成前，任何 UI 或文件都不得宣稱 Paper 部�
 
 ### Live
 
-Live Order Executor 尚未實作。安全預設 `DisabledBroker` 會拒絕所有外部送單。
+Live execution foundation 已包含型別化 `BrokerPort`、不可變訂單狀態、SQLite
+order/outbox、`LiveOrderManager` 與 `ShioajiBrokerAdapter` 的 SDK seam。這些元件尚未接入
+API 或背景 Worker，也沒有真實 Shioaji client，因此正式站仍由 `DisabledBroker`
+拒絕所有外部送單。
+
+送單前，`LiveOrderManager.create()` 會在同一個 transaction 保存 order 與 outbox；
+Worker 只能領取 `pending` 工作一次。送單逾時、程序中斷或結果不明會轉成 `UNKNOWN`
+並將 outbox 設為 `blocked`，必須先透過券商查詢完成 reconciliation，不得自動重送。
 
 ## 目標生命週期
 
@@ -56,6 +63,15 @@ CREATED → RISK_APPROVED → SUBMITTING → ACCEPTED
 
 `UNKNOWN` 表示請求結果不明。系統必須先向券商查詢，不得自動重送可能已被接受的
 委託。
+
+目前 Paper API 保留舊的 `status` 以維持相容，並額外回傳 `lifecycle_status`：
+
+| Paper status | Canonical lifecycle status |
+|---|---|
+| `pending_risk` | `created` |
+| `approved` | `risk_approved` |
+| `rejected` | `rejected` |
+| `filled` | `filled` |
 
 每筆 Live 委託至少保存：
 
@@ -77,4 +93,5 @@ CREATED → RISK_APPROVED → SUBMITTING → ACCEPTED
 6. Kill Switch 分為禁止進場、全部撤單、全部平倉，不得共用模糊布林值。
 7. 重啟後先和券商核對 orders、fills、positions，完成前禁止自動進場。
 8. 本地與券商持倉不一致時 fail closed，留下稽核紀錄並要求人工處理。
-
+9. 啟用 Shioaji adapter 必須同時滿足 provider、enable flag、確認字串與帳號 allowlist；
+   任一缺失都維持 fail closed。
