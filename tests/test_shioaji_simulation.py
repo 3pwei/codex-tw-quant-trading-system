@@ -139,6 +139,11 @@ class TradeNormalizationTests(unittest.TestCase):
         report = normalize_trade(trade("Filled", deals=deals), now=lambda: NOW)
         self.assertEqual(report.occurred_at, NOW)
 
+    def test_invalid_deal_timestamp_uses_injected_receive_time(self):
+        deals = [SimpleNamespace(price=100, quantity=2, ts="invalid")]
+        report = normalize_trade(trade("Filled", deals=deals), now=lambda: NOW)
+        self.assertEqual(report.occurred_at, NOW)
+
     def test_rejects_filled_status_without_deal_details(self):
         with self.assertRaisesRegex(ValueError, "no valid deals"):
             normalize_trade(trade("Filled"), now=lambda: NOW)

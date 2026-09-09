@@ -66,11 +66,18 @@ BrokerOrderRequest / BrokerOrderStatus
 
 `ShioajiSimulationExecutionClient` 是獨立於行情 provider 的 simulation-only SDK
 adapter。它把阻塞 SDK 呼叫移到 worker thread，集中正規化 Shioaji 委託狀態與成交
-均價；callback edge 只驗證並 enqueue，持久化由 consumer／reconciliation 負責。
+均價；callback edge 只驗證並 enqueue。`BrokerCallbackConsumer` 先把 callback 寫入
+獨立 audit store，再透過 `LiveOrderManager` 查詢券商真實狀態；audit repository、
+order repository 與 SDK adapter 都依賴 protocol，不互相反向 import。
+
+callback 內容是喚醒 reconciliation 的提示，不是訂單與部位的真實來源。consumer
+只能 refresh 已有 `broker_order_id` 的本地委託；找不到配對時留下 audit 狀態，不得
+推測 client order ID 或送出替代委託。
 
 `ShioajiBrokerAdapter` 不得直接由 HTTP handler 建立。正式上線前仍需背景 Worker、
-callback consumer、完整 orders/fills/positions 對帳與營運解鎖流程。Production client
-必須是明確的新組裝路徑，不得讓 simulation client 接受 `simulation=False`。
+callback consumer 的 production 組裝、完整 orders/fills/positions 對帳與營運解鎖
+流程。Production client 必須是明確的新組裝路徑，不得讓 simulation client 接受
+`simulation=False`。
 
 Paper HTTP handler 使用 `BrokerOrderRequest` 呼叫 `PaperTradingService.submit_request()`；
 service 保留帳戶風控與事件持久化責任，`PaperBrokerAdapter` 則提供相同的 `BrokerPort`

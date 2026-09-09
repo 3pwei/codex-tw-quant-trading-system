@@ -44,6 +44,18 @@ class LiveOrderManager:
         self.repository.save_reconciliation(refreshed)
         return refreshed
 
+    async def reconcile_by_broker_order_id(
+        self, broker_order_id: str
+    ) -> BrokerOrder | None:
+        """Refresh a callback-linked order without trusting callback state."""
+
+        current = self.repository.get_by_broker_order_id(broker_order_id)
+        if current is None:
+            return None
+        refreshed = await self.broker.refresh_order(current)
+        self.repository.save_reconciliation(refreshed)
+        return refreshed
+
     async def reconcile_nonterminal(
         self, owner_id: str | None = None
     ) -> list[BrokerOrder]:
