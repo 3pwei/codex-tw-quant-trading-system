@@ -43,3 +43,23 @@ class LiveOrderManager:
         refreshed = await self.broker.refresh_order(current)
         self.repository.save_reconciliation(refreshed)
         return refreshed
+
+    async def reconcile_nonterminal(
+        self, owner_id: str | None = None
+    ) -> list[BrokerOrder]:
+        """Refresh every unresolved order without submitting replacement orders."""
+
+        reconciled: list[BrokerOrder] = []
+        for current in self.repository.nonterminal_orders(owner_id):
+            try:
+                refreshed = await self.broker.refresh_order(current)
+            except Exception:
+                refreshed = transition_order(
+                    current,
+                    BrokerOrderStatus.UNKNOWN,
+                    updated_at=datetime.now(timezone.utc),
+                    status_reason="broker_reconciliation_failed",
+                )
+            self.repository.save_reconciliation(refreshed)
+            reconciled.append(refreshed)
+        return reconciled

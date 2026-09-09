@@ -111,6 +111,18 @@ class BrokerLifecycleTests(unittest.TestCase):
                 filled_quantity=0,
             )
 
+    def test_reconciliation_can_observe_external_cancellation(self):
+        order = BrokerOrder(
+            request(),
+            BrokerOrderStatus.ACCEPTED,
+            NOW,
+            broker_order_id="broker-1",
+        )
+        cancelled = transition_order(
+            order, BrokerOrderStatus.CANCELLED, updated_at=NOW
+        )
+        self.assertEqual(cancelled.status, BrokerOrderStatus.CANCELLED)
+
 
 class ShioajiBrokerAdapterTests(unittest.IsolatedAsyncioTestCase):
     @staticmethod

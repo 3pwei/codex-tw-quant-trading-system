@@ -12,7 +12,8 @@ Replay 與 Paper Trading；真實券商下單尚未啟用。架構調整採漸�
 | 即時策略 | `GET /api/strategy-signals` | 重新分析目前 K 棒並回傳訊號 | 不會送單 |
 | Replay | `/api/replay/sessions/*` | 隔離帳戶中的手動模擬市價單 | 不會連線 |
 | Paper | `POST /api/paper/orders` | 帳戶風控後，以伺服器行情模擬成交 | 不會連線 |
-| Live | `OrderExecutor` port | 尚未實作；`DisabledBroker` fail closed | 停用 |
+| Shioaji Simulation | `ShioajiSimulationExecutionClient` | SDK 整合測試，尚未接 API／Worker | 模擬環境限定 |
+| Live | `OrderExecutor` port | `DisabledBroker` fail closed | 停用 |
 
 「即時策略訊號」和「Paper 委託」目前沒有自動串接。任何自動交易功能都必須透過
 持久化的 Strategy Runner、帳戶風控與 Order Manager，不得由 API 查詢或前端直接
@@ -63,9 +64,13 @@ BrokerOrderRequest / BrokerOrderStatus
                      → BrokerPort → ShioajiBrokerAdapter → normalized SDK client
 ```
 
-`ShioajiBrokerAdapter` 目前只是停用預設的執行 seam，不得直接由 HTTP handler 建立。
-真實上線前仍需背景 Worker、券商 callback 正規化、完整 orders/fills/positions 對帳與
-營運解鎖流程。
+`ShioajiSimulationExecutionClient` 是獨立於行情 provider 的 simulation-only SDK
+adapter。它把阻塞 SDK 呼叫移到 worker thread，集中正規化 Shioaji 委託狀態與成交
+均價；callback edge 只驗證並 enqueue，持久化由 consumer／reconciliation 負責。
+
+`ShioajiBrokerAdapter` 不得直接由 HTTP handler 建立。正式上線前仍需背景 Worker、
+callback consumer、完整 orders/fills/positions 對帳與營運解鎖流程。Production client
+必須是明確的新組裝路徑，不得讓 simulation client 接受 `simulation=False`。
 
 Paper HTTP handler 使用 `BrokerOrderRequest` 呼叫 `PaperTradingService.submit_request()`；
 service 保留帳戶風控與事件持久化責任，`PaperBrokerAdapter` 則提供相同的 `BrokerPort`

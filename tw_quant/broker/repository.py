@@ -149,6 +149,19 @@ class SQLiteLiveOrderRepository:
             ).fetchone()
         return self._order(row) if row else None
 
+    def nonterminal_orders(self, owner_id: str | None = None) -> list[BrokerOrder]:
+        terminal = tuple(status.value for status in BrokerOrderStatus if status.terminal)
+        placeholders = ", ".join("?" for _ in terminal)
+        query = f"SELECT * FROM live_orders WHERE status NOT IN ({placeholders})"
+        parameters: tuple[object, ...] = terminal
+        if owner_id is not None:
+            query += " AND owner_user_id=?"
+            parameters += (owner_id,)
+        query += " ORDER BY updated_at, client_order_id"
+        with self.lock:
+            rows = self.connection.execute(query, parameters).fetchall()
+        return [self._order(row) for row in rows]
+
     def claim_next(self) -> BrokerOrder | None:
         now = _utc_now().isoformat(timespec="microseconds")
         with self.lock:
