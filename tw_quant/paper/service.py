@@ -7,7 +7,7 @@ from time import perf_counter
 from typing import Literal
 
 from ..auth import AuthUser
-from ..broker import canonical_paper_status
+from ..broker import BrokerOrderRequest, ExecutionMode, canonical_paper_status
 from ..events import (
     BarClosedEvent,
     DeterministicEventEngine,
@@ -50,6 +50,10 @@ class PaperRecoveryReport:
     @property
     def healthy(self) -> bool:
         return not self.issues_by_owner
+
+
+class IdempotencyConflict(ValueError):
+    """The same request key was reused for different order semantics."""
 
 
 class PaperTradingService:
@@ -312,6 +316,34 @@ class PaperTradingService:
             self.rejected_submissions += 1
         return order
 
+    @staticmethod
+    def _assert_idempotent_match(
+        existing: dict[str, object], command: PaperOrderCommand
+    ) -> None:
+        expected = (
+            command.strategy_id,
+            command.strategy_version,
+            command.side,
+            command.quantity,
+            command.reduce_only,
+            command.stop_loss_price,
+        )
+        actual = (
+            str(existing["strategy_id"]),
+            int(existing["strategy_version"]),
+            str(existing["side"]),
+            int(existing["quantity"]),
+            bool(existing["reduce_only"]),
+            (
+                float(existing["stop_loss_price"])
+                if existing.get("stop_loss_price") is not None else None
+            ),
+        )
+        if actual != expected:
+            raise IdempotencyConflict(
+                "Idempotency-Key was already used for a different paper order"
+            )
+
     def submit(
         self,
         user: AuthUser,
@@ -332,8 +364,11 @@ class PaperTradingService:
             if existing is None and stored is None:
                 raise RuntimeError("paper idempotency record has no matching order")
             if existing is not None:
-                return self._track_submission(self._record(existing), started), False
+                record = self._record(existing)
+                self._assert_idempotent_match(record, command)
+                return self._track_submission(record, started), False
             assert stored is not None
+            self._assert_idempotent_match(stored, command)
             return self._track_submission(stored, started), False
 
         self.access.set_user(user)
@@ -371,8 +406,11 @@ class PaperTradingService:
             if existing is None and stored is None:
                 raise RuntimeError("paper idempotency record has no matching order")
             if existing is not None:
-                return self._track_submission(self._record(existing), started), False
+                record = self._record(existing)
+                self._assert_idempotent_match(record, command)
+                return self._track_submission(record, started), False
             assert stored is not None
+            self._assert_idempotent_match(stored, command)
             return self._track_submission(stored, started), False
         self.pipeline.broker.update_market_price(
             market_bar.symbol, market_bar.contract, market_bar.close
@@ -381,6 +419,47 @@ class PaperTradingService:
         self._run()
         result = self._record(self.pipeline.broker.orders[order.order_id])
         return self._track_submission(result, started), True
+
+    def submit_request(
+        self,
+        user: AuthUser,
+        request: BrokerOrderRequest,
+        *,
+        market_bar: KBar,
+        occurred_at: datetime | None = None,
+    ) -> tuple[dict[str, object], bool]:
+        """Execute the canonical broker request through the Paper use case."""
+        if request.mode is not ExecutionMode.PAPER:
+            raise ValueError("PaperTradingService only accepts paper orders")
+        if request.owner_id != user.user_id:
+            raise ValueError("paper order owner does not match authenticated user")
+        if (
+            request.symbol != market_bar.symbol
+            or request.contract != market_bar.contract
+        ):
+            raise ValueError("paper order contract does not match server market data")
+        if request.order_type != "market":
+            raise ValueError("Paper Trading currently supports market orders only")
+        if (
+            request.reference_price is not None
+            and request.reference_price != market_bar.close
+        ):
+            raise ValueError("paper reference price must be server-derived")
+        return self.submit(
+            user,
+            PaperOrderCommand(
+                strategy_id=request.strategy_id,
+                strategy_version=request.strategy_version,
+                side=request.side,
+                quantity=request.quantity,
+                stop_loss_price=request.risk_stop_price,
+                reduce_only=request.reduce_only,
+                reason=request.reason,
+            ),
+            idempotency_key=request.client_order_id,
+            market_bar=market_bar,
+            occurred_at=occurred_at,
+        )
 
     def on_bar(self, bar: KBar) -> None:
         if bar.status != "closed":

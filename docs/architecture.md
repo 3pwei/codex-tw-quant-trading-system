@@ -28,7 +28,7 @@ Replay 與 Paper Trading；真實券商下單尚未啟用。架構調整採漸�
 | `events` | 穩定事件契約與確定性事件迴圈 | 交易策略 |
 | `risk` | 策略風險價格與帳戶風控決策 | 模擬成交、部位猜測 |
 | `execution` | 訊號執行政策、模擬成交與 Position Ledger | HTTP、使用者介面 |
-| `paper` | Paper use case、持久化與復原 | 真實券商送單 |
+| `paper` | Paper use case、BrokerPort adapter、持久化與復原 | 真實券商送單 |
 | `broker` | 訂單契約、生命週期、durable outbox、Broker port 與 adapter | 行情供應、策略規則 |
 | `live` | API、WebSocket、組裝服務與監控 | 交易領域規則 |
 
@@ -66,6 +66,10 @@ BrokerOrderRequest / BrokerOrderStatus
 `ShioajiBrokerAdapter` 目前只是停用預設的執行 seam，不得直接由 HTTP handler 建立。
 真實上線前仍需背景 Worker、券商 callback 正規化、完整 orders/fills/positions 對帳與
 營運解鎖流程。
+
+Paper HTTP handler 使用 `BrokerOrderRequest` 呼叫 `PaperTradingService.submit_request()`；
+service 保留帳戶風控與事件持久化責任，`PaperBrokerAdapter` 則提供相同的 `BrokerPort`
+給非 HTTP 呼叫端。相容用的 `PaperOrderCommand` 在 Replay 完成遷移前不得移除。
 
 ## 相容與淘汰原則
 

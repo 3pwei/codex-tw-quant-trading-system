@@ -33,9 +33,14 @@ Closed K → strategy intent → next-open / risk exit price
 ### Paper 與 Replay
 
 ```text
-Manual request → OrderIntent → AccountRiskGate
+Manual request → BrokerOrderRequest → OrderIntent → AccountRiskGate
                → immediate simulated full FillEvent → PositionEvent
 ```
+
+Paper API 現在使用與未來 Live 相同的型別化 `BrokerOrderRequest` 作為 application
+boundary，再由 `PaperTradingService` 轉為現有事件鏈。`PaperBrokerAdapter` 實作
+`BrokerPort`，讓背景 runner 或 contract test 可以使用同一套 broker 介面；舊的
+`PaperOrderCommand` 暫時保留給 Replay 與相容呼叫端。
 
 目前僅支援市價、立即、全數成交。`stop_loss_price` 只供進場風險核准及圖表顯示，
 不是會在後續行情觸發的保護委託；目前也沒有 Paper `take_profit_price`。在真正的
@@ -64,7 +69,7 @@ CREATED → RISK_APPROVED → SUBMITTING → ACCEPTED
 `UNKNOWN` 表示請求結果不明。系統必須先向券商查詢，不得自動重送可能已被接受的
 委託。
 
-目前 Paper API 保留舊的 `status` 以維持相容，並額外回傳 `lifecycle_status`：
+Paper API 保留舊的 `status` 以維持相容，並額外回傳 `lifecycle_status`：
 
 | Paper status | Canonical lifecycle status |
 |---|---|

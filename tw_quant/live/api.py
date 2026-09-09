@@ -57,7 +57,13 @@ from ..market_data import (
     LiveMarketDataProvider,
     build_market_data_provider,
 )
-from ..paper import PaperOrderCommand, PaperTradingService, SQLitePaperRepository
+from ..broker import BrokerOrderRequest, ExecutionMode
+from ..paper import (
+    IdempotencyConflict,
+    PaperOrderCommand,
+    PaperTradingService,
+    SQLitePaperRepository,
+)
 from ..replay import ReplaySessionNotFound, ReplayTradingSessionRegistry
 from ..strategy import (
     SUPPORTED_STRATEGIES,
@@ -778,19 +784,29 @@ def create_app(
                 status_code=503, detail="market price is stale"
             )
         try:
-            order, created = paper.submit(
-                request.state.auth_user,
-                PaperOrderCommand(
+            user = request.state.auth_user
+            order, created = paper.submit_request(
+                user,
+                BrokerOrderRequest(
+                    client_order_id=idempotency_key.strip(),
+                    owner_id=user.user_id,
                     strategy_id=payload.strategy_id.strip(),
                     strategy_version=payload.strategy_version,
+                    symbol=latest[0].symbol,
+                    contract=latest[0].contract,
                     side=payload.side,
                     quantity=payload.quantity,
-                    stop_loss_price=payload.stop_loss_price,
+                    mode=ExecutionMode.PAPER,
+                    reference_price=latest[0].close,
+                    risk_stop_price=payload.stop_loss_price,
                     reduce_only=payload.reduce_only,
+                    purpose="exit" if payload.reduce_only else "entry",
+                    reason="manual_paper_order",
                 ),
-                idempotency_key=idempotency_key,
                 market_bar=latest[0],
             )
+        except IdempotencyConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         return {"created": created, "order": order}

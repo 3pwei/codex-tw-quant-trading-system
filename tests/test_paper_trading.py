@@ -163,6 +163,28 @@ class PaperTradingApiTests(unittest.TestCase):
         self.assertEqual(len(orders), 1)
         self.assertEqual(len(fills), 1)
 
+    def test_idempotency_key_reuse_with_different_payload_is_conflict(self):
+        headers = self.headers(
+            "cf-trader", "trader@example.com", "conflicting-mobile-tap"
+        )
+        first = self.client.post(
+            "/api/paper/orders",
+            headers=headers,
+            json={"side": "buy", "quantity": 1, "stop_loss_price": 19_950},
+        )
+        conflict = self.client.post(
+            "/api/paper/orders",
+            headers=headers,
+            json={"side": "sell", "quantity": 1, "stop_loss_price": 20_050},
+        )
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(conflict.status_code, 409)
+        self.assertIn("different paper order", conflict.json()["detail"])
+        self.assertEqual(len(self.client.get(
+            "/api/paper/orders",
+            headers=self.headers("cf-trader", "trader@example.com"),
+        ).json()["orders"]), 1)
+
     def test_owner_data_is_isolated_and_researcher_is_denied(self):
         created = self.client.post(
             "/api/paper/orders",

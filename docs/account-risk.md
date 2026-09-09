@@ -58,7 +58,8 @@ next-open 訂單，風控同步釋放保留口數。
 
 Paper Trading API 從伺服器端的登入使用者建立快照，不接受瀏覽器自行提交
 owner、role、mode、permissions、成交價或契約。委託另以 owner 與
-`Idempotency-Key` 建立唯一鍵，重送同一請求不會再次成交。
+`Idempotency-Key` 建立唯一鍵，重送相同內容不會再次成交；同一 key 若搭配不同方向、
+數量、策略或停損內容會回傳 `409 Conflict`，不會默默套用舊委託。
 
 目前 API 的事件與控制紀錄已持久化；程序重啟後的持倉、風控與手動 Kill Switch
 狀態重建會在 Level 2 的復原／正式驗收階段完成。在完成前不啟用真實券商 adapter。
