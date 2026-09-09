@@ -62,6 +62,8 @@ BrokerOrderRequest / BrokerOrderStatus
   → lifecycle policy
   → LiveOrderManager → SQLiteLiveOrderRepository
                      → BrokerPort → ShioajiBrokerAdapter → normalized SDK client
+  → LiveReconciliationService → RecoveryLockStore
+                              → BrokerReconciliationSource
 ```
 
 `ShioajiSimulationExecutionClient` 是獨立於行情 provider 的 simulation-only SDK
@@ -74,10 +76,14 @@ callback 內容是喚醒 reconciliation 的提示，不是訂單與部位的真�
 只能 refresh 已有 `broker_order_id` 的本地委託；找不到配對時留下 audit 狀態，不得
 推測 client order ID 或送出替代委託。
 
+`LiveReconciliationService` 比較本地訂單、券商 orders/deals 與券商 positions。
+`RecoveryOrderGate` 同時保護 order reservation 與 outbox dispatch；只有持久化
+Recovery Lock 為 `ready` 才能通過。對帳失敗只回報 issue code，不會自行建立成交、
+調整 Position Ledger、撤單或平倉。
+
 `ShioajiBrokerAdapter` 不得直接由 HTTP handler 建立。正式上線前仍需背景 Worker、
-callback consumer 的 production 組裝、完整 orders/fills/positions 對帳與營運解鎖
-流程。Production client 必須是明確的新組裝路徑，不得讓 simulation client 接受
-`simulation=False`。
+callback consumer／三方對帳的 production 組裝、監控與營運解鎖流程。Production
+client 必須是明確的新組裝路徑，不得讓 simulation client 接受 `simulation=False`。
 
 Paper HTTP handler 使用 `BrokerOrderRequest` 呼叫 `PaperTradingService.submit_request()`；
 service 保留帳戶風控與事件持久化責任，`PaperBrokerAdapter` 則提供相同的 `BrokerPort`
