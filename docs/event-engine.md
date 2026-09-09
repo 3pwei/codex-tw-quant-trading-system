@@ -17,8 +17,9 @@ MarketEvent / BarClosedEvent
   → PositionEvent
 ```
 
-`SessionEvent` 負責交易時段開啟、準備關閉與完成關閉。後續 Paper Trading 會用
-`closing` 觸發強制平倉，以 `closed` 阻止新訂單。
+`SessionEvent` 契約可表達交易時段開啟、準備關閉與完成關閉。事件管線已支援以
+`closing` 觸發強制平倉及取消未成交的 next-open 委託，但 Live/Paper 的正式時段
+發布器尚未接入，不得假設目前 Paper 會自動收盤平倉。
 
 ## 模擬成交規則
 
@@ -65,6 +66,7 @@ MarketEvent / BarClosedEvent
 - 模擬成交與部位引擎已消費 `OrderIntent`／`RiskDecision`。
 - 帳戶層風控已能取代預設閘門，並記錄核准或拒絕原因。
 - Backtest 與 Replay 已改由相同事件流驅動，Replay 快照並提供 execution audit events。
-- Paper Trading 只接已收盤 K 棒，並保存事件與狀態快照以支援重啟。
+- Paper Trading 手動委託使用伺服器最新行情立即模擬成交；已收盤 K 棒另供損益
+  標記、換月與未來保護單監控。事件與狀態快照會保存以支援重啟。
 
 任何真實券商 adapter 都不在目前 Level 2 範圍內；`OrderExecutor` 預設仍維持停用。

@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
+import { exitReasonLabel } from "../components/exit-reason";
 
 type Summary = Record<string, number | null>;
 type Run = {
@@ -25,7 +26,6 @@ const money = new Intl.NumberFormat("zh-TW", { maximumFractionDigits: 0 });
 const decimal = new Intl.NumberFormat("zh-TW", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const signedMoney = (value: number) => `${value >= 0 ? "+" : "−"}NT$ ${money.format(Math.abs(value))}`;
 const formatTime = (value: string) => new Date(value).toLocaleString("zh-TW", { timeZone: "Asia/Taipei", hour12: false });
-const exitReason = (value: string) => ({ stop_loss: "停損", take_profit: "停利", force_exit: "時段平倉", end_of_data: "資料結束", mean_reversion: "回歸均線" }[value] ?? value);
 const PAGE_SIZE = 50;
 
 export default function HistoryDashboard() {
@@ -145,7 +145,7 @@ export default function HistoryDashboard() {
       {!detailLoading && detail && <>
       <header className="panel history-detail-head"><div><span>BACKTEST RUN · {detail.run_id.slice(0, 8)}</span><h2>{detail.strategy_name}{detail.strategy_version ? ` · v${detail.strategy_version}` : ""}</h2><p>{detail.symbol} · {detail.start_date} ～ {detail.end_date} · {formatTime(detail.created_at)}</p></div><div className="history-result-actions"><strong className={net >= 0 ? "profit" : "loss"}>{signedMoney(net)}</strong><button type="button" disabled={deleting} onClick={() => void deleteRun()}>{deleting ? "刪除中…" : "永久刪除"}</button></div></header>
       <div className="history-metrics"><article><span>總報酬</span><b>{decimal.format(Number(summary.return_pct ?? 0))}%</b></article><article><span>最大回撤</span><b>{decimal.format(Number(summary.max_drawdown_pct ?? 0))}%</b></article><article><span>勝率</span><b>{decimal.format(Number(summary.win_rate_pct ?? 0))}%</b></article><article><span>交易次數</span><b>{detail.trade_count}</b></article><article><span>Profit Factor</span><b>{summary.profit_factor == null ? "N/A" : decimal.format(Number(summary.profit_factor))}</b></article></div>
-      <section className="panel history-ledger"><div className="panel-head"><div><span>SAVED RESULT</span><h2>交易明細</h2></div><small>策略快照與結果已保存</small></div><div className="table-scroll"><table><thead><tr><th>#</th><th>方向</th><th>進場</th><th>出場</th><th>停損／停利</th><th>成本</th><th>淨損益</th><th>原因</th></tr></thead><tbody>{detail.result.trades.map((trade, index) => <tr key={`${trade.entry_time}-${index}`}><td>{index + 1}</td><td><i className={`dir ${trade.direction}`}>{trade.direction === "long" ? "多" : "空"}</i></td><td>{formatTime(trade.entry_time)}<small>{decimal.format(trade.entry_price)}</small></td><td>{formatTime(trade.exit_time)}<small>{decimal.format(trade.exit_price)}</small></td><td><span className="loss">{decimal.format(trade.stop_loss_price ?? 0)}</span><small className="profit">{decimal.format(trade.take_profit_price ?? 0)}</small></td><td>NT$ {money.format(trade.total_cost)}</td><td className={trade.net_pnl >= 0 ? "profit" : "loss"}><b>{signedMoney(trade.net_pnl)}</b></td><td>{exitReason(trade.exit_reason)}</td></tr>)}</tbody></table>{!detail.result.trades.length && <p className="history-empty-trades">此回測沒有產生完整交易。</p>}</div></section>
+      <section className="panel history-ledger"><div className="panel-head"><div><span>SAVED RESULT</span><h2>交易明細</h2></div><small>策略快照與結果已保存</small></div><div className="table-scroll"><table><thead><tr><th>#</th><th>方向</th><th>進場</th><th>出場</th><th>停損／停利</th><th>成本</th><th>淨損益</th><th>原因</th></tr></thead><tbody>{detail.result.trades.map((trade, index) => <tr key={`${trade.entry_time}-${index}`}><td>{index + 1}</td><td><i className={`dir ${trade.direction}`}>{trade.direction === "long" ? "多" : "空"}</i></td><td>{formatTime(trade.entry_time)}<small>{decimal.format(trade.entry_price)}</small></td><td>{formatTime(trade.exit_time)}<small>{decimal.format(trade.exit_price)}</small></td><td><span className="loss">{decimal.format(trade.stop_loss_price ?? 0)}</span><small className="profit">{decimal.format(trade.take_profit_price ?? 0)}</small></td><td>NT$ {money.format(trade.total_cost)}</td><td className={trade.net_pnl >= 0 ? "profit" : "loss"}><b>{signedMoney(trade.net_pnl)}</b></td><td>{exitReasonLabel(trade.exit_reason)}</td></tr>)}</tbody></table>{!detail.result.trades.length && <p className="history-empty-trades">此回測沒有產生完整交易。</p>}</div></section>
       </>}
     </section>
   </div>;

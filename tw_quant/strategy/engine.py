@@ -5,7 +5,7 @@ from typing import Iterable
 
 import pandas as pd
 
-from ..execution import simulate_signals
+from ..execution import SignalSimulationPolicy, simulate_signals
 from ..market import KBar
 from ..risk import RiskConfig
 from .definitions import BNFMeanReversion, BNFMeanReversionConfig
@@ -15,6 +15,26 @@ from .parameters import (
     validate_strategy_parameters,
 )
 from .linear_channel import detect_linear_channels, serialize_channel_overlay
+
+
+_STRATEGY_EXIT_REASONS = {
+    "bnf": "mean_reversion",
+    "ma_crossover": "opposite_signal",
+    "ema_trend": "opposite_signal",
+    "donchian_breakout": "channel_midpoint",
+    "linear_channel_breakout": "channel_invalidation",
+    "rsi_mean_reversion": "mean_reversion",
+    "bollinger_mean_reversion": "mean_reversion",
+    "macd_momentum": "opposite_signal",
+    "vwap_reversion": "mean_reversion",
+}
+
+
+def _signal_simulation_policy(strategy: str) -> SignalSimulationPolicy:
+    return SignalSimulationPolicy(
+        max_entries_per_group=1,
+        strategy_exit_reason=_STRATEGY_EXIT_REASONS.get(strategy, "strategy_exit"),
+    )
 
 
 def _frame(bars: Iterable[KBar]) -> pd.DataFrame:
@@ -312,6 +332,7 @@ def analyze_strategies(
                         float(values["stop_loss_pct"]),
                         float(values["take_profit_pct"]),
                     ),
+                    policy=_signal_simulation_policy("orb"),
                 )
             )
         if "bnf" in requested:
@@ -328,6 +349,7 @@ def analyze_strategies(
                         float(values["stop_loss_pct"]),
                         float(values["take_profit_pct"]),
                     ),
+                    policy=_signal_simulation_policy("bnf"),
                 )
             )
         for key in requested:
@@ -357,6 +379,7 @@ def analyze_strategies(
                         float(values["stop_loss_pct"]),
                         float(values["take_profit_pct"]),
                     ),
+                    policy=_signal_simulation_policy(key),
                 )
             )
     return {"strategies": [catalog[key] for key in requested]}
