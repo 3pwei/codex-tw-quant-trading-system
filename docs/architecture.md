@@ -53,6 +53,12 @@ Paper、策略管理、Replay 與回測流程集中於 `live/application/`；app
 不依賴 FastAPI，router 只負責 schema、使用者身分與 HTTP error 轉換。應用層錯誤統一
 由 `live/api_errors.py` 映射，避免狀態碼判斷散落於各 use case。
 
+Dashboard 的頁面元件只負責畫面組合與使用者操作。共用 HTTP base URL、response
+解析與 JSON request 建立集中於 `dashboard/app/lib/api-client.ts`；價格、金額與台北
+時間格式集中於 `dashboard/app/lib/formatters.ts`。Live 的行情 WebSocket、K 線圖與
+Paper overlay 分別由專用 hook 管理；Paper 帳戶輪詢及 Replay 圖表生命週期也不得
+重新放回頁面元件。hook 可以依賴 API client 與純型別，不能直接依賴其他頁面的 UI。
+
 新增 Live Execution 時沿用以下責任邊界：
 
 1. Strategy Runner 只消費已收盤 K 棒並產生具冪等 ID 的 `SignalEvent`。

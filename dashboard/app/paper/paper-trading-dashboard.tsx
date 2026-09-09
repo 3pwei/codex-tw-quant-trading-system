@@ -1,14 +1,22 @@
 "use client";
 
 import Link from "next/link";
-import { FormEvent, type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import { FormEvent, type ReactNode, useEffect, useMemo, useState } from "react";
+import { apiRequest, jsonRequest } from "../lib/api-client";
+import {
+  formatMoney,
+  formatPrice,
+  formatSignedMoney,
+  formatTaipeiDateTime,
+} from "../lib/formatters";
+import { usePaperAccount } from "./use-paper-account";
 
-type CurrentUser = {
+export type CurrentUser = {
   role: "researcher" | "trader" | "admin";
   trading_mode: "disabled" | "paper" | "live";
   permissions: string[];
 };
-type Account = {
+export type Account = {
   realized_pnl: number;
   open_contracts: number;
   reserved_contracts: number;
@@ -92,14 +100,6 @@ type PaperTradingDashboardProps = {
 
 type LedgerTab = "positions" | "orders" | "fills";
 
-const apiBase = () => (process.env.NEXT_PUBLIC_MARKET_API_URL
-  ?? (typeof window === "undefined" ? "" : window.location.origin)).replace(/\/$/, "");
-const price = new Intl.NumberFormat("zh-TW", { minimumFractionDigits: 0, maximumFractionDigits: 2 });
-const money = new Intl.NumberFormat("zh-TW", { maximumFractionDigits: 0 });
-const time = (value: string | null) => value
-  ? new Date(value).toLocaleString("zh-TW", { timeZone: "Asia/Taipei", hour12: false })
-  : "—";
-const signedMoney = (value: number) => `${value >= 0 ? "+" : "−"}NT$ ${money.format(Math.abs(value))}`;
 const reasonLabels: Record<string, string> = {
   approved: "風控通過",
   simulated_fill: "模擬成交",
@@ -113,12 +113,6 @@ const reasonLabels: Record<string, string> = {
 };
 const reasonLabel = (value: string) => reasonLabels[value] ?? value;
 
-async function responseBody(response: Response) {
-  const body = await response.json();
-  if (!response.ok) throw new Error(body.detail ?? `API 錯誤 (${response.status})`);
-  return body;
-}
-
 export default function PaperTradingDashboard({
   marketPanel,
   quote,
@@ -126,63 +120,16 @@ export default function PaperTradingDashboard({
   marketHealth,
   onOverlayChange,
 }: PaperTradingDashboardProps) {
-  const [user, setUser] = useState<CurrentUser | null>(null);
-  const [account, setAccount] = useState<Account | null>(null);
-  const [positions, setPositions] = useState<PaperPosition[]>([]);
-  const [orders, setOrders] = useState<PaperOrder[]>([]);
-  const [fills, setFills] = useState<PaperFill[]>([]);
+  const {
+    user, account, positions, orders, fills, error, setError, loading, load,
+  } = usePaperAccount(onOverlayChange);
   const [side, setSide] = useState<"buy" | "sell">("buy");
   const [quantity, setQuantity] = useState(1);
   const [stopLoss, setStopLoss] = useState<string | null>(null);
   const [busy, setBusy] = useState("");
-  const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [loading, setLoading] = useState(true);
   const [ledgerTab, setLedgerTab] = useState<LedgerTab>("positions");
   const [mobileOrderOpen, setMobileOrderOpen] = useState(false);
-
-  const load = useCallback(async (silent = false) => {
-    try {
-      const me = await responseBody(await fetch(`${apiBase()}/api/me`, { cache: "no-store" }));
-      setUser(me);
-      if (!me.permissions.includes("positions.read.own")) {
-        setAccount(null);
-        setPositions([]);
-        setOrders([]);
-        setFills([]);
-        onOverlayChange({ positions: [], orders: [], fills: [] });
-        if (!silent) setError("");
-        return;
-      }
-      const [accountResponse, ordersResponse, fillsResponse] = await Promise.all([
-        fetch(`${apiBase()}/api/paper/account`, { cache: "no-store" }),
-        fetch(`${apiBase()}/api/paper/orders`, { cache: "no-store" }),
-        fetch(`${apiBase()}/api/paper/fills?limit=100`, { cache: "no-store" }),
-      ]);
-      const [accountBody, ordersBody, fillsBody] = await Promise.all([
-        responseBody(accountResponse),
-        responseBody(ordersResponse), responseBody(fillsResponse),
-      ]);
-      setAccount(accountBody.account); setPositions(accountBody.positions);
-      setOrders(ordersBody.orders); setFills(fillsBody.fills);
-      onOverlayChange({
-        positions: accountBody.positions,
-        orders: ordersBody.orders,
-        fills: fillsBody.fills,
-      });
-      if (!silent) setError("");
-    } catch (reason) {
-      if (!silent) setError(reason instanceof Error ? reason.message : "無法載入模擬帳戶");
-    } finally {
-      setLoading(false);
-    }
-  }, [onOverlayChange]);
-
-  useEffect(() => {
-    const initial = window.setTimeout(() => void load(), 0);
-    const timer = window.setInterval(() => void load(true), 5_000);
-    return () => { window.clearTimeout(initial); window.clearInterval(timer); };
-  }, [load]);
 
   useEffect(() => {
     if (!mobileOrderOpen) return;
@@ -208,7 +155,7 @@ export default function PaperTradingDashboard({
   const marketBlockCopy = marketBlockReason === "provider_disconnected"
     ? { code: "PROVIDER DISCONNECTED", title: "行情供應商連線中斷", detail: "系統已禁止建立新倉；既有持倉仍可查看。連線恢復後也不會自動補送中斷期間的委託。" }
     : marketBlockReason === "market_stale"
-      ? { code: "MARKET STALE", title: "行情已停止更新", detail: `最新 Tick：${time(marketHealth?.last_tick_time ?? null)}。系統已禁止建立新倉，恢復後請重新確認價格再送單。` }
+      ? { code: "MARKET STALE", title: "行情已停止更新", detail: `最新 Tick：${formatTaipeiDateTime(marketHealth?.last_tick_time)}。系統已禁止建立新倉，恢復後請重新確認價格再送單。` }
       : null;
   const orderDisabled = !paperEnabled || !quoteFresh || Boolean(marketBlockReason)
     || Boolean(account?.kill_switch_active) || Boolean(busy);
@@ -232,12 +179,10 @@ export default function PaperTradingDashboard({
     event.preventDefault();
     setBusy("order"); setError(""); setNotice("");
     try {
-      const response = await fetch(`${apiBase()}/api/paper/orders`, {
-        method: "POST",
+      const body = await apiRequest<{ order: PaperOrder }>("/api/paper/orders", {
+        ...jsonRequest("POST", { side, quantity, stop_loss_price: Number(orderStopLoss) }),
         headers: { "Content-Type": "application/json", "Idempotency-Key": crypto.randomUUID() },
-        body: JSON.stringify({ side, quantity, stop_loss_price: Number(orderStopLoss) }),
-      });
-      const body = await responseBody(response);
+      }, "API 錯誤");
       setNotice(body.order.status === "filled"
         ? `模擬${side === "buy" ? "買進" : "賣出"} ${quantity} 口已成交`
         : `委託未成交：${reasonLabel(body.order.status_reason)}`);
@@ -251,16 +196,14 @@ export default function PaperTradingDashboard({
     if (!window.confirm(`確定以最新行情平倉 ${position.contract} ${Math.abs(position.quantity)} 口？`)) return;
     setBusy(`close:${position.contract}`); setError(""); setNotice("");
     try {
-      const response = await fetch(`${apiBase()}/api/paper/orders`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "Idempotency-Key": crypto.randomUUID() },
-        body: JSON.stringify({
+      const body = await apiRequest<{ order: PaperOrder }>("/api/paper/orders", {
+        ...jsonRequest("POST", {
           strategy_id: position.strategy_id, strategy_version: position.strategy_version,
           side: position.quantity > 0 ? "sell" : "buy",
           quantity: Math.abs(position.quantity), reduce_only: true,
         }),
-      });
-      const body = await responseBody(response);
+        headers: { "Content-Type": "application/json", "Idempotency-Key": crypto.randomUUID() },
+      }, "API 錯誤");
       if (body.order.status !== "filled") throw new Error(reasonLabel(body.order.status_reason));
       setNotice(`${position.contract} 已完成模擬平倉`); await load(true);
     } catch (reason) {
@@ -273,10 +216,9 @@ export default function PaperTradingDashboard({
     setBusy("control"); setError(""); setNotice("");
     try {
       const endpoint = action === "activate" ? "/api/paper/kill-switch" : "/api/paper/kill-switch/reset";
-      await responseBody(await fetch(`${apiBase()}${endpoint}`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ reason: action === "activate" ? "manual_ui_stop" : "manual_ui_resume" }),
-      }));
+      await apiRequest(endpoint, jsonRequest("POST", {
+        reason: action === "activate" ? "manual_ui_stop" : "manual_ui_resume",
+      }), "API 錯誤");
       setNotice(action === "activate" ? "Kill Switch 已啟用" : "Kill Switch 已解除");
       await load(true);
     } catch (reason) {
@@ -302,9 +244,9 @@ export default function PaperTradingDashboard({
     {notice && <div className="paper-message success">{notice}</div>}
 
     <section className="paper-metrics">
-      <article><span>最新模擬報價</span><strong>{quote ? price.format(quote.close) : "—"}</strong><small>{quote?.contract ?? "等待行情"} · {quoteFresh ? "即時" : "已過期"}</small></article>
-      <article><span>未實現損益</span><strong className={totalUnrealized >= 0 ? "profit" : "loss"}>{signedMoney(totalUnrealized)}</strong><small>{account?.open_contracts ?? 0} 口未平倉</small></article>
-      <article><span>已實現損益</span><strong className={(account?.realized_pnl ?? 0) >= 0 ? "profit" : "loss"}>{signedMoney(account?.realized_pnl ?? 0)}</strong><small>今日成交 {account?.trades ?? 0} 筆</small></article>
+      <article><span>最新模擬報價</span><strong>{formatPrice(quote?.close)}</strong><small>{quote?.contract ?? "等待行情"} · {quoteFresh ? "即時" : "已過期"}</small></article>
+      <article><span>未實現損益</span><strong className={totalUnrealized >= 0 ? "profit" : "loss"}>{formatSignedMoney(totalUnrealized)}</strong><small>{account?.open_contracts ?? 0} 口未平倉</small></article>
+      <article><span>已實現損益</span><strong className={(account?.realized_pnl ?? 0) >= 0 ? "profit" : "loss"}>{formatSignedMoney(account?.realized_pnl ?? 0)}</strong><small>今日成交 {account?.trades ?? 0} 筆</small></article>
       <article><span>風控狀態</span><strong className={!paperEnabled ? "warning" : account?.kill_switch_active ? "loss" : "profit"}>{!paperEnabled ? "未啟用" : account?.kill_switch_active ? "已停止" : "可交易"}</strong><small>{account?.kill_switch_reason ? reasonLabel(account.kill_switch_reason) : paperEnabled ? "風控閘門正常" : "送單功能維持停用"}</small></article>
     </section>
 
@@ -340,16 +282,16 @@ export default function PaperTradingDashboard({
       </div>
       {ledgerTab === "positions" && <div id="paper-panel-positions" className="paper-positions" role="tabpanel" aria-labelledby="paper-tab-positions">
         <div className="table-scroll"><table><thead><tr><th>契約</th><th>方向／口數</th><th>均價</th><th>未實現損益</th><th>建立時間</th><th></th></tr></thead><tbody>
-          {positions.map(position => <tr key={`${position.strategy_id}:${position.contract}`}><td data-label="契約"><b>{position.contract}</b><small>{position.strategy_id} · v{position.strategy_version}</small></td><td data-label="方向／口數"><i className={`dir ${position.quantity > 0 ? "long" : "short"}`}>{position.quantity > 0 ? "多" : "空"}</i> {Math.abs(position.quantity)} 口</td><td data-label="均價">{price.format(position.average_price)}</td><td data-label="未實現損益" className={position.unrealized_pnl >= 0 ? "profit" : "loss"}><b>{signedMoney(position.unrealized_pnl)}</b></td><td data-label="建立時間">{time(position.opened_at)}</td><td className="paper-close-cell"><button disabled={Boolean(busy) || !quoteFresh} onClick={() => void closePosition(position)}>{busy === `close:${position.contract}` ? "平倉中…" : "全部平倉"}</button></td></tr>)}
+          {positions.map(position => <tr key={`${position.strategy_id}:${position.contract}`}><td data-label="契約"><b>{position.contract}</b><small>{position.strategy_id} · v{position.strategy_version}</small></td><td data-label="方向／口數"><i className={`dir ${position.quantity > 0 ? "long" : "short"}`}>{position.quantity > 0 ? "多" : "空"}</i> {Math.abs(position.quantity)} 口</td><td data-label="均價">{formatPrice(position.average_price)}</td><td data-label="未實現損益" className={position.unrealized_pnl >= 0 ? "profit" : "loss"}><b>{formatSignedMoney(position.unrealized_pnl)}</b></td><td data-label="建立時間">{formatTaipeiDateTime(position.opened_at)}</td><td className="paper-close-cell"><button disabled={Boolean(busy) || !quoteFresh} onClick={() => void closePosition(position)}>{busy === `close:${position.contract}` ? "平倉中…" : "全部平倉"}</button></td></tr>)}
         </tbody></table>{!positions.length && <p className="paper-empty">目前沒有模擬持倉。</p>}</div>
       </div>}
-      {ledgerTab === "orders" && <div id="paper-panel-orders" className="paper-record-list" role="tabpanel" aria-labelledby="paper-tab-orders">{orders.slice(0, 20).map(order => <article key={order.order_id}><div><b>{order.side === "buy" ? "買進" : "賣出"} {order.quantity} 口</b><span className={order.status}>{order.status === "filled" ? "已成交" : order.status === "rejected" ? "已拒絕" : "處理中"}</span></div><strong>{order.contract} · {price.format(order.reference_price)}</strong><small>{time(order.submitted_at)} · {reasonLabel(order.status_reason)}</small></article>)}{!orders.length && <p className="paper-empty">尚無委託紀錄。</p>}</div>}
-      {ledgerTab === "fills" && <div id="paper-panel-fills" className="paper-record-list" role="tabpanel" aria-labelledby="paper-tab-fills">{fills.slice(0, 20).map(fill => <article key={fill.fill_id}><div><b>{fill.side === "buy" ? "買進" : "賣出"} {fill.quantity} 口</b><span className="filled">已成交</span></div><strong>{fill.contract} · {price.format(fill.price)}</strong><small>{time(fill.meta.occurred_at)} · 成本 NT$ {money.format(fill.commission + fill.tax)} · 滑價 {price.format(fill.slippage)} 點</small></article>)}{!fills.length && <p className="paper-empty">尚無成交紀錄。</p>}</div>}
+      {ledgerTab === "orders" && <div id="paper-panel-orders" className="paper-record-list" role="tabpanel" aria-labelledby="paper-tab-orders">{orders.slice(0, 20).map(order => <article key={order.order_id}><div><b>{order.side === "buy" ? "買進" : "賣出"} {order.quantity} 口</b><span className={order.status}>{order.status === "filled" ? "已成交" : order.status === "rejected" ? "已拒絕" : "處理中"}</span></div><strong>{order.contract} · {formatPrice(order.reference_price)}</strong><small>{formatTaipeiDateTime(order.submitted_at)} · {reasonLabel(order.status_reason)}</small></article>)}{!orders.length && <p className="paper-empty">尚無委託紀錄。</p>}</div>}
+      {ledgerTab === "fills" && <div id="paper-panel-fills" className="paper-record-list" role="tabpanel" aria-labelledby="paper-tab-fills">{fills.slice(0, 20).map(fill => <article key={fill.fill_id}><div><b>{fill.side === "buy" ? "買進" : "賣出"} {fill.quantity} 口</b><span className="filled">已成交</span></div><strong>{fill.contract} · {formatPrice(fill.price)}</strong><small>{formatTaipeiDateTime(fill.meta.occurred_at)} · 成本 NT$ {formatMoney(fill.commission + fill.tax)} · 滑價 {formatPrice(fill.slippage)} 點</small></article>)}{!fills.length && <p className="paper-empty">尚無成交紀錄。</p>}</div>}
     </section>
 
     {mobileOrderOpen && <button type="button" className="mobile-sheet-backdrop" aria-label="關閉下單面板" onClick={() => setMobileOrderOpen(false)} />}
     <div className="mobile-trade-bar" aria-label="快速模擬下單">
-      <span><small>{quote?.contract ?? "等待行情"}</small><b>{quote ? price.format(quote.close) : "—"}</b></span>
+      <span><small>{quote?.contract ?? "等待行情"}</small><b>{formatPrice(quote?.close)}</b></span>
       <button type="button" className="buy" disabled={orderDisabled} onClick={() => openMobileOrder("buy")}>買進</button>
       <button type="button" className="sell" disabled={orderDisabled} onClick={() => openMobileOrder("sell")}>賣出</button>
     </div>
