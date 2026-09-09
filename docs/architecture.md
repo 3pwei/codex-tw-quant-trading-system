@@ -46,6 +46,10 @@ Interfaces (API / Worker)
         ← Paper / SQLite / Shioaji adapters
 ```
 
+FastAPI 的 `create_app()` 只負責 dependency wiring、lifespan 與 middleware；HTTP
+端點依 system、admin、paper、market、strategy、research 分組於 `live/api_routes/`。
+Router 透過 `ApiDependencies` 取得服務，不直接建立資料庫、行情 provider 或交易元件。
+
 新增 Live Execution 時沿用以下責任邊界：
 
 1. Strategy Runner 只消費已收盤 K 棒並產生具冪等 ID 的 `SignalEvent`。
