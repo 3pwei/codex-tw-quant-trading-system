@@ -6,8 +6,12 @@ from fastapi import Request
 
 from ..auth import AccessIdentity, AccessTokenError, AccessValidator, AuthService, SQLiteAuthRepository
 from ..paper import PaperTradingService
-from ..replay import ReplaySessionNotFound, ReplayTradingSessionRegistry
-from ..strategy import validate_composite_dependencies, validate_composite_definition
+from ..replay import ReplayTradingSessionRegistry
+from .application import (
+    PaperApplicationService,
+    ResearchApplicationService,
+    StrategyApplicationService,
+)
 from .monitoring import HostResourceMonitor
 from .rate_limit import SlidingWindowRateLimiter
 from .service import LiveMarketService
@@ -27,6 +31,9 @@ class ApiDependencies:
     replay_trading: ReplayTradingSessionRegistry
     host_monitor: HostResourceMonitor
     limiter: SlidingWindowRateLimiter
+    paper_app: PaperApplicationService
+    research_app: ResearchApplicationService
+    strategy_app: StrategyApplicationService
 
     def identity_from_headers(self, headers) -> AccessIdentity | None:
         token = headers.get("cf-access-jwt-assertion")
@@ -68,36 +75,3 @@ class ApiDependencies:
     def request_owner_id(request: Request) -> str:
         user = request.state.auth_user
         return user.user_id if user.registered else DEFAULT_OWNER_ID
-
-    def validated_composite_for_save(
-        self, raw: dict[str, object], owner_id: str, strategy_id: str
-    ) -> dict[str, object]:
-        def resolve_child(
-            child_id: str, child_version: int
-        ) -> dict[str, object] | None:
-            child = self.repo.composite_strategy(
-                child_id, child_version, owner_user_id=owner_id
-            )
-            if child is None:
-                return None
-            if self.repo.composite_strategy_archived(child_id, owner_id):
-                raise ValueError(
-                    f"封存策略不可加入新的組合：{child['name']} v{child_version}"
-                )
-            return child
-
-        definition = validate_composite_definition(
-            raw,
-            self.repo.strategy_parameters(owner_id),
-            composite_resolver=resolve_child,
-        )
-        validate_composite_dependencies(definition, strategy_id)
-        return definition
-
-    def replay_session(self, session_id: str, request: Request):
-        try:
-            return self.replay_trading.get(
-                session_id, self.request_owner_id(request)
-            )
-        except ReplaySessionNotFound as exc:
-            raise ReplaySessionNotFound("找不到回放交易 Session") from exc

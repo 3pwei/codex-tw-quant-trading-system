@@ -129,6 +129,9 @@ class PaperTradingService:
             str(payload["contract"]),
         )
 
+    def events(self, owner_id: str, limit: int) -> list[dict[str, object]]:
+        return self.repository.events(owner_id, limit)
+
     def _recover(self) -> PaperRecoveryReport:
         recovery_started = perf_counter()
         intents: dict[str, dict[str, dict[str, object]]] = {}

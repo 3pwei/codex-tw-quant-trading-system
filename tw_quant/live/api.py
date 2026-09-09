@@ -18,6 +18,11 @@ from ..market_data import HistoricalMarketDataProvider, LiveMarketDataProvider, 
 from ..paper import PaperTradingService, SQLitePaperRepository
 from ..replay import ReplayTradingSessionRegistry
 from .api_context import ApiDependencies
+from .application import (
+    PaperApplicationService,
+    ResearchApplicationService,
+    StrategyApplicationService,
+)
 from .api_models import (
     AdminUserCreate,
     AdminUserUpdate,
@@ -129,6 +134,17 @@ def create_app(
     replay_trading = ReplayTradingSessionRegistry()
     limiter = rate_limiter or _build_rate_limiter(config)
     service.add_bar_listener(paper.on_bar)
+    paper_app = PaperApplicationService(
+        repo,
+        paper,
+        service,
+        config.symbol,
+        config.stale_after_seconds,
+    )
+    research_app = ResearchApplicationService(
+        repo, replay_trading, config.symbol
+    )
+    strategy_app = StrategyApplicationService(repo, config.symbol)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -160,6 +176,9 @@ def create_app(
         replay_trading=replay_trading,
         host_monitor=HostResourceMonitor(Path(config.db_path)),
         limiter=limiter,
+        paper_app=paper_app,
+        research_app=research_app,
+        strategy_app=strategy_app,
     )
     app.state.api_dependencies = deps
     app.state.market_service = service

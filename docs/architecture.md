@@ -49,6 +49,9 @@ Interfaces (API / Worker)
 FastAPI 的 `create_app()` 只負責 dependency wiring、lifespan 與 middleware；HTTP
 端點依 system、admin、paper、market、strategy、research 分組於 `live/api_routes/`。
 Router 透過 `ApiDependencies` 取得服務，不直接建立資料庫、行情 provider 或交易元件。
+Paper、策略管理、Replay 與回測流程集中於 `live/application/`；application service
+不依賴 FastAPI，router 只負責 schema、使用者身分與 HTTP error 轉換。應用層錯誤統一
+由 `live/api_errors.py` 映射，避免狀態碼判斷散落於各 use case。
 
 新增 Live Execution 時沿用以下責任邊界：
 
