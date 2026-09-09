@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Mapping
 
+from .models import BrokerOrder, BrokerOrderRequest
+
 
 class DisabledBroker:
     """Safe default for the quote-only phase: every order is rejected."""
@@ -14,8 +16,11 @@ class DisabledBroker:
     async def positions(self) -> list[Mapping[str, object]]:
         return []
 
-    async def submit_order(self, order: Mapping[str, object]) -> str:
+    async def submit_order(self, order: BrokerOrderRequest) -> BrokerOrder:
         raise RuntimeError("live order execution is disabled")
 
-    async def cancel_order(self, order_id: str) -> None:
+    async def cancel_order(self, order: BrokerOrder) -> BrokerOrder:
+        raise RuntimeError("live order execution is disabled")
+
+    async def refresh_order(self, order: BrokerOrder) -> BrokerOrder:
         raise RuntimeError("live order execution is disabled")

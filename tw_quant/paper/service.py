@@ -7,6 +7,7 @@ from time import perf_counter
 from typing import Literal
 
 from ..auth import AuthUser
+from ..broker import canonical_paper_status
 from ..events import (
     BarClosedEvent,
     DeterministicEventEngine,
@@ -275,6 +276,7 @@ class PaperTradingService:
         order = record.intent
         return {
             "order_id": order.order_id,
+            "client_order_id": order.client_order_id,
             "submitted_at": order.meta.occurred_at.isoformat(timespec="milliseconds"),
             "strategy_id": order.strategy_id,
             "strategy_version": order.strategy_version,
@@ -286,6 +288,7 @@ class PaperTradingService:
             "reference_price": order.reference_price,
             "stop_loss_price": order.stop_loss_price,
             "status": record.status,
+            "lifecycle_status": canonical_paper_status(record.status).value,
             "status_reason": record.status_reason,
             "approved_quantity": record.approved_quantity,
             "fill_id": record.fill_id,
@@ -359,6 +362,7 @@ class PaperTradingService:
             reference_price=market_bar.close,
             stop_loss_price=command.stop_loss_price,
             trading_date=market_bar.trading_date,
+            client_order_id=key,
         )
         reserved_id = self.repository.reserve_key(user.user_id, key, order.order_id)
         if reserved_id != order.order_id:

@@ -8,6 +8,7 @@ from threading import Lock
 from time import perf_counter
 
 from ..events import DomainEvent, event_to_dict
+from ..broker import canonical_paper_status
 
 
 def _now() -> str:
@@ -259,6 +260,7 @@ class SQLitePaperRepository:
         assert isinstance(meta, dict)
         return {
             "order_id": order_id,
+            "client_order_id": intent.get("client_order_id"),
             "submitted_at": meta["occurred_at"],
             "strategy_id": intent["strategy_id"],
             "strategy_version": intent["strategy_version"],
@@ -270,6 +272,7 @@ class SQLitePaperRepository:
             "reference_price": intent["reference_price"],
             "stop_loss_price": intent["stop_loss_price"],
             "status": status,
+            "lifecycle_status": canonical_paper_status(status).value,
             "status_reason": status_reason,
             "approved_quantity": (
                 decision.get("approved_quantity", 0) if decision else 0

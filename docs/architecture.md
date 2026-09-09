@@ -29,7 +29,7 @@ Replay 與 Paper Trading；真實券商下單尚未啟用。架構調整採漸�
 | `risk` | 策略風險價格與帳戶風控決策 | 模擬成交、部位猜測 |
 | `execution` | 訊號執行政策、模擬成交與 Position Ledger | HTTP、使用者介面 |
 | `paper` | Paper use case、持久化與復原 | 真實券商送單 |
-| `broker` | Broker／Order Executor port 與安全預設 | 行情供應 |
+| `broker` | 訂單契約、生命週期、durable outbox、Broker port 與 adapter | 行情供應、策略規則 |
 | `live` | API、WebSocket、組裝服務與監控 | 交易領域規則 |
 
 ## 依賴方向
@@ -48,11 +48,24 @@ Interfaces (API / Worker)
 新增 Live Execution 時沿用以下責任邊界：
 
 1. Strategy Runner 只消費已收盤 K 棒並產生具冪等 ID 的 `SignalEvent`。
-2. Order Manager 保存訂單生命週期並將核准委託交給 `OrderExecutor`。
+2. `LiveOrderManager` 先將核准委託與 outbox 原子寫入，再交給 `BrokerPort`。
 3. Risk Gate 只能核准、縮減或拒絕，不得自行建立成交。
 4. Broker Adapter 只轉換請求與回報，不包含策略規則。
 5. Position Ledger 只根據 `FillEvent` 改變持倉。
 6. Reconciliation Service 以券商委託、成交與部位為 Live 真實來源。
+
+`broker` 內部依賴方向為：
+
+```text
+BrokerOrderRequest / BrokerOrderStatus
+  → lifecycle policy
+  → LiveOrderManager → SQLiteLiveOrderRepository
+                     → BrokerPort → ShioajiBrokerAdapter → normalized SDK client
+```
+
+`ShioajiBrokerAdapter` 目前只是停用預設的執行 seam，不得直接由 HTTP handler 建立。
+真實上線前仍需背景 Worker、券商 callback 正規化、完整 orders/fills/positions 對帳與
+營運解鎖流程。
 
 ## 相容與淘汰原則
 
