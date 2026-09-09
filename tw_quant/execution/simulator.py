@@ -3,6 +3,7 @@ from __future__ import annotations
 import pandas as pd
 
 from ..risk import DEFAULT_RISK, RiskConfig, RiskLevels, calculate_levels, triggered_exit
+from .policy import DEFAULT_SIGNAL_SIMULATION_POLICY, SignalSimulationPolicy
 
 
 def simulate_signals(
@@ -13,12 +14,14 @@ def simulate_signals(
     *,
     force_final: bool = False,
     risk: RiskConfig = DEFAULT_RISK,
+    policy: SignalSimulationPolicy = DEFAULT_SIGNAL_SIMULATION_POLICY,
 ) -> list[dict[str, object]]:
     """Apply next-open fills and shared risk rules to strategy intents."""
     signals: list[dict[str, object]] = []
     position = 0
     pending_entry = 0
     pending_exit = False
+    filled_entries = 0
     levels = RiskLevels(0.0, 0.0)
 
     def emit(event: str, row: pd.Series, price: float, reason: str) -> None:
@@ -40,7 +43,12 @@ def simulate_signals(
 
     for index, row in bars.iterrows():
         if position and pending_exit:
-            emit("exit", row, float(row["open"]), "mean_reversion")
+            emit(
+                "exit",
+                row,
+                float(row["open"]),
+                policy.strategy_exit_reason,
+            )
             position = 0
             pending_exit = False
 
@@ -49,6 +57,7 @@ def simulate_signals(
             entry_price = float(row["open"])
             levels = calculate_levels(entry_price, position, risk)
             emit("entry", row, entry_price, "signal_confirmed")
+            filled_entries += 1
             pending_entry = 0
 
         if position:
@@ -68,8 +77,11 @@ def simulate_signals(
             side = "long" if position == 1 else "short"
             pending_exit = bool(exits.loc[index, side])
 
-        # Current ORB/BNF policy permits one completed signal sequence per session.
-        if position == 0 and not signals:
+        if (
+            position == 0
+            and pending_entry == 0
+            and filled_entries < policy.max_entries_per_group
+        ):
             candidate = int(entries.loc[index])
             if candidate in (-1, 1):
                 pending_entry = candidate

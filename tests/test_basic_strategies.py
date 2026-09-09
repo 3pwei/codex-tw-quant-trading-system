@@ -199,6 +199,33 @@ class BasicStrategyTests(unittest.TestCase):
         point_dates = {point["time"][:10] for point in result["overlays"][0]["points"]}
         self.assertEqual(point_dates, {"2026-09-01", "2026-09-02"})
 
+    def test_dow_channel_exit_has_domain_specific_reason(self):
+        values = [
+            100, 102, 106, 110, 108, 106, 105, 107, 111,
+            115, 113, 111, 110, 112, 116, 120, 125, 126,
+            127, 126, 115, 114, 113,
+        ]
+        result = analyze_strategies(
+            bars(values),
+            ["linear_channel_breakout"],
+            parameters={"linear_channel_breakout": {
+                "atr_period": 2,
+                "pivot_reversal_atr": 0.1,
+                "confirmation_bars": 1,
+                "minimum_pivot_distance": 1,
+                "minimum_channel_bars": 2,
+                "invalidation_bars": 2,
+                "stop_loss_pct": 0.2,
+                "take_profit_pct": 0.5,
+            }},
+        )["strategies"][0]
+
+        exits = [
+            signal for signal in result["signals"]
+            if signal["event"] == "exit"
+        ]
+        self.assertEqual(exits[0]["reason"], "channel_invalidation")
+
     def test_legacy_regression_channel_parameters_migrate_to_dow_defaults(self):
         migrated = validate_strategy_parameters("linear_channel_breakout", {
             "minimum_lookback": 20,

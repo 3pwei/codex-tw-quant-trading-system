@@ -15,7 +15,7 @@
 | 策略 | 11 套基本策略、多週期 Setup／Entry／Exit／Risk、ALL／ANY、三層組合策略引用 |
 | 版本 | 不可變版本、參數快照、名稱唯一、封存、引用保護及回測追溯 |
 | 執行 | Backtest／Replay／Paper 共用 Signal → Order → Risk → Fill → Position/PnL 事件語意 |
-| 風控 | 帳戶與資料隔離、停損停利、部位／每日限制、連敗冷卻、Kill Switch、行情過期禁止新倉 |
+| 風控 | 帳戶與資料隔離、回測停損停利、Paper 進場風險檢查、部位／每日限制、連敗冷卻、Kill Switch |
 | 平台 | Cloudflare OTP、FastAPI RBAC、申請與審核、Rate Limit、Request Size Limit、稽核紀錄 |
 | 穩定性 | 重啟復原、SQLite verified backup、Queue／WebSocket／DB／主機監控、五種服務狀態 |
 | UI | `/trade/` 整合即時圖表與 Paper 下單；成交點、均價、停損線、手機 Bottom Sheet |
@@ -202,6 +202,8 @@ API_MAX_REQUEST_BODY_BYTES=262144
 - [Replay Trading 操作手冊](docs/replay-trading-guide.md)
 - [帳戶風控](docs/account-risk.md)
 - [事件引擎](docs/event-engine.md)
+- [程式架構與依賴規則](docs/architecture.md)
+- [訂單生命週期與 Live 安全規則](docs/order-lifecycle.md)
 
 ## API 概覽
 
