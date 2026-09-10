@@ -13,6 +13,7 @@ from ..auth import (
     DisabledAccessValidator,
     SQLiteAuthRepository,
 )
+from ..broker import DisabledExecutionWorker
 from ..market import TradingCalendar
 from ..market_data import HistoricalMarketDataProvider, LiveMarketDataProvider, build_market_data_provider
 from ..paper import PaperTradingService, SQLitePaperRepository
@@ -145,14 +146,17 @@ def create_app(
         repo, repo, repo, replay_trading, config.symbol
     )
     strategy_app = StrategyApplicationService(repo, repo, config.symbol)
+    execution_worker = DisabledExecutionWorker()
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
+        await execution_worker.start()
         await service.start()
         try:
             yield
         finally:
             await service.stop()
+            await execution_worker.stop()
             service.remove_bar_listener(paper.on_bar)
             replay_trading.close()
             paper.close()
@@ -180,6 +184,7 @@ def create_app(
         paper_app=paper_app,
         research_app=research_app,
         strategy_app=strategy_app,
+        execution_worker=execution_worker,
     )
     app.state.api_dependencies = deps
     app.state.market_service = service

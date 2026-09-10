@@ -479,12 +479,16 @@ class ShioajiCallbackBridge:
     def __init__(
         self,
         loop: asyncio.AbstractEventLoop,
-        queue: asyncio.Queue[ShioajiCallbackEvent],
+        queue: asyncio.Queue[ShioajiCallbackEvent] | None = None,
         *,
+        enqueue_callback: Callable[[ShioajiCallbackEvent], bool] | None = None,
         now: Callable[[], datetime] | None = None,
     ):
+        if (queue is None) == (enqueue_callback is None):
+            raise ValueError("provide exactly one callback queue or callback sink")
         self.loop = loop
         self.queue = queue
+        self.enqueue_callback = enqueue_callback
         self.now = now
 
     def __call__(self, state: object, message: object) -> None:
@@ -495,6 +499,10 @@ class ShioajiCallbackBridge:
         self.loop.call_soon_threadsafe(self._enqueue, event)
 
     def _enqueue(self, event: ShioajiCallbackEvent) -> None:
+        if self.enqueue_callback is not None:
+            self.enqueue_callback(event)
+            return
+        assert self.queue is not None
         try:
             self.queue.put_nowait(event)
         except asyncio.QueueFull:
