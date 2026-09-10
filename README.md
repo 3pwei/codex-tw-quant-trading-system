@@ -14,14 +14,14 @@
 | 週期 | `1m`、`5m`、`10m`、`15m`、`30m`、`1h`、`1d`、`1w`，共用同一份 1 分 K 資料 |
 | 策略 | 11 套基本策略、多週期 Setup／Entry／Exit／Risk、ALL／ANY、三層組合策略引用 |
 | 版本 | 不可變版本、參數快照、名稱唯一、封存、引用保護及回測追溯 |
-| 執行 | Backtest／Replay／Paper 共用 Signal → Order → Risk → Fill → Position/PnL 事件語意 |
+| 執行 | Backtest／Replay／Paper 共用事件語意；Live foundation 提供 durable outbox、callback audit、Recovery Lock、三方對帳與 Execution Worker |
 | 風控 | 帳戶與資料隔離、回測停損停利、Paper 進場風險檢查、部位／每日限制、連敗冷卻、Kill Switch |
 | 平台 | Cloudflare OTP、FastAPI RBAC、申請與審核、Rate Limit、Request Size Limit、稽核紀錄 |
 | 穩定性 | 重啟復原、SQLite verified backup、Queue／WebSocket／DB／主機監控、五種服務狀態 |
 | UI | `/trade/` 整合即時圖表與 Paper 下單；成交點、均價、停損線、手機 Bottom Sheet |
 | 部署 | Docker、Caddy、AWS Lightsail、GitHub Actions、Python 套件鎖定 |
 
-Level 2 工程能力已實作；每個正式候選版本仍須依 [Level 2 完成標準](docs/level2-definition-of-done.md) 留存四小時 soak 與人工驗收證據。本平台不宣稱具備實盤券商整合或 HFT 能力。
+Level 2 工程能力已實作；每個正式候選版本仍須依 [Level 2 完成標準](docs/level2-definition-of-done.md) 留存四小時 soak 與人工驗收證據。Live execution foundation 已具備可測試的 simulation 組裝邊界，但 production 固定使用 `DisabledExecutionWorker`，不載入 CA、不建立真實下單 client，也不接受 HTTP 真實委託。本平台不宣稱具備可用的實盤券商整合或 HFT 能力。
 
 ## 系統架構
 
@@ -34,12 +34,16 @@ flowchart TD
     E --> F["Backtest、Replay、Paper"]
     F --> G["FastAPI REST 與 WebSocket"]
     G --> H["Next.js 交易工作台"]
+    E --> I["Live Execution Foundation"]
+    I --> J["Disabled in Production"]
 ```
 
-- 行情 Provider 與 Broker／Order Executor 是獨立邊界；Shioaji 憑證只用於行情。
+- 行情 Provider 與 Broker／Order Executor 是獨立邊界；production 目前只為行情載入 Shioaji 憑證，simulation execution client 由隔離的測試組裝路徑注入。
 - Tick callback 只做正規化與非阻塞入 Queue，不寫 DB、不算指標、不推送前端。
 - Live、Replay、Backtest 共用 `KBar` 與策略；Backtest、Replay、Paper 共用事件、風控及成本模型。
 - 行情資料全平台共用；策略、版本、回測與 Paper 資料依 `owner_user_id` 隔離。
+- Live 下單基礎先持久化 order／outbox，再由 Recovery Lock 控制 dispatch；callback 只觸發 audit 與券商狀態 refresh。
+- 券商 orders、fills、positions 全部一致才允許 worker 進入 ready；production 目前保持 disabled／locked。
 
 主要程式位置：
 
@@ -51,6 +55,7 @@ flowchart TD
 | `tw_quant/events/` | 事件契約、虛擬時鐘與確定性事件迴圈 |
 | `tw_quant/risk/` | 策略與帳戶風控 |
 | `tw_quant/execution/` | 模擬成交、部位及損益帳本 |
+| `tw_quant/broker/` | Broker 契約、訂單生命週期、durable outbox、callback audit、三方對帳與 Execution Worker |
 | `tw_quant/live/` | FastAPI、WebSocket、監控與 SQLite Repository |
 | `tw_quant/paper/`、`tw_quant/replay/` | Paper 與 Replay 交易 Session |
 | `dashboard/app/` | Next.js 操作介面 |
@@ -244,12 +249,12 @@ TMF 研究預設成本：契約乘數每點 NT$10、每邊手續費 NT$10、交�
 
 ## 已知限制與 Roadmap
 
-目前限制：單一 TMF 商品、單機 SQLite、不含委託簿與部分成交、不處理漲跌停／暫緩撮合，也沒有外部 Broker Order Executor。
+目前限制：單一 TMF 商品、單機 SQLite、不含完整委託簿與實盤部分成交流程，也不處理漲跌停／暫緩撮合。外部 Broker execution foundation 已完成，但正式環境仍停用；尚未具備 production Shioaji client、CA／金鑰生命週期、原生保護委託／OCO、人工 mismatch／UNKNOWN 處理介面及完整營運解鎖流程。
 
 下一階段優先順序：
 
 1. 接入合法授權的歷史資料，建立 Parquet 資料層與資料品質報告。
 2. 加入多標的、風險預算、walk-forward 與樣本外驗證。
 3. 增加外部告警與長時間正式環境監控證據。
-4. 實盤前升級 PostgreSQL，完成 Broker Adapter、CA 安全保存、對帳、人工覆核及法規／授權確認。
+4. 實盤前評估 PostgreSQL，完成 Shioaji production client、CA 安全保存與輪替、完整帳戶風控、保護委託、人工覆核及法規／授權確認。
 5. 資料品質與研究流程成熟後，再評估 Regime Detection、Feature Store 與 ML 策略。
