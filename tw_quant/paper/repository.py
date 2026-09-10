@@ -16,7 +16,7 @@ def _now() -> str:
 
 
 class SQLitePaperRepository:
-    """Append-only paper event/control store isolated by platform owner."""
+    """Paper event store and rebuildable owner-scoped query projections."""
 
     def __init__(self, path: str | Path):
         target = Path(path)
@@ -65,9 +65,262 @@ class SQLitePaperRepository:
                 );
                 CREATE INDEX IF NOT EXISTS idx_paper_controls_owner_sequence
                     ON paper_controls(owner_user_id, sequence DESC);
+
+                CREATE TABLE IF NOT EXISTS paper_order_read_model (
+                    owner_user_id TEXT NOT NULL,
+                    order_id TEXT NOT NULL,
+                    client_order_id TEXT,
+                    sequence INTEGER NOT NULL,
+                    snapshot_json TEXT NOT NULL,
+                    PRIMARY KEY(owner_user_id, order_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_paper_orders_owner_sequence
+                    ON paper_order_read_model(owner_user_id, sequence DESC);
+                CREATE INDEX IF NOT EXISTS idx_paper_orders_owner_client
+                    ON paper_order_read_model(owner_user_id, client_order_id);
+
+                CREATE TABLE IF NOT EXISTS paper_fill_read_model (
+                    owner_user_id TEXT NOT NULL,
+                    fill_id TEXT NOT NULL,
+                    order_id TEXT NOT NULL,
+                    sequence INTEGER NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    PRIMARY KEY(owner_user_id, fill_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_paper_fills_owner_sequence
+                    ON paper_fill_read_model(owner_user_id, sequence DESC);
+
+                CREATE TABLE IF NOT EXISTS paper_position_read_model (
+                    owner_user_id TEXT NOT NULL,
+                    strategy_id TEXT NOT NULL,
+                    strategy_version INTEGER NOT NULL,
+                    symbol TEXT NOT NULL,
+                    contract TEXT NOT NULL,
+                    sequence INTEGER NOT NULL,
+                    quantity INTEGER NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    PRIMARY KEY(
+                        owner_user_id, strategy_id, strategy_version,
+                        symbol, contract
+                    )
+                );
+
+                CREATE TABLE IF NOT EXISTS paper_read_model_state (
+                    projection TEXT PRIMARY KEY,
+                    last_sequence INTEGER NOT NULL
+                );
                 """
             )
+            self._sync_read_models_locked()
             self.connection.commit()
+
+    def _sync_read_models_locked(self) -> None:
+        row = self.connection.execute(
+            "SELECT last_sequence FROM paper_read_model_state "
+            "WHERE projection='paper_account'"
+        ).fetchone()
+        last_sequence = int(row["last_sequence"]) if row else 0
+        rows = self.connection.execute(
+            "SELECT sequence, owner_user_id, payload_json FROM paper_events "
+            "WHERE sequence>? ORDER BY sequence",
+            (last_sequence,),
+        ).fetchall()
+        for event_row in rows:
+            sequence = int(event_row["sequence"])
+            try:
+                payload = json.loads(str(event_row["payload_json"]))
+                if isinstance(payload, dict):
+                    self._project_event_locked(
+                        sequence, str(event_row["owner_user_id"]), payload
+                    )
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                # Recovery owns integrity decisions. A malformed legacy event must
+                # not prevent the repository from opening or hide that evidence.
+                pass
+            last_sequence = sequence
+        self.connection.execute(
+            "INSERT INTO paper_read_model_state(projection, last_sequence) "
+            "VALUES ('paper_account', ?) "
+            "ON CONFLICT(projection) DO UPDATE SET "
+            "last_sequence=excluded.last_sequence",
+            (last_sequence,),
+        )
+
+    def _project_event_locked(
+        self, sequence: int, owner_id: str, payload: dict[str, object]
+    ) -> None:
+        kind = str(payload.get("kind", ""))
+        if kind == "order_intent":
+            meta = payload["meta"]
+            if not isinstance(meta, dict):
+                raise ValueError("order intent metadata is missing")
+            snapshot = {
+                "order_id": payload["order_id"],
+                "client_order_id": payload.get("client_order_id"),
+                "submitted_at": datetime.fromisoformat(
+                    str(meta["occurred_at"])
+                ).isoformat(timespec="milliseconds"),
+                "strategy_id": payload["strategy_id"],
+                "strategy_version": payload["strategy_version"],
+                "symbol": payload["symbol"],
+                "contract": payload["contract"],
+                "side": payload["side"],
+                "quantity": payload["quantity"],
+                "reduce_only": payload["reduce_only"],
+                "reference_price": payload["reference_price"],
+                "stop_loss_price": payload.get("stop_loss_price"),
+                "status": "pending_risk",
+                "lifecycle_status": canonical_paper_status("pending_risk").value,
+                "status_reason": "awaiting_risk",
+                "approved_quantity": 0,
+                "fill_id": None,
+            }
+            self.connection.execute(
+                "INSERT INTO paper_order_read_model("
+                "owner_user_id, order_id, client_order_id, sequence, snapshot_json"
+                ") VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(owner_user_id, order_id) DO UPDATE SET "
+                "client_order_id=excluded.client_order_id, "
+                "sequence=excluded.sequence, snapshot_json=excluded.snapshot_json",
+                (
+                    owner_id,
+                    str(payload["order_id"]),
+                    payload.get("client_order_id"),
+                    sequence,
+                    json.dumps(snapshot, sort_keys=True),
+                ),
+            )
+            return
+        if kind == "risk_decision":
+            order_id = str(payload["order_id"])
+            snapshot = self._order_snapshot_locked(owner_id, order_id)
+            if snapshot is None:
+                return
+            approved = bool(payload.get("approved"))
+            status = "approved" if approved else "rejected"
+            snapshot.update(
+                status=status,
+                lifecycle_status=canonical_paper_status(status).value,
+                status_reason=str(payload["reason"]),
+                approved_quantity=payload.get("approved_quantity", 0),
+            )
+            self._update_order_locked(owner_id, order_id, sequence, snapshot)
+            return
+        if kind == "fill":
+            order_id = str(payload["order_id"])
+            fill_id = str(payload["fill_id"])
+            self.connection.execute(
+                "INSERT INTO paper_fill_read_model("
+                "owner_user_id, fill_id, order_id, sequence, payload_json"
+                ") VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(owner_user_id, fill_id) DO UPDATE SET "
+                "order_id=excluded.order_id, sequence=excluded.sequence, "
+                "payload_json=excluded.payload_json",
+                (
+                    owner_id, fill_id, order_id, sequence,
+                    json.dumps(payload, sort_keys=True),
+                ),
+            )
+            snapshot = self._order_snapshot_locked(owner_id, order_id)
+            if snapshot is not None:
+                snapshot.update(
+                    status="filled",
+                    lifecycle_status=canonical_paper_status("filled").value,
+                    status_reason="simulated_fill",
+                    fill_id=fill_id,
+                )
+                self._update_order_locked(owner_id, order_id, sequence, snapshot)
+            return
+        if kind == "position":
+            previous_row = self.connection.execute(
+                "SELECT payload_json FROM paper_position_read_model WHERE "
+                "owner_user_id=? AND strategy_id=? AND strategy_version=? "
+                "AND symbol=? AND contract=?",
+                (
+                    owner_id,
+                    str(payload["strategy_id"]),
+                    int(payload["strategy_version"]),
+                    str(payload["symbol"]),
+                    str(payload["contract"]),
+                ),
+            ).fetchone()
+            previous = (
+                json.loads(str(previous_row["payload_json"]))
+                if previous_row else None
+            )
+            quantity = int(payload["quantity"])
+            previous_quantity = int(previous.get("quantity", 0)) if previous else 0
+            same_open_position = (
+                quantity != 0
+                and previous_quantity != 0
+                and (quantity > 0) == (previous_quantity > 0)
+            )
+            meta = payload["meta"]
+            if not isinstance(meta, dict):
+                raise ValueError("position metadata is missing")
+            snapshot = {
+                "owner_id": owner_id,
+                "strategy_id": payload["strategy_id"],
+                "strategy_version": payload["strategy_version"],
+                "symbol": payload["symbol"],
+                "contract": payload["contract"],
+                "quantity": quantity,
+                "average_price": payload["average_price"],
+                "opened_at": (
+                    previous.get("opened_at")
+                    if same_open_position and previous is not None
+                    else datetime.fromisoformat(
+                        str(meta["occurred_at"])
+                    ).isoformat(timespec="milliseconds")
+                    if quantity != 0 else None
+                ),
+                "realized_pnl": payload["realized_pnl"],
+                "unrealized_pnl": payload["unrealized_pnl"],
+                "total_cost": payload.get("total_cost", 0.0),
+            }
+            self.connection.execute(
+                "INSERT INTO paper_position_read_model("
+                "owner_user_id, strategy_id, strategy_version, symbol, contract, "
+                "sequence, quantity, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT("
+                "owner_user_id, strategy_id, strategy_version, symbol, contract"
+                ") DO UPDATE SET sequence=excluded.sequence, "
+                "quantity=excluded.quantity, "
+                "payload_json=excluded.payload_json",
+                (
+                    owner_id,
+                    str(payload["strategy_id"]),
+                    int(payload["strategy_version"]),
+                    str(payload["symbol"]),
+                    str(payload["contract"]),
+                    sequence,
+                    quantity,
+                    json.dumps(snapshot, sort_keys=True),
+                ),
+            )
+
+    def _order_snapshot_locked(
+        self, owner_id: str, order_id: str
+    ) -> dict[str, object] | None:
+        row = self.connection.execute(
+            "SELECT snapshot_json FROM paper_order_read_model "
+            "WHERE owner_user_id=? AND order_id=?",
+            (owner_id, order_id),
+        ).fetchone()
+        return json.loads(str(row["snapshot_json"])) if row else None
+
+    def _update_order_locked(
+        self,
+        owner_id: str,
+        order_id: str,
+        sequence: int,
+        snapshot: dict[str, object],
+    ) -> None:
+        self.connection.execute(
+            "UPDATE paper_order_read_model SET sequence=?, snapshot_json=? "
+            "WHERE owner_user_id=? AND order_id=?",
+            (sequence, json.dumps(snapshot, sort_keys=True), owner_id, order_id),
+        )
 
     def _record_write(self, started: float) -> None:
         elapsed_ms = (perf_counter() - started) * 1_000
@@ -128,6 +381,7 @@ class SQLitePaperRepository:
                 ") VALUES (?, ?, ?, ?, ?, ?)",
                 rows,
             )
+            self._sync_read_models_locked()
             self.connection.commit()
         self._record_write(started)
 
@@ -199,11 +453,22 @@ class SQLitePaperRepository:
             controls = self.connection.execute(
                 "SELECT COUNT(*) AS total FROM paper_controls"
             ).fetchone()
-        assert row is not None and controls is not None
+            projections = self.connection.execute(
+                "SELECT "
+                "(SELECT COUNT(*) FROM paper_order_read_model) AS orders, "
+                "(SELECT COUNT(*) FROM paper_fill_read_model) AS fills, "
+                "(SELECT COUNT(*) FROM paper_position_read_model "
+                "WHERE quantity != 0) "
+                "AS open_positions"
+            ).fetchone()
+        assert row is not None and controls is not None and projections is not None
         return {
             "events": int(row["events"]),
             "owners": int(row["owners"]),
             "controls": int(controls["total"]),
+            "read_model_orders": int(projections["orders"]),
+            "read_model_fills": int(projections["fills"]),
+            "read_model_open_positions": int(projections["open_positions"]),
             "write_count": self.write_count,
             "average_write_ms": round(
                 self.total_write_ms / self.write_count, 3
@@ -216,69 +481,64 @@ class SQLitePaperRepository:
     def order_snapshot(
         self, owner_id: str, order_id: str
     ) -> dict[str, object] | None:
-        """Rebuild an API order view from its immutable event chain."""
-        events = self.events(owner_id, 10_000)
-        intent = next(
-            (
-                event for event in events
-                if event["kind"] == "order_intent"
-                and event.get("order_id") == order_id
-            ),
-            None,
-        )
-        if intent is None:
-            return None
-        decision = next(
-            (
-                event for event in events
-                if event["kind"] == "risk_decision"
-                and event.get("order_id") == order_id
-            ),
-            None,
-        )
-        fill = next(
-            (
-                event for event in events
-                if event["kind"] == "fill"
-                and event.get("order_id") == order_id
-            ),
-            None,
-        )
-        if fill:
-            status = "filled"
-            status_reason = "simulated_fill"
-        elif decision and decision.get("approved"):
-            status = "approved"
-            status_reason = str(decision["reason"])
-        elif decision:
-            status = "rejected"
-            status_reason = str(decision["reason"])
-        else:
-            status = "pending_risk"
-            status_reason = "awaiting_risk"
-        meta = intent["meta"]
-        assert isinstance(meta, dict)
-        return {
-            "order_id": order_id,
-            "client_order_id": intent.get("client_order_id"),
-            "submitted_at": meta["occurred_at"],
-            "strategy_id": intent["strategy_id"],
-            "strategy_version": intent["strategy_version"],
-            "symbol": intent["symbol"],
-            "contract": intent["contract"],
-            "side": intent["side"],
-            "quantity": intent["quantity"],
-            "reduce_only": intent["reduce_only"],
-            "reference_price": intent["reference_price"],
-            "stop_loss_price": intent["stop_loss_price"],
-            "status": status,
-            "lifecycle_status": canonical_paper_status(status).value,
-            "status_reason": status_reason,
-            "approved_quantity": (
-                decision.get("approved_quantity", 0) if decision else 0
-            ),
-            "fill_id": fill.get("fill_id") if fill else None,
-        }
+        with self.lock:
+            return self._order_snapshot_locked(owner_id, order_id)
+
+    def order_for_client_id(
+        self, owner_id: str, client_order_id: str
+    ) -> dict[str, object] | None:
+        with self.lock:
+            row = self.connection.execute(
+                "SELECT snapshot_json FROM paper_order_read_model "
+                "WHERE owner_user_id=? AND client_order_id=?",
+                (owner_id, client_order_id),
+            ).fetchone()
+        return json.loads(str(row["snapshot_json"])) if row else None
+
+    def orders(self, owner_id: str) -> list[dict[str, object]]:
+        with self.lock:
+            rows = self.connection.execute(
+                "SELECT snapshot_json FROM paper_order_read_model "
+                "WHERE owner_user_id=? ORDER BY sequence DESC",
+                (owner_id,),
+            ).fetchall()
+        return [json.loads(str(row["snapshot_json"])) for row in rows]
+
+    def fill_snapshot(
+        self, owner_id: str, fill_id: str
+    ) -> dict[str, object] | None:
+        with self.lock:
+            row = self.connection.execute(
+                "SELECT payload_json FROM paper_fill_read_model "
+                "WHERE owner_user_id=? AND fill_id=?",
+                (owner_id, fill_id),
+            ).fetchone()
+        return json.loads(str(row["payload_json"])) if row else None
+
+    def fills(
+        self, owner_id: str, limit: int = 500
+    ) -> list[dict[str, object]]:
+        with self.lock:
+            rows = self.connection.execute(
+                "SELECT payload_json FROM paper_fill_read_model "
+                "WHERE owner_user_id=? ORDER BY sequence DESC LIMIT ?",
+                (owner_id, limit),
+            ).fetchall()
+        return [json.loads(str(row["payload_json"])) for row in rows]
+
+    def positions(self, owner_id: str) -> list[dict[str, object]]:
+        with self.lock:
+            rows = self.connection.execute(
+                "SELECT payload_json FROM paper_position_read_model "
+                "WHERE owner_user_id=? ORDER BY sequence DESC",
+                (owner_id,),
+            ).fetchall()
+        result = []
+        for row in rows:
+            payload = json.loads(str(row["payload_json"]))
+            if int(payload.get("quantity", 0)) != 0:
+                result.append(payload)
+        return result
 
     def append_control(
         self, owner_id: str, action: str, reason: str, occurred_at: datetime

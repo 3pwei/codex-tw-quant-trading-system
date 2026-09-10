@@ -493,64 +493,25 @@ class PaperTradingService:
         self._run()
 
     def orders(self, owner_id: str) -> list[dict[str, object]]:
-        live = [
-            self._record(record)
-            for record in reversed(tuple(self.pipeline.broker.orders.values()))
-            if record.intent.meta.owner_id == owner_id
-        ]
-        known = {str(item["order_id"]) for item in live}
-        stored_ids = [
-            str(event["order_id"])
-            for event in self.repository.events(owner_id, 10_000)
-            if event["kind"] == "order_intent"
-            and str(event["order_id"]) not in known
-        ]
-        stored = [
-            snapshot
-            for order_id in stored_ids
-            if (snapshot := self.repository.order_snapshot(owner_id, order_id))
-            is not None
-        ]
-        return live + stored
+        return self.repository.orders(owner_id)
 
     def positions(self, owner_id: str) -> list[dict[str, object]]:
-        latest_marks: dict[tuple[str, int, str, str], dict[str, object]] = {}
-        for event in self.repository.events(owner_id, 10_000):
-            if event["kind"] != "position":
-                continue
-            key = (
-                str(event["strategy_id"]), int(event["strategy_version"]),
-                str(event["symbol"]), str(event["contract"]),
-            )
-            latest_marks.setdefault(key, event)
-        result = []
-        for state in self.pipeline.ledger.open_positions():
-            if state.key.owner_id != owner_id:
-                continue
-            item = {
-                    **asdict(state.key),
-                    "quantity": state.quantity,
-                    "average_price": state.average_price,
-                    "opened_at": state.opened_at.isoformat(timespec="milliseconds")
-                    if state.opened_at else None,
-                    "realized_pnl": state.realized_pnl,
-                    "total_cost": state.total_cost,
-                }
-            mark = latest_marks.get((
-                state.key.strategy_id, state.key.strategy_version,
-                state.key.symbol, state.key.contract,
-            ))
-            item["unrealized_pnl"] = (
-                float(mark["unrealized_pnl"]) if mark else 0.0
-            )
-            result.append(item)
-        return result
+        return self.repository.positions(owner_id)
 
-    def fills(self, owner_id: str) -> list[dict[str, object]]:
-        return [
-            event for event in self.repository.events(owner_id)
-            if event["kind"] == "fill"
-        ]
+    def fills(
+        self, owner_id: str, limit: int = 500
+    ) -> list[dict[str, object]]:
+        return self.repository.fills(owner_id, limit)
+
+    def fill(
+        self, owner_id: str, fill_id: str
+    ) -> dict[str, object] | None:
+        return self.repository.fill_snapshot(owner_id, fill_id)
+
+    def order_for_client_id(
+        self, owner_id: str, client_order_id: str
+    ) -> dict[str, object] | None:
+        return self.repository.order_for_client_id(owner_id, client_order_id)
 
     def account(self, owner_id: str) -> dict[str, object]:
         snapshot = asdict(self.risk.snapshot(owner_id))
