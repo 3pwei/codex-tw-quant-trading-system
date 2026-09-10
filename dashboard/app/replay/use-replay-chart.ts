@@ -5,46 +5,20 @@ import {
   createChart,
   createSeriesMarkers,
   HistogramSeries,
-  type CandlestickData,
-  type HistogramData,
   type IChartApi,
   type ISeriesApi,
   type ISeriesMarkersPluginApi,
-  type SeriesMarker,
   type Time,
-  type UTCTimestamp,
 } from "lightweight-charts";
 import { formatPrice, formatTaipeiClock } from "../lib/formatters";
-import type {
-  ReplaySignal,
-  ReplaySnapshot,
-  ReplayStrategy,
-  ReplayTradingState,
-} from "./replay-dashboard";
-
-const asTime = (value: string) => Math.floor(Date.parse(value) / 1000) as UTCTimestamp;
+import { buildReplayChartFrame } from "./replay-chart-data";
+import type { ReplaySnapshot, ReplayTradingState } from "./types";
 
 function chartClock(value: Time): string {
   if (typeof value === "object") {
     return formatTaipeiClock(Date.UTC(value.year, value.month - 1, value.day) / 1000);
   }
   return formatTaipeiClock(value);
-}
-
-function marker(
-  strategy: ReplayStrategy,
-  signal: ReplaySignal,
-  time = signal.time,
-): SeriesMarker<Time> {
-  const entry = signal.event === "entry";
-  const long = signal.direction === "long";
-  return {
-    time: asTime(time),
-    position: long ? entry ? "belowBar" : "aboveBar" : entry ? "aboveBar" : "belowBar",
-    color: entry ? strategy.color : "#f5b942",
-    shape: entry ? long ? "arrowUp" : "arrowDown" : "circle",
-    text: `${strategy.name} · ${entry ? long ? "多進" : "空進" : "出場"} ${formatPrice(signal.price)}`,
-  };
 }
 
 type ReplayChartOptions = {
@@ -118,51 +92,13 @@ export function useReplayChart({ snapshot, trading, cursor }: ReplayChartOptions
 
   const paint = useCallback((nextCursor: number, fit = false) => {
     if (!snapshot?.bars.length) return;
-    const count = Math.max(1, Math.min(nextCursor + 1, snapshot.bars.length));
-    const bars = snapshot.bars.slice(0, count);
-    candleRef.current?.setData(bars.map(bar => ({
-      time: asTime(bar.time),
-      open: bar.open,
-      high: bar.high,
-      low: bar.low,
-      close: bar.close,
-    } as CandlestickData<UTCTimestamp>)));
-    volumeRef.current?.setData(bars.map(bar => ({
-      time: asTime(bar.time),
-      value: bar.volume,
-      color: bar.no_trade
-        ? "rgba(148,163,184,.3)"
-        : bar.close >= bar.open ? "rgba(45,212,191,.45)" : "rgba(248,113,113,.45)",
-    } as HistogramData<UTCTimestamp>)));
-    const now = Date.parse(bars[bars.length - 1].end_time);
-    const strategyMarkers = snapshot.strategies.flatMap(strategy => (
-      strategy.signals
-        .filter(signal => Date.parse(signal.time) <= now)
-        .map(signal => {
-          const signalAt = Date.parse(signal.time);
-          const anchor = [...bars].reverse().find(bar => Date.parse(bar.time) <= signalAt) ?? bars[0];
-          return marker(strategy, signal, anchor.time);
-        })
-    ));
-    const fillMarkers: SeriesMarker<Time>[] = (trading?.fills ?? [])
-      .filter(fill => Date.parse(fill.meta.occurred_at) <= now)
-      .map(fill => {
-        const fillAt = Date.parse(fill.meta.occurred_at);
-        const anchor = [...bars].reverse().find(bar => Date.parse(bar.time) <= fillAt) ?? bars[0];
-        return {
-          time: asTime(anchor.time),
-          position: fill.side === "buy" ? "belowBar" : "aboveBar",
-          color: fill.side === "buy" ? "#42d6a4" : "#ff6b72",
-          shape: fill.side === "buy" ? "arrowUp" : "arrowDown",
-          text: `REPLAY ${fill.purpose === "entry" ? "成交" : "平倉"} ${fill.quantity}口 @ ${formatPrice(fill.price)}`,
-        };
-      });
-    markerRef.current?.setMarkers(
-      [...strategyMarkers, ...fillMarkers].sort((a, b) => Number(a.time) - Number(b.time)),
-    );
+    const frame = buildReplayChartFrame(snapshot, trading, nextCursor, formatPrice);
+    candleRef.current?.setData(frame.candles);
+    volumeRef.current?.setData(frame.volumes);
+    markerRef.current?.setMarkers(frame.markers);
     if (fit) chartRef.current?.timeScale().fitContent();
     else chartRef.current?.timeScale().scrollToRealTime();
-  }, [snapshot, trading?.fills]);
+  }, [snapshot, trading]);
 
   useEffect(() => {
     paint(cursor);

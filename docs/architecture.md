@@ -58,6 +58,9 @@ Dashboard 的頁面元件只負責畫面組合與使用者操作。共用 HTTP b
 時間格式集中於 `dashboard/app/lib/formatters.ts`。Live 的行情 WebSocket、K 線圖與
 Paper overlay 分別由專用 hook 管理；Paper 帳戶輪詢及 Replay 圖表生命週期也不得
 重新放回頁面元件。hook 可以依賴 API client 與純型別，不能直接依賴其他頁面的 UI。
+Paper／Replay 的共用資料契約分別位於功能目錄的 `types.ts`；page component 與 hook
+只能共同依賴型別檔，hook 不得反向 import page component。WebSocket 重連與 stale
+watchdog、Paper 帳戶載入、Replay 游標與圖表事件可見性必須通過 Dashboard 行為測試。
 
 新增 Live Execution 時沿用以下責任邊界：
 

@@ -71,6 +71,9 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      - name: Run behavior tests
+        run: npm test
+
       - name: Build static dashboard
         env:
           NEXT_PUBLIC_MARKET_API_URL: http://localhost:8000
