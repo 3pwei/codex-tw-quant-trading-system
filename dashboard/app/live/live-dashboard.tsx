@@ -17,6 +17,8 @@ import type {
 } from "./types";
 import { useMarketSocket } from "./use-market-socket";
 import { useTradingChart } from "./use-trading-chart";
+import { closeStrategyMenuWhenOutside } from "./strategy-menu";
+import { createInitialTradeSelection } from "./trade-selection";
 const TIMEFRAME_OPTIONS: { key: Timeframe; name: string }[] = [
   { key: "1m", name: "1 分 K" }, { key: "5m", name: "5 分 K" },
   { key: "10m", name: "10 分 K" }, { key: "15m", name: "15 分 K" },
@@ -49,17 +51,26 @@ function StrategyStatus({ strategy }: { strategy: StrategyResult }) {
 export default function TradingWorkspace() {
   const strategyRequest = useRef(0);
   const strategyLoaderRef = useRef<() => Promise<void>>(async () => undefined);
+  const strategyMenuRef = useRef<HTMLDetailsElement>(null);
   const [latest, setLatest] = useState<KBar | null>(null);
   const [error, setError] = useState("");
-  const [selection, setSelection] = useState<TradeSelection>({
-    symbol: "TMF", interval: "1m", strategies: ["orb", "bnf"],
-  });
+  const [selection, setSelection] = useState<TradeSelection>(
+    createInitialTradeSelection,
+  );
   const [strategyOptions, setStrategyOptions] = useState<StrategyOption[]>([]);
   const [strategyResults, setStrategyResults] = useState<StrategyResult[]>([]);
   const [marketHealth, setMarketHealth] = useState<MarketHealth | null>(null);
   const [clock, setClock] = useState(() => Date.now());
   const [paperOverlay, setPaperOverlay] = useState<PaperOverlaySnapshot>(EMPTY_PAPER_OVERLAY);
   const [settingsOpen, setSettingsOpen] = useState(false);
+
+  useEffect(() => {
+    const closeStrategyMenu = (event: PointerEvent) => {
+      closeStrategyMenuWhenOutside(strategyMenuRef.current, event.target);
+    };
+    document.addEventListener("pointerdown", closeStrategyMenu);
+    return () => document.removeEventListener("pointerdown", closeStrategyMenu);
+  }, []);
 
   const selectedInterval = selection.interval;
   const selectedStrategies = selection.strategies;
@@ -220,7 +231,7 @@ export default function TradingWorkspace() {
       <div className="live-header-actions">
         <label className="timeframe-select"><span>商品</span><select value={selection.symbol} onChange={event => setSelection(current => ({ ...current, symbol: event.target.value as SymbolKey }))}>{PRODUCT_OPTIONS.map(option => <option key={option.key} value={option.key}>{option.key} · {option.name}</option>)}</select></label>
         <label className="timeframe-select"><span>K 棒週期</span><select value={selectedInterval} onChange={event => setSelection(current => ({ ...current, interval: event.target.value as Timeframe }))}>{TIMEFRAME_OPTIONS.map(option => <option key={option.key} value={option.key}>{option.name}</option>)}</select></label>
-        <details className="strategy-select">
+        <details ref={strategyMenuRef} className="strategy-select">
           <summary>交易策略 <b>{selectedStrategies.length}</b></summary>
           <div className="strategy-menu">
             <span>MULTI-SELECT · 訊號分開疊加</span>
