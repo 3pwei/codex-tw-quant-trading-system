@@ -55,7 +55,7 @@ class PaperApplicationService:
         return {"orders": self.paper.orders(owner_id)}
 
     def fills(self, owner_id: str, limit: int) -> dict[str, object]:
-        return {"fills": self.paper.fills(owner_id)[:limit]}
+        return {"fills": self.paper.fills(owner_id, limit)}
 
     def events(self, owner_id: str, limit: int) -> dict[str, object]:
         return {"events": self.paper.events(owner_id, limit)}

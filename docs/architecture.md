@@ -105,6 +105,12 @@ Paper HTTP handler 使用 `BrokerOrderRequest` 呼叫 `PaperTradingService.submi
 service 保留帳戶風控與事件持久化責任，`PaperBrokerAdapter` 則提供相同的 `BrokerPort`
 給非 HTTP 呼叫端。相容用的 `PaperOrderCommand` 在 Replay 完成遷移前不得移除。
 
+Paper 的 `paper_events` 仍是不可變的事實來源；同一個 SQLite transaction 會同步更新
+orders、fills、positions read model 與 projection checkpoint。帳戶查詢、冪等重送及
+Broker refresh 只能使用具 owner index 的 read model，不得反覆掃描完整事件紀錄。
+既有資料在 migration 時按 sequence 增量重建 projection；啟動 recovery 仍獨立重播
+事件並核對風控與持倉，projection 不得取代 fail-closed 的一致性驗證。
+
 ## 相容與淘汰原則
 
 - `linear_channel_breakout` 現為 Dow Theory 策略的相容 key；對外遷移完成前保留。

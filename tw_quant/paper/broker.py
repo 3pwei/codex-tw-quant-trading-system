@@ -51,12 +51,9 @@ class PaperBrokerAdapter:
     ) -> BrokerOrder:
         status = canonical_paper_status(str(record["status"]))
         fill_id = record.get("fill_id")
-        fill = next(
-            (
-                item for item in self.service.fills(self.user.user_id)
-                if item.get("fill_id") == fill_id
-            ),
-            None,
+        fill = (
+            self.service.fill(self.user.user_id, str(fill_id))
+            if fill_id is not None else None
         )
         approved_quantity = int(record.get("approved_quantity", 0))
         normalized_request = (
@@ -97,11 +94,7 @@ class PaperBrokerAdapter:
         raise RuntimeError("Paper Trading does not support pending order cancellation")
 
     async def refresh_order(self, order: BrokerOrder) -> BrokerOrder:
-        record = next(
-            (
-                item for item in self.service.orders(self.user.user_id)
-                if item.get("client_order_id") == order.request.client_order_id
-            ),
-            None,
+        record = self.service.order_for_client_id(
+            self.user.user_id, order.request.client_order_id
         )
         return self._order(order.request, record) if record is not None else order
