@@ -107,6 +107,16 @@ Recovery Lock 為 `ready` 才能通過。對帳失敗只回報 issue code，不�
 callback consumer／三方對帳的 production 組裝、監控與營運解鎖流程。Production
 client 必須是明確的新組裝路徑，不得讓 simulation client 接受 `simulation=False`。
 
+`ExecutionWorker` 統一管理啟動對帳、durable outbox dispatch、callback audit consumer、
+定期三方對帳及 heartbeat。啟動時 Recovery Lock 未達 `ready`，或任一輪對帳失敗，
+worker 都不得 dispatch；callback queue 必須有界且 overflow／處理失敗需出現在監控。
+Shioaji callback bridge 組裝時必須使用 `worker.enqueue_callback` 作為 sink，讓 queue
+overflow 進入同一套監控與鎖單路徑，不得直接繞過 worker 寫入 queue。
+`build_execution_runtime()` 只接受外部已建立的 BrokerPort 與 reconciliation source，
+本身不得讀取憑證、載入 CA 或建立 SDK client。Production composition 目前只掛載
+`DisabledExecutionWorker`，管理員健康資訊應明確顯示 `state=disabled`、Recovery Lock
+為 locked、dispatches 為 0。
+
 Paper HTTP handler 使用 `BrokerOrderRequest` 呼叫 `PaperTradingService.submit_request()`；
 service 保留帳戶風控與事件持久化責任，`PaperBrokerAdapter` 則提供相同的 `BrokerPort`
 給非 HTTP 呼叫端。相容用的 `PaperOrderCommand` 在 Replay 完成遷移前不得移除。

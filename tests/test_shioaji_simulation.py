@@ -253,6 +253,35 @@ class CallbackBridgeTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0)
         self.assertTrue(queue.empty())
 
+    async def test_can_delegate_queue_policy_to_execution_worker_sink(self):
+        events = []
+
+        def capture(event):
+            events.append(event)
+            return True
+
+        bridge = ShioajiCallbackBridge(
+            asyncio.get_running_loop(),
+            enqueue_callback=capture,
+            now=lambda: NOW,
+        )
+        bridge("FORDER", {"order_id": "broker-1", "status": "Submitted"})
+        await asyncio.sleep(0)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].broker_order_id, "broker-1")
+
+    def test_requires_exactly_one_callback_destination(self):
+        loop = asyncio.new_event_loop()
+        self.addCleanup(loop.close)
+        with self.assertRaisesRegex(ValueError, "exactly one"):
+            ShioajiCallbackBridge(loop)
+        with self.assertRaisesRegex(ValueError, "exactly one"):
+            ShioajiCallbackBridge(
+                loop,
+                asyncio.Queue(),
+                enqueue_callback=lambda _event: True,
+            )
+
     def test_callback_normalizer_is_pure_and_rejects_unknown_state(self):
         message = {"trade_id": "deal-1", "price": 20_000}
         event = normalize_callback("FDEAL", message, now=lambda: NOW)

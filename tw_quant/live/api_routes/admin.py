@@ -41,6 +41,7 @@ def build_admin_router(deps: ApiDependencies) -> APIRouter:
             "host": host,
             "rate_limiting": deps.limiter.stats(),
             "request_limits": {"max_body_bytes": deps.config.max_request_body_bytes},
+            "live_execution": deps.execution_worker.snapshot(),
         }
 
     @router.get("/api/admin/access-requests")

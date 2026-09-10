@@ -369,6 +369,16 @@ class AuthorizationApiTests(unittest.TestCase):
         self.assertIn(
             "active_kill_switches", admin_health.json()["paper_trading"]
         )
+        self.assertEqual(
+            admin_health.json()["live_execution"]["state"], "disabled"
+        )
+        self.assertEqual(
+            admin_health.json()["live_execution"]["recovery_status"],
+            "locked",
+        )
+        self.assertEqual(
+            admin_health.json()["live_execution"]["dispatches"], 0
+        )
 
     def test_websocket_requires_market_permission_and_identity(self):
         with self.client.websocket_connect(

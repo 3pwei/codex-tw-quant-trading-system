@@ -94,6 +94,13 @@ class ExecutionArchitectureTests(unittest.TestCase):
                     getattr(execution, name),
                 )
 
+    def test_production_api_keeps_live_execution_disabled(self):
+        source = (ROOT / "tw_quant" / "live" / "api.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("DisabledExecutionWorker()", source)
+        self.assertNotIn("build_execution_runtime(", source)
+
 
 if __name__ == "__main__":
     unittest.main()

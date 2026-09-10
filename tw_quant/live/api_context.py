@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from fastapi import Request
 
 from ..auth import AccessIdentity, AccessTokenError, AccessValidator, AuthService, SQLiteAuthRepository
+from ..broker import ExecutionWorkerMonitor
 from ..paper import PaperTradingService
 from ..replay import ReplayTradingSessionRegistry
 from .application import (
@@ -35,6 +36,7 @@ class ApiDependencies:
     paper_app: PaperApplicationService
     research_app: ResearchApplicationService
     strategy_app: StrategyApplicationService
+    execution_worker: ExecutionWorkerMonitor
 
     def identity_from_headers(self, headers) -> AccessIdentity | None:
         token = headers.get("cf-access-jwt-assertion")
