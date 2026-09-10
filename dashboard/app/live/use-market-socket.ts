@@ -1,5 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { apiBase } from "../lib/api-client";
+import {
+  acceptsFeedMessage,
+  isSocketStale,
+  reconnectDelayMs,
+} from "./market-socket-policy";
 import type {
   ConnectionStatus,
   FeedMessage,
@@ -105,8 +110,8 @@ export function useMarketSocket({
         const message = JSON.parse(event.data) as FeedMessage;
         lastMessageAtRef.current = Date.now();
         setStatus(message.connection_status);
+        if (!acceptsFeedMessage(message, interval)) return;
         if (message.type === "kbar") {
-          if (message.interval !== interval) return;
           updateChart(message);
           setLatest(message);
           setLastTick(message.exchange_time);
@@ -125,8 +130,7 @@ export function useMarketSocket({
         socketRef.current = null;
         activeSocket = null;
         setStatus("reconnecting");
-        const delay = Math.min(30_000, 1_000 * 2 ** attemptsRef.current)
-          + Math.random() * 300;
+        const delay = reconnectDelayMs(attemptsRef.current, Math.random() * 300);
         attemptsRef.current += 1;
         reconnectTimer = setTimeout(() => {
           reconnectTimer = null;
@@ -143,15 +147,14 @@ export function useMarketSocket({
     };
     document.addEventListener("visibilitychange", handleVisibilityChange);
     const watchdog = setInterval(() => {
-      if (
-        isCurrentGeneration()
-        && document.visibilityState === "visible"
-        && activeSocket?.readyState === WebSocket.OPEN
-        && lastMessageAtRef.current
-        && Date.now() - lastMessageAtRef.current > 45_000
-      ) {
+      if (isCurrentGeneration() && isSocketStale({
+        now: Date.now(),
+        lastMessageAt: lastMessageAtRef.current,
+        documentVisible: document.visibilityState === "visible",
+        socketOpen: activeSocket?.readyState === WebSocket.OPEN,
+      })) {
         setStatus("disconnected");
-        activeSocket.close();
+        activeSocket?.close();
       }
     }, 2_500);
     return () => {

@@ -8,7 +8,7 @@ import {
   type UTCTimestamp,
 } from "lightweight-charts";
 import { formatPrice } from "../lib/formatters";
-import type { PaperOverlaySnapshot } from "../paper/paper-trading-dashboard";
+import type { PaperOverlaySnapshot } from "../paper/types";
 
 function atOrBefore(value: string, times: UTCTimestamp[]): UTCTimestamp | null {
   const target = Math.floor(Date.parse(value) / 1000) as UTCTimestamp;

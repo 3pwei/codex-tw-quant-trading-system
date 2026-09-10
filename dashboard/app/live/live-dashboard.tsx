@@ -4,10 +4,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import SystemNav from "../components/system-nav";
 import { apiRequest } from "../lib/api-client";
 import { formatPrice, formatTaipeiDateTime } from "../lib/formatters";
-import PaperTradingDashboard, {
-  type MarketHealth,
-  type PaperOverlaySnapshot,
-} from "../paper/paper-trading-dashboard";
+import PaperTradingDashboard from "../paper/paper-trading-dashboard";
+import type { MarketHealth, PaperOverlaySnapshot } from "../paper/types";
 import type {
   KBar,
   StrategyKey,

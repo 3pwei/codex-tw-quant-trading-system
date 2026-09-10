@@ -17,7 +17,7 @@ import {
   type UTCTimestamp,
 } from "lightweight-charts";
 import { formatPrice } from "../lib/formatters";
-import type { PaperOverlaySnapshot } from "../paper/paper-trading-dashboard";
+import type { PaperOverlaySnapshot } from "../paper/types";
 import type { KBar, LinearChannelPoint, Ohlc, StrategyResult } from "./types";
 import { usePaperOverlay } from "./use-paper-overlay";
 

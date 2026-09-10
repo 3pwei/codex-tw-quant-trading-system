@@ -1,21 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { apiRequest } from "../lib/api-client";
-import type {
-  Account,
-  CurrentUser,
-  PaperFill,
-  PaperOrder,
-  PaperOverlaySnapshot,
-  PaperPosition,
-} from "./paper-trading-dashboard";
-
-type PaperAccountResponse = {
-  account: Account;
-  positions: PaperPosition[];
-};
-
-type PaperOrdersResponse = { orders: PaperOrder[] };
-type PaperFillsResponse = { fills: PaperFill[] };
+import { loadPaperAccountData } from "./paper-account-loader";
+import type { Account, CurrentUser, PaperFill, PaperOrder, PaperOverlaySnapshot, PaperPosition } from "./types";
 
 export function usePaperAccount(
   onOverlayChange: (snapshot: PaperOverlaySnapshot) => void,
@@ -30,46 +16,16 @@ export function usePaperAccount(
 
   const load = useCallback(async (silent = false) => {
     try {
-      const me = await apiRequest<CurrentUser>(
-        "/api/me",
-        { cache: "no-store" },
-        "API 錯誤",
-      );
-      setUser(me);
-      if (!me.permissions.includes("positions.read.own")) {
-        setAccount(null);
-        setPositions([]);
-        setOrders([]);
-        setFills([]);
-        onOverlayChange({ positions: [], orders: [], fills: [] });
-        if (!silent) setError("");
-        return;
-      }
-      const [accountBody, ordersBody, fillsBody] = await Promise.all([
-        apiRequest<PaperAccountResponse>(
-          "/api/paper/account",
-          { cache: "no-store" },
-          "API 錯誤",
-        ),
-        apiRequest<PaperOrdersResponse>(
-          "/api/paper/orders",
-          { cache: "no-store" },
-          "API 錯誤",
-        ),
-        apiRequest<PaperFillsResponse>(
-          "/api/paper/fills?limit=100",
-          { cache: "no-store" },
-          "API 錯誤",
-        ),
-      ]);
-      setAccount(accountBody.account);
-      setPositions(accountBody.positions);
-      setOrders(ordersBody.orders);
-      setFills(fillsBody.fills);
+      const data = await loadPaperAccountData(apiRequest);
+      setUser(data.user);
+      setAccount(data.account);
+      setPositions(data.positions);
+      setOrders(data.orders);
+      setFills(data.fills);
       onOverlayChange({
-        positions: accountBody.positions,
-        orders: ordersBody.orders,
-        fills: fillsBody.fills,
+        positions: data.positions,
+        orders: data.orders,
+        fills: data.fills,
       });
       if (!silent) setError("");
     } catch (reason) {
