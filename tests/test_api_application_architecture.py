@@ -15,7 +15,11 @@ from tw_quant.live.application import (
     ResearchApplicationService,
     ServiceUnavailableError,
 )
-from tw_quant.live.storage import BarRepository
+from tw_quant.live.storage import (
+    BacktestRepository,
+    MarketRepository,
+    StrategyRepository,
+)
 from tw_quant.replay import ReplayTradingSessionRegistry
 
 
@@ -40,6 +44,14 @@ class ApiApplicationArchitectureTests(unittest.TestCase):
                 self.assertNotIn("deps.replay_trading", source)
                 self.assertNotIn("deps.paper.", source)
 
+    def test_market_router_uses_capability_ports_not_a_generic_store(self) -> None:
+        source = (
+            ROOT / "tw_quant" / "live" / "api_routes" / "market.py"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn("deps.repo", source)
+        self.assertIn("deps.market_repo", source)
+        self.assertIn("deps.strategy_repo", source)
+
     def test_application_errors_have_stable_http_mapping(self) -> None:
         cases = (
             (BadRequestError("bad"), 400),
@@ -58,7 +70,11 @@ class ApiApplicationArchitectureTests(unittest.TestCase):
     def test_invalid_replay_command_stays_an_input_error(self) -> None:
         sessions = ReplayTradingSessionRegistry()
         service = ResearchApplicationService(
-            cast(BarRepository, object()), sessions, "TMF"
+            cast(MarketRepository, object()),
+            cast(StrategyRepository, object()),
+            cast(BacktestRepository, object()),
+            sessions,
+            "TMF",
         )
         try:
             with self.assertRaises(InvalidInputError):
@@ -77,6 +93,37 @@ class ApiApplicationArchitectureTests(unittest.TestCase):
                 )
         finally:
             sessions.close()
+
+    def test_storage_dependencies_are_capability_scoped(self) -> None:
+        application_root = ROOT / "tw_quant" / "live" / "application"
+        expected_ports = {
+            "paper.py": {"MarketRepository"},
+            "strategies.py": {"MarketRepository", "StrategyRepository"},
+            "research.py": {
+                "BacktestRepository",
+                "MarketRepository",
+                "StrategyRepository",
+            },
+        }
+        all_ports = {
+            "BacktestRepository",
+            "MarketRepository",
+            "StrategyRepository",
+        }
+        for name, expected in expected_ports.items():
+            source = (application_root / name).read_text(encoding="utf-8")
+            with self.subTest(module=name):
+                self.assertNotIn("BarRepository", source)
+                self.assertEqual(
+                    {port for port in all_ports if port in source}, expected
+                )
+
+        service_source = (
+            ROOT / "tw_quant" / "live" / "service.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("MarketRepository", service_source)
+        self.assertNotIn("StrategyRepository", service_source)
+        self.assertNotIn("BacktestRepository", service_source)
 
 
 if __name__ == "__main__":

@@ -16,13 +16,14 @@ from .monitoring import HostResourceMonitor
 from .rate_limit import SlidingWindowRateLimiter
 from .service import LiveMarketService
 from .settings import LiveSettings
-from .storage import DEFAULT_OWNER_ID, BarRepository
+from .storage import DEFAULT_OWNER_ID, MarketRepository, StrategyRepository
 
 
 @dataclass(frozen=True)
 class ApiDependencies:
     config: LiveSettings
-    repo: BarRepository
+    market_repo: MarketRepository
+    strategy_repo: StrategyRepository
     validator: AccessValidator
     identity_repo: SQLiteAuthRepository
     auth_service: AuthService

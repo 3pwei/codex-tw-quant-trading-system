@@ -26,7 +26,7 @@ def build_market_router(deps: ApiDependencies) -> APIRouter:
         source_limit = source_bar_limit(selected_interval, limit, deps.config.history_limit)
         return [
             bar.to_message(deps.service.connection_status, selected_interval)
-            for bar in aggregate_kbars(deps.repo.latest(deps.config.symbol, source_limit), selected_interval, limit)
+            for bar in aggregate_kbars(deps.market_repo.latest(deps.config.symbol, source_limit), selected_interval, limit)
         ]
 
     @router.get("/api/strategy-signals")
@@ -48,8 +48,8 @@ def build_market_router(deps: ApiDependencies) -> APIRouter:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         source_limit = source_bar_limit(selected_interval, limit, deps.config.history_limit)
         return analyze_strategies(
-            aggregate_kbars(deps.repo.latest(deps.config.symbol, source_limit), selected_interval, limit),
-            selected, parameters=deps.repo.strategy_parameters(deps.request_owner_id(request)), interval=selected_interval,
+            aggregate_kbars(deps.market_repo.latest(deps.config.symbol, source_limit), selected_interval, limit),
+            selected, parameters=deps.strategy_repo.strategy_parameters(deps.request_owner_id(request)), interval=selected_interval,
         )
 
     @router.websocket("/ws/market/{symbol}")
@@ -71,7 +71,7 @@ def build_market_router(deps: ApiDependencies) -> APIRouter:
         await websocket.accept()
         queue = deps.service.hub.subscribe()
         transformer = TimeframeStreamAggregator(
-            selected_interval, deps.repo.latest(deps.config.symbol, deps.config.history_limit)
+            selected_interval, deps.market_repo.latest(deps.config.symbol, deps.config.history_limit)
         )
         await websocket.send_json(deps.public_market_status(deps.service.status_message()))
         try:

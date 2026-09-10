@@ -17,14 +17,14 @@ from ..market import (
 from .aggregator import MinuteBarAggregator
 from ..market_data import HistoricalMarketDataProvider, LiveMarketDataProvider
 from .hub import BroadcastHub
-from .storage import BarRepository
+from .storage import MarketRepository
 
 
 class LiveMarketService:
     def __init__(
         self,
         feed: LiveMarketDataProvider,
-        repository: BarRepository,
+        repository: MarketRepository,
         symbol: str = "TMF",
         heartbeat_seconds: float = 5.0,
         calendar: TradingCalendar = DEFAULT_CALENDAR,

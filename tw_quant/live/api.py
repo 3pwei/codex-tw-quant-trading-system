@@ -53,7 +53,7 @@ from .rate_limit import RateLimitRule, SlidingWindowRateLimiter
 from .request_limit import RequestBodyLimitMiddleware
 from .service import LiveMarketService
 from .settings import LiveSettings
-from .storage import BarRepository, SQLiteBarRepository
+from .storage import ApplicationRepository, SQLiteBarRepository
 
 __all__ = [
     "AdminUserCreate", "AdminUserUpdate", "BacktestExecutionRequest",
@@ -99,7 +99,7 @@ def create_app(
     settings: LiveSettings | None = None,
     feed: LiveMarketDataProvider | None = None,
     history_provider: HistoricalMarketDataProvider | None = None,
-    repository: BarRepository | None = None,
+    repository: ApplicationRepository | None = None,
     access_validator: AccessValidator | None = None,
     auth_repository: SQLiteAuthRepository | None = None,
     rate_limiter: SlidingWindowRateLimiter | None = None,
@@ -142,9 +142,9 @@ def create_app(
         config.stale_after_seconds,
     )
     research_app = ResearchApplicationService(
-        repo, replay_trading, config.symbol
+        repo, repo, repo, replay_trading, config.symbol
     )
-    strategy_app = StrategyApplicationService(repo, config.symbol)
+    strategy_app = StrategyApplicationService(repo, repo, config.symbol)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -167,7 +167,8 @@ def create_app(
     )
     deps = ApiDependencies(
         config=config,
-        repo=repo,
+        market_repo=repo,
+        strategy_repo=repo,
         validator=validator,
         identity_repo=identity_repo,
         auth_service=auth_service,

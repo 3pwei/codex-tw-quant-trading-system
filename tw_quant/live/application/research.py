@@ -28,7 +28,7 @@ from ...strategy import (
     strategy_catalog,
     validate_strategy_parameters,
 )
-from ..storage import BarRepository
+from ..storage import BacktestRepository, MarketRepository, StrategyRepository
 from .errors import BadRequestError, InvalidInputError, ResourceNotFoundError
 
 
@@ -66,11 +66,15 @@ class ResearchApplicationService:
 
     def __init__(
         self,
-        repository: BarRepository,
+        market_repository: MarketRepository,
+        strategy_repository: StrategyRepository,
+        backtest_repository: BacktestRepository,
         replay_sessions: ReplayTradingSessionRegistry,
         symbol: str,
     ):
-        self.repository = repository
+        self.market_repository = market_repository
+        self.strategy_repository = strategy_repository
+        self.backtest_repository = backtest_repository
         self.replay_sessions = replay_sessions
         self.symbol = symbol
 
@@ -78,11 +82,11 @@ class ResearchApplicationService:
         self, owner_id: str, symbol: str
     ) -> dict[str, object]:
         self._require_symbol(symbol)
-        first, last = self.repository.date_bounds(self.symbol)
+        first, last = self.market_repository.date_bounds(self.symbol)
         catalog = analyze_strategies(
             [],
             SUPPORTED_STRATEGIES,
-            parameters=self.repository.strategy_parameters(owner_id),
+            parameters=self.strategy_repository.strategy_parameters(owner_id),
         )["strategies"]
         return {
             "symbol": self.symbol,
@@ -103,7 +107,9 @@ class ResearchApplicationService:
                     "name": f"{item['name']} · v{item['version']}",
                     "kind": "composite",
                 }
-                for item in self.repository.composite_strategies(owner_id)
+                for item in self.strategy_repository.composite_strategies(
+                    owner_id
+                )
             ],
         }
 
@@ -111,15 +117,17 @@ class ResearchApplicationService:
         self, owner_id: str, symbol: str
     ) -> dict[str, object]:
         self._require_symbol(symbol)
-        first, last = self.repository.date_bounds(self.symbol)
+        first, last = self.market_repository.date_bounds(self.symbol)
         catalog = strategy_catalog(
-            self.repository.strategy_parameters(owner_id)
+            self.strategy_repository.strategy_parameters(owner_id)
         )
         return {
             "symbol": self.symbol,
             "available_start": first.isoformat() if first else None,
             "available_end": last.isoformat() if last else None,
-            "available_dates": self.repository.replay_availability(self.symbol),
+            "available_dates": self.market_repository.replay_availability(
+                self.symbol
+            ),
             "intervals": [
                 {"key": key, "name": TIMEFRAME_LABELS[key]}
                 for key in SUPPORTED_TIMEFRAMES
@@ -141,7 +149,9 @@ class ResearchApplicationService:
                     "kind": "composite",
                     "color": "#a78bfa",
                 }
-                for item in self.repository.composite_strategies(owner_id)
+                for item in self.strategy_repository.composite_strategies(
+                    owner_id
+                )
             ],
             "max_strategies": 3,
             "sessions": [
@@ -177,7 +187,7 @@ class ResearchApplicationService:
 
         source_bars = [
             bar
-            for bar in self.repository.between_trading_dates(
+            for bar in self.market_repository.between_trading_dates(
                 self.symbol,
                 preparation.trading_date,
                 preparation.trading_date,
@@ -198,7 +208,7 @@ class ResearchApplicationService:
         results = analyze_strategies(
             display_bars,
             atomic,
-            parameters=self.repository.strategy_parameters(owner_id),
+            parameters=self.strategy_repository.strategy_parameters(owner_id),
             interval=interval,
         )["strategies"]
         by_key = {str(item["key"]): item for item in results}
@@ -206,11 +216,14 @@ class ResearchApplicationService:
             if not key.startswith("composite:"):
                 continue
             strategy_id = key.removeprefix("composite:")
-            item = self.repository.composite_strategy(
+            item = self.strategy_repository.composite_strategy(
                 strategy_id, owner_user_id=owner_id
             )
-            if item is None or self.repository.composite_strategy_archived(
-                strategy_id, owner_id
+            if (
+                item is None
+                or self.strategy_repository.composite_strategy_archived(
+                    strategy_id, owner_id
+                )
             ):
                 raise ResourceNotFoundError("找不到可用的組合策略")
             signals, _trace = generate_composite_signals(
@@ -322,7 +335,7 @@ class ResearchApplicationService:
             interval = validate_timeframe(execution.interval)
             validate_date_range(execution.start, execution.end)
             bars = aggregate_kbars(
-                self.repository.between_trading_dates(
+                self.market_repository.between_trading_dates(
                     self.symbol, execution.start, execution.end
                 ),
                 interval,
@@ -333,8 +346,10 @@ class ResearchApplicationService:
                 execution.start,
                 execution.end,
                 interval=interval,
-                parameters=self.repository.strategy_parameters(owner_id).get(
-                    key
+                parameters=(
+                    self.strategy_repository.strategy_parameters(owner_id).get(
+                        key
+                    )
                 ),
             )
         except ValueError as exc:
@@ -344,7 +359,7 @@ class ResearchApplicationService:
         self, execution: BacktestInput, owner_id: str
     ) -> dict[str, object]:
         self._require_symbol(execution.symbol)
-        item = self.repository.composite_strategy(
+        item = self.strategy_repository.composite_strategy(
             execution.strategy, execution.version, owner_id
         )
         if item is None:
@@ -352,7 +367,7 @@ class ResearchApplicationService:
         try:
             validate_date_range(execution.start, execution.end)
             return run_composite_backtest(
-                self.repository.between_trading_dates(
+                self.market_repository.between_trading_dates(
                     self.symbol, execution.start, execution.end
                 ),
                 item["definition"],
@@ -369,7 +384,7 @@ class ResearchApplicationService:
     ) -> dict[str, object]:
         if execution.strategy.startswith("composite:"):
             strategy_id = execution.strategy.removeprefix("composite:")
-            item = self.repository.composite_strategy(
+            item = self.strategy_repository.composite_strategy(
                 strategy_id, execution.version, owner_id
             )
             if item is None:
@@ -380,7 +395,7 @@ class ResearchApplicationService:
                 version=int(item["version"]),
             )
             result = self.execute_composite(normalized, owner_id)
-            saved = self.repository.save_backtest_run(
+            saved = self.backtest_repository.save_backtest_run(
                 result,
                 "composite",
                 strategy_id,
@@ -392,9 +407,10 @@ class ResearchApplicationService:
             key = execution.strategy.lower()
             result = self.execute_atomic(replace(execution, strategy=key), owner_id)
             snapshot = validate_strategy_parameters(
-                key, self.repository.strategy_parameters(owner_id).get(key)
+                key,
+                self.strategy_repository.strategy_parameters(owner_id).get(key),
             )
-            saved = self.repository.save_backtest_run(
+            saved = self.backtest_repository.save_backtest_run(
                 result, "atomic", key, None, snapshot, owner_id
             )
         result["history_run_id"] = saved["run_id"]
@@ -408,7 +424,7 @@ class ResearchApplicationService:
         offset: int,
         strategy_key: str | None,
     ) -> dict[str, object]:
-        runs = self.repository.backtest_runs(
+        runs = self.backtest_repository.backtest_runs(
             limit + 1, offset, strategy_key, owner_id
         )
         return {
@@ -419,7 +435,7 @@ class ResearchApplicationService:
         }
 
     def backtest_run(self, run_id: str, owner_id: str) -> dict[str, object]:
-        item = self.repository.backtest_run(run_id, owner_id)
+        item = self.backtest_repository.backtest_run(run_id, owner_id)
         if item is None:
             raise ResourceNotFoundError("找不到回測紀錄")
         return item
@@ -427,7 +443,7 @@ class ResearchApplicationService:
     def delete_backtest_run(
         self, run_id: str, owner_id: str
     ) -> dict[str, object]:
-        item = self.repository.delete_backtest_run(run_id, owner_id)
+        item = self.backtest_repository.delete_backtest_run(run_id, owner_id)
         if item is None:
             raise ResourceNotFoundError("找不到回測紀錄")
         return {

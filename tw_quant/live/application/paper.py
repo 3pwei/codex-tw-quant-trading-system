@@ -8,7 +8,7 @@ from ...auth import AuthUser
 from ...broker import BrokerOrderRequest, ExecutionMode
 from ...paper import IdempotencyConflict, PaperTradingService
 from ..service import LiveMarketService
-from ..storage import BarRepository
+from ..storage import MarketRepository
 from .errors import (
     InvalidInputError,
     ResourceConflictError,
@@ -32,13 +32,13 @@ class PaperApplicationService:
 
     def __init__(
         self,
-        repository: BarRepository,
+        repository: MarketRepository,
         paper: PaperTradingService,
         market: LiveMarketService,
         symbol: str,
         stale_after_seconds: float,
     ):
-        self.repository = repository
+        self.market_repository = repository
         self.paper = paper
         self.market = market
         self.symbol = symbol
@@ -74,7 +74,7 @@ class PaperApplicationService:
             )
             raise ServiceUnavailableError(detail)
 
-        latest = self.repository.latest(self.symbol, 1)
+        latest = self.market_repository.latest(self.symbol, 1)
         if not latest:
             self.paper.record_market_block()
             raise ServiceUnavailableError("market price is not available")
