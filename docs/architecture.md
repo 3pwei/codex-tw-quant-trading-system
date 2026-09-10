@@ -53,6 +53,12 @@ Paper、策略管理、Replay 與回測流程集中於 `live/application/`；app
 不依賴 FastAPI，router 只負責 schema、使用者身分與 HTTP error 轉換。應用層錯誤統一
 由 `live/api_errors.py` 映射，避免狀態碼判斷散落於各 use case。
 
+SQLite 仍可由單一 `SQLiteBarRepository` adapter 管理同一資料庫，但應用層不得依賴
+包含全部 persistence 能力的介面。`MarketRepository` 只提供 K 棒與 Tick 去重；
+`StrategyRepository` 只提供策略參數及組合策略；`BacktestRepository` 只提供回測結果。
+只有 `create_app()` composition root 可使用整合三者的 `ApplicationRepository`。
+`BarRepository` 暫時保留為相容 alias，新程式不得再以它宣告 application dependency。
+
 Dashboard 的頁面元件只負責畫面組合與使用者操作。共用 HTTP base URL、response
 解析與 JSON request 建立集中於 `dashboard/app/lib/api-client.ts`；價格、金額與台北
 時間格式集中於 `dashboard/app/lib/formatters.ts`。Live 的行情 WebSocket、K 線圖與

@@ -35,7 +35,7 @@ class StrategyReferencedError(StrategyPurgeError):
         super().__init__(f"策略已有回測引用，禁止永久刪除：{labels}")
 
 
-class BarRepository(Protocol):
+class MarketRepository(Protocol):
     def save(self, bar: KBar) -> None: ...
     def latest(self, symbol: str, limit: int) -> list[KBar]: ...
     def latest_forming(self, symbol: str) -> KBar | None: ...
@@ -47,6 +47,9 @@ class BarRepository(Protocol):
     def tick_seen(self, key: str) -> bool: ...
     def remember_tick(self, key: str, exchange_time: datetime) -> None: ...
     def purge_backfill(self, symbol: str, contract: str) -> None: ...
+
+
+class StrategyRepository(Protocol):
     def strategy_parameters(
         self, owner_user_id: str | None = None
     ) -> dict[str, dict[str, object]]: ...
@@ -86,6 +89,9 @@ class BarRepository(Protocol):
     def purge_archived_composite_strategies(
         self, strategy_ids: list[str], owner_user_id: str | None = None
     ) -> dict[str, object]: ...
+
+
+class BacktestRepository(Protocol):
     def save_backtest_run(
         self,
         result: dict[str, object],
@@ -108,8 +114,20 @@ class BarRepository(Protocol):
     def delete_backtest_run(
         self, run_id: str, owner_user_id: str | None = None
     ) -> dict[str, object] | None: ...
+
+
+class ApplicationRepository(
+    MarketRepository, StrategyRepository, BacktestRepository, Protocol
+):
+    """Composition-root contract implemented by the shared SQLite adapter."""
+
     def claim_legacy_ownership(self, owner_user_id: str) -> None: ...
     def close(self) -> None: ...
+
+
+# Compatibility name for integrations that still inject one repository object.
+# Application services must depend on the capability-specific ports above.
+BarRepository = ApplicationRepository
 
 
 class SQLiteBarRepository:

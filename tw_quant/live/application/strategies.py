@@ -11,7 +11,8 @@ from ...strategy import (
     validate_strategy_parameters,
 )
 from ..storage import (
-    BarRepository,
+    MarketRepository,
+    StrategyRepository,
     StrategyNameConflictError,
     StrategyPurgeError,
     StrategyReferencedError,
@@ -27,8 +28,14 @@ from .errors import (
 class StrategyApplicationService:
     """Owner-scoped strategy use cases, independent from FastAPI."""
 
-    def __init__(self, repository: BarRepository, symbol: str):
+    def __init__(
+        self,
+        repository: StrategyRepository,
+        market_repository: MarketRepository,
+        symbol: str,
+    ):
         self.repository = repository
+        self.market_repository = market_repository
         self.symbol = symbol
 
     def catalog(self, owner_id: str) -> dict[str, object]:
@@ -120,7 +127,8 @@ class StrategyApplicationService:
         self._require_symbol(symbol)
         item = self.composite(strategy_id, version, owner_id)
         signals, trace = generate_composite_signals(
-            self.repository.latest(self.symbol, limit), item["definition"]
+            self.market_repository.latest(self.symbol, limit),
+            item["definition"],
         )
         return {
             "id": item["id"],
