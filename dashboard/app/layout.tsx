@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { CurrentUserProvider } from "./components/current-user-context";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -43,7 +44,9 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="zh-Hant">
-      <body>{children}</body>
+      <body>
+        <CurrentUserProvider>{children}</CurrentUserProvider>
+      </body>
     </html>
   );
 }

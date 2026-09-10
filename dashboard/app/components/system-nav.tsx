@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useCurrentUser } from "./current-user-context";
+import { routeVisibility } from "./system-nav-policy";
 
 export type SystemRoute =
   | "/"
@@ -33,47 +34,43 @@ const routes: readonly SystemNavRoute[] = [
   { href: "/admin/users/", label: "帳號權限", admin: true },
 ];
 
-type CurrentUser = {
-  email: string;
-  role: string;
-  permissions: string[];
-};
-
 export default function SystemNav({ active }: { active: SystemRoute }) {
-  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
-
-  useEffect(() => {
-    let activeRequest = true;
-    fetch("/api/me", { cache: "no-store" })
-      .then(response => response.ok ? response.json() : Promise.reject())
-      .then(user => { if (activeRequest) setCurrentUser(user); })
-      .catch(() => { if (activeRequest) setCurrentUser(null); });
-    return () => { activeRequest = false; };
-  }, []);
+  const currentUser = useCurrentUser();
 
   return (
     <nav className="system-nav" aria-label="系統功能">
       <div className="system-nav-routes">
-        {routes.filter(route =>
-          (!route.admin || currentUser?.role === "admin")
-          && (!route.permission
-            || currentUser?.permissions.includes(route.permission))
-        ).map(route => (
-          <Link
-          key={route.href}
-          href={route.href}
-          className={route.href === active ? "active" : undefined}
-          aria-current={route.href === active ? "page" : undefined}
-        >
-          {route.label}
-          </Link>
-        ))}
+        {routes.map(route => {
+          const visibility = routeVisibility(route, currentUser);
+          if (visibility === "hidden") return null;
+          if (visibility === "placeholder") {
+            return (
+              <span
+                key={route.href}
+                className="system-nav-placeholder"
+                aria-hidden="true"
+              >
+                {route.label}
+              </span>
+            );
+          }
+          return (
+            <Link
+              key={route.href}
+              href={route.href}
+              className={route.href === active ? "active" : undefined}
+              aria-current={route.href === active ? "page" : undefined}
+            >
+              {route.label}
+            </Link>
+          );
+        })}
       </div>
       <div className="system-account">
-        {currentUser && (
-          <span title={currentUser.email}>
-            {currentUser.email}
-            <small>{currentUser.role}</small>
+        {currentUser.user && (
+          <span title={currentUser.user.email}>
+            {currentUser.user.email}
+            <small>{currentUser.user.role}</small>
           </span>
         )}
         <a className="logout-link" href="/cdn-cgi/access/logout">
@@ -83,10 +80,10 @@ export default function SystemNav({ active }: { active: SystemRoute }) {
       <details className="system-account-mobile">
         <summary aria-label="開啟帳號選單">帳號</summary>
         <div className="system-account-menu">
-          {currentUser && (
-            <span title={currentUser.email}>
-              {currentUser.email}
-              <small>{currentUser.role}</small>
+          {currentUser.user && (
+            <span title={currentUser.user.email}>
+              {currentUser.user.email}
+              <small>{currentUser.user.role}</small>
             </span>
           )}
           <a className="logout-link" href="/cdn-cgi/access/logout">
