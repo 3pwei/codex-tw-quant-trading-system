@@ -18,6 +18,7 @@ import {
   type UTCTimestamp,
 } from "lightweight-charts";
 import { formatPrice, formatTaipeiClock } from "../lib/formatters";
+import { prepareStrategySeries } from "./strategy-series";
 import {
   backtestChartTime,
   tradeFocusRange,
@@ -223,22 +224,13 @@ export default function InteractiveTradeChart({
       bars.map(bar => [bar.timestamp.slice(0, 16), barTime(bar, rangeMode)]),
     );
     const addGenericSeries = (item: StrategySeries, pane: number) => {
-      const groups = new Map<string, typeof item.points>();
-      const sourcePoints = item.type === "threshold"
-        && typeof item.metadata?.value === "number"
-        && bars.length
-        ? [
-            { time: bars[0].timestamp, value: item.metadata.value },
-            { time: bars[bars.length - 1].timestamp, value: item.metadata.value },
-          ]
-        : item.points;
-      sourcePoints
-        .filter(point => chartTimes.has(point.time.slice(0, 16)))
-        .forEach(point => {
-          const key = point.group ?? item.key;
-          groups.set(key, [...(groups.get(key) ?? []), point]);
-        });
-      groups.forEach(points => {
+      prepareStrategySeries(item, {
+        thresholdRange: {
+          from: bars[0].timestamp,
+          to: bars[bars.length - 1].timestamp,
+        },
+        includePoint: point => chartTimes.has(point.time.slice(0, 16)),
+      }).forEach(({ points }) => {
         if (!points.length) return;
         if (item.type === "histogram" || item.type === "state") {
           const created = chart.addSeries(HistogramSeries, {
@@ -377,6 +369,10 @@ export default function InteractiveTradeChart({
       {hovered && <aside className="strategy-trigger-tooltip">
         <b>{hovered.event === "entry" ? "ENTRY" : "EXIT"} · {hovered.trade.direction.toUpperCase()}</b>
         <span>{hovered.event === "entry" ? hovered.trade.entry_reason ?? "signal_confirmed" : hovered.trade.exit_reason ?? "strategy_exit"}</span>
+        {hovered.event === "entry" && <>
+          <span>訊號確認 {formatTaipeiClock(hovered.trade.trigger_time ?? hovered.trade.entry_time)}</span>
+          <span>成交 {formatTaipeiClock(hovered.trade.entry_time)}</span>
+        </>}
         <span>價格 {formatPrice(hovered.event === "entry" ? hovered.trade.entry_price : hovered.trade.exit_price)}</span>
         <span>停損 {formatPrice(hovered.trade.stop_loss_price)} · 停利 {formatPrice(hovered.trade.take_profit_price)}</span>
         {Object.entries(hoverContext ?? {}).slice(0, 5).map(([key, value]) => <span key={key}>{key} = {Number(value).toFixed(4)}</span>)}

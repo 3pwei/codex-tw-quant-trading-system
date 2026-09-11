@@ -11,6 +11,8 @@ import {
   type BacktestBar,
   type BacktestTrade,
 } from "../app/backtest/trade-chart-model.ts";
+import { prepareStrategySeries } from "../app/backtest/strategy-series.ts";
+import type { StrategySeries } from "../app/backtest/trade-chart-model.ts";
 
 const bars: BacktestBar[] = Array.from({ length: 60 }, (_, index) => ({
   timestamp: new Date(Date.UTC(2026, 8, 9, 7, index)).toISOString(),
@@ -97,4 +99,46 @@ test("generic diagnostic series are detected without strategy-specific branching
       points: [{ time: bars[0].timestamp, value: 28.4 }],
     }],
   }), true);
+});
+
+test("generic strategy preparation keeps grouped channel segments independent", () => {
+  const definition: StrategySeries = {
+    key: "dow_upper",
+    label: "Upper",
+    panel: "price",
+    type: "line",
+    points: [
+      { time: bars[0].timestamp, value: 100, group: "A" },
+      { time: bars[1].timestamp, value: 101, group: "A" },
+      { time: bars[2].timestamp, value: 110, group: "B" },
+      { time: bars[3].timestamp, value: 111, group: "B" },
+    ],
+  };
+
+  const prepared = prepareStrategySeries(definition);
+
+  assert.deepEqual(prepared.map(item => item.groupKey), ["A", "B"]);
+  assert.deepEqual(prepared.map(item => item.points.length), [2, 2]);
+});
+
+test("threshold preparation follows full range and replay cursor endpoints", () => {
+  const definition: StrategySeries = {
+    key: "rsi_oversold",
+    label: "Oversold",
+    panel: "strategy",
+    type: "threshold",
+    points: [],
+    metadata: { value: 30 },
+  };
+
+  const full = prepareStrategySeries(definition, {
+    thresholdRange: { from: bars[0].timestamp, to: bars[3].timestamp },
+  });
+  const replay = prepareStrategySeries(definition, {
+    thresholdRange: { from: bars[0].timestamp, to: bars[1].timestamp },
+  });
+
+  assert.deepEqual(full[0].points.map(point => point.time), [bars[0].timestamp, bars[3].timestamp]);
+  assert.deepEqual(replay[0].points.map(point => point.time), [bars[0].timestamp, bars[1].timestamp]);
+  assert.deepEqual(replay[0].points.map(point => point.value), [30, 30]);
 });

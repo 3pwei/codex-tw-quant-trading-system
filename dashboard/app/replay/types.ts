@@ -10,6 +10,7 @@ export type ReplaySignal = {
   strategy: string; event: "entry" | "exit"; direction: "long" | "short";
   time: string; price: number; stop_loss_price: number;
   take_profit_price: number; reason: string;
+  trigger_time?: string;
   trigger_reason?: string;
   context?: Record<string, number>;
 };

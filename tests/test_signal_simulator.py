@@ -28,6 +28,28 @@ def bars() -> pd.DataFrame:
 
 
 class SignalSimulatorPolicyTests(unittest.TestCase):
+    def test_entry_keeps_trigger_bar_time_and_context_until_next_open_fill(self):
+        frame = bars()
+        entries = pd.Series([1, 0, 0, 0, 0], index=frame.index)
+        context = pd.DataFrame(
+            {"rsi": [28.4, 72.0, 60.0, 50.0, 40.0]}, index=frame.index
+        )
+
+        signals = simulate_signals(
+            frame, "test", entries, diagnostic_context=context
+        )
+
+        entry = signals[0]
+        self.assertEqual(
+            entry["trigger_time"],
+            frame.iloc[0]["timestamp"].isoformat(timespec="milliseconds"),
+        )
+        self.assertEqual(
+            entry["time"],
+            frame.iloc[1]["timestamp"].isoformat(timespec="milliseconds"),
+        )
+        self.assertEqual(entry["context"], {"rsi": 28.4})
+
     def test_default_policy_allows_distinct_reentries_in_one_group(self):
         frame = pd.concat([bars(), bars().iloc[:2]], ignore_index=True)
         frame["timestamp"] = pd.date_range(

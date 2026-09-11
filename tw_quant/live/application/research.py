@@ -439,7 +439,14 @@ class ResearchApplicationService:
         item = self.backtest_repository.backtest_run(run_id, owner_id)
         if item is None:
             raise ResourceNotFoundError("找不到回測紀錄")
-        return item
+        response = dict(item)
+        result = item.get("result")
+        if isinstance(result, dict):
+            response["result"] = {
+                key: value for key, value in result.items()
+                if key != "visualization"
+            }
+        return response
 
     @staticmethod
     def _chart_bar(bar: KBar) -> dict[str, object]:

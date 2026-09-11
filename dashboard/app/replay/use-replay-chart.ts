@@ -17,6 +17,7 @@ import { buildReplayChartFrame } from "./replay-chart-data";
 import type { ReplaySnapshot, ReplayTradingState } from "./types";
 import type { ReplaySignal } from "./types";
 import type { StrategySeries } from "../backtest/trade-chart-model";
+import { prepareStrategySeries } from "../backtest/strategy-series";
 
 function chartClock(value: Time): string {
   if (typeof value === "object") {
@@ -41,6 +42,7 @@ export function useReplayChart({ snapshot, trading, cursor, diagnosticsVisible =
   const strategySeriesRef = useRef<Array<{
     api: ISeriesApi<"Line"> | ISeriesApi<"Histogram">;
     definition: StrategySeries;
+    groupKey: string;
   }>>([]);
   const [hoveredSignal, setHoveredSignal] = useState<{
     strategyName: string;
@@ -87,20 +89,28 @@ export function useReplayChart({ snapshot, trading, cursor, diagnosticsVisible =
     volumeRef.current = volumes;
     markerRef.current = createSeriesMarkers(candles, []);
     const addSeries = (definition: StrategySeries, pane: number) => {
-      const api = definition.type === "histogram" || definition.type === "state"
-        ? chart.addSeries(HistogramSeries, {
-            color: definition.color ?? "#64748b", priceLineVisible: false,
-            lastValueVisible: false,
-            ...(definition.metadata?.scale_id ? { priceScaleId: String(definition.metadata.scale_id) } : {}),
-          }, pane)
-        : chart.addSeries(LineSeries, {
-            color: definition.color ?? "#94a3b8",
-            lineWidth: definition.type === "threshold" ? 1 : 2,
-            lineStyle: definition.type === "threshold" ? LineStyle.Dashed : LineStyle.Solid,
-            priceLineVisible: false, lastValueVisible: false, title: definition.label,
-            ...(definition.metadata?.scale_id ? { priceScaleId: String(definition.metadata.scale_id) } : {}),
-          }, pane);
-      strategySeriesRef.current.push({ api, definition });
+      const prepared = prepareStrategySeries(definition, snapshot?.bars.length ? {
+        thresholdRange: {
+          from: snapshot.bars[0].time,
+          to: snapshot.bars[snapshot.bars.length - 1].time,
+        },
+      } : {});
+      prepared.forEach(({ groupKey }) => {
+        const api = definition.type === "histogram" || definition.type === "state"
+          ? chart.addSeries(HistogramSeries, {
+              color: definition.color ?? "#64748b", priceLineVisible: false,
+              lastValueVisible: false,
+              ...(definition.metadata?.scale_id ? { priceScaleId: String(definition.metadata.scale_id) } : {}),
+            }, pane)
+          : chart.addSeries(LineSeries, {
+              color: definition.color ?? "#94a3b8",
+              lineWidth: definition.type === "threshold" ? 1 : 2,
+              lineStyle: definition.type === "threshold" ? LineStyle.Dashed : LineStyle.Solid,
+              priceLineVisible: false, lastValueVisible: false, title: definition.label,
+              ...(definition.metadata?.scale_id ? { priceScaleId: String(definition.metadata.scale_id) } : {}),
+            }, pane);
+        strategySeriesRef.current.push({ api, definition, groupKey });
+      });
     };
     snapshot?.strategies.forEach(strategy => {
       strategy.visualization?.overlays.forEach(item => addSeries(item, 0));
@@ -146,16 +156,13 @@ export function useReplayChart({ snapshot, trading, cursor, diagnosticsVisible =
     volumeRef.current?.setData(frame.volumes);
     markerRef.current?.setMarkers(frame.markers);
     const now = Date.parse(snapshot.bars[Math.max(0, Math.min(nextCursor, snapshot.bars.length - 1))].end_time);
-    strategySeriesRef.current.forEach(({ api, definition }) => {
-      const sourcePoints = definition.type === "threshold"
-        && typeof definition.metadata?.value === "number"
-        ? [
-            { time: snapshot.bars[0].time, value: definition.metadata.value },
-            { time: snapshot.bars[Math.max(0, Math.min(nextCursor, snapshot.bars.length - 1))].time, value: definition.metadata.value },
-          ]
-        : definition.points;
-      const data = sourcePoints
-        .filter(point => Date.parse(point.time) <= now)
+    const cursorBar = snapshot.bars[Math.max(0, Math.min(nextCursor, snapshot.bars.length - 1))];
+    strategySeriesRef.current.forEach(({ api, definition, groupKey }) => {
+      const prepared = prepareStrategySeries(definition, {
+        thresholdRange: { from: snapshot.bars[0].time, to: cursorBar.time },
+        includePoint: point => Date.parse(point.time) <= now,
+      }).find(item => item.groupKey === groupKey);
+      const data = (prepared?.points ?? [])
         .map(point => ({ time: toReplayTime(point.time), value: point.value }));
       api.setData(data);
     });

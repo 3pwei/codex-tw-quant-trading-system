@@ -88,9 +88,7 @@ class BacktestHistoryTests(unittest.TestCase):
                 detail = client.get(f"/api/backtest-runs/{run_id}").json()
                 self.assertEqual(detail["strategy_snapshot"]["opening_range_minutes"], 15)
                 self.assertNotIn("bars", detail["result"])
-                self.assertEqual(
-                    detail["result"]["visualization"]["schema_version"], 1
-                )
+                self.assertNotIn("visualization", detail["result"])
 
                 second = client.post(
                     "/api/backtest-runs",
@@ -177,6 +175,13 @@ class BacktestHistoryTests(unittest.TestCase):
                     "type": "threshold", "color": "#64748b",
                     "points": [{"time": "2026-08-26T15:00:00+08:00", "value": 0}],
                     "metadata": {"value": 0},
+                }, {
+                    "key": "spread", "label": "Spread", "panel": "strategy",
+                    "type": "line", "color": "#38bdf8",
+                    "points": [
+                        {"time": bars[5].time.isoformat(), "value": 1.5},
+                        {"time": "2026-08-26T15:00:00+08:00", "value": 2.5},
+                    ],
                 }],
             }
             saved = repo.save_backtest_run(
@@ -194,6 +199,13 @@ class BacktestHistoryTests(unittest.TestCase):
                 repository=repo,
             )
             with TestClient(app) as client:
+                detail = client.get(f"/api/backtest-runs/{saved['run_id']}")
+                self.assertEqual(detail.status_code, 200, detail.text)
+                self.assertNotIn("visualization", detail.json()["result"])
+                self.assertIn(
+                    "visualization",
+                    repo.backtest_run(saved["run_id"])["result"],
+                )
                 response = client.get(
                     f"/api/backtest-runs/{saved['run_id']}/chart?trade_index=0"
                 )
@@ -205,8 +217,14 @@ class BacktestHistoryTests(unittest.TestCase):
                 self.assertEqual(
                     [trade["trade_index"] for trade in payload["trades"]], [0, 1]
                 )
+                diagnostics = {
+                    item["key"]: item
+                    for item in payload["visualization"]["diagnostics"]
+                }
+                self.assertEqual(diagnostics["zero"]["points"], [])
                 self.assertEqual(
-                    payload["visualization"]["diagnostics"][0]["points"], []
+                    diagnostics["spread"]["points"],
+                    [{"time": bars[5].time.isoformat(), "value": 1.5}],
                 )
 
     def test_saved_daily_chart_uses_the_contract_range_not_sessions(self):
@@ -250,6 +268,9 @@ class BacktestHistoryTests(unittest.TestCase):
                 repository=repo,
             )
             with TestClient(app) as client:
+                detail = client.get(f"/api/backtest-runs/{saved['run_id']}")
+                self.assertEqual(detail.status_code, 200, detail.text)
+                self.assertNotIn("visualization", detail.json()["result"])
                 response = client.get(
                     f"/api/backtest-runs/{saved['run_id']}/chart?trade_index=0"
                 )

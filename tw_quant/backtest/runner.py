@@ -78,6 +78,9 @@ def run_strategy_backtest(
     serialized_trades = []
     for trade in trades:
         item = dict(trade)
+        item["trigger_time"] = trade["trigger_time"].isoformat(
+            timespec="milliseconds"
+        )
         item["entry_time"] = trade["entry_time"].isoformat(timespec="milliseconds")
         item["exit_time"] = trade["exit_time"].isoformat(timespec="milliseconds")
         serialized_trades.append(item)
@@ -229,6 +232,9 @@ def run_composite_backtest(
         } for bar in closed],
         "trades": [{
             **trade,
+            "trigger_time": trade["trigger_time"].isoformat(
+                timespec="milliseconds"
+            ),
             "entry_time": trade["entry_time"].isoformat(timespec="milliseconds"),
             "exit_time": trade["exit_time"].isoformat(timespec="milliseconds"),
         } for trade in trades],

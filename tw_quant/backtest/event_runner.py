@@ -209,6 +209,9 @@ def run_historical_events(
                 "session": str(entry.get("session") or ""),
                 "trading_date": str(entry.get("trading_date") or trade.trading_date),
                 "direction": trade.direction,
+                "trigger_time": _timestamp(
+                    entry.get("trigger_time") or entry["time"]
+                ),
                 "entry_time": trade.entry_time,
                 "exit_time": trade.exit_time,
                 "quantity": trade.quantity,
