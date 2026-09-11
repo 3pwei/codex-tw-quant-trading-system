@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  allVisibleRunsSelected,
+  batchDeletionPayload,
   toggleRunSelection,
-  toggleVisibleRunSelection,
 } from "../app/history/history-selection.ts";
 
 test("individual history selection toggles without duplicating ids", () => {
@@ -11,18 +10,16 @@ test("individual history selection toggles without duplicating ids", () => {
   assert.deepEqual(toggleRunSelection(["run-1"], "run-1"), []);
 });
 
-test("select all adds every visible run and preserves hidden selections", () => {
+test("batch deletion uses explicit ids for an ordinary selection", () => {
   assert.deepEqual(
-    toggleVisibleRunSelection(["hidden"], ["run-1", "run-2"]),
-    ["hidden", "run-1", "run-2"],
+    batchDeletionPayload(false, ["run-1", "run-2"]),
+    { run_ids: ["run-1", "run-2"] },
   );
 });
 
-test("select all clears only visible runs when they are already selected", () => {
-  const selected = ["hidden", "run-1", "run-2"];
-  assert.equal(allVisibleRunsSelected(selected, ["run-1", "run-2"]), true);
+test("batch deletion covers unloaded pages when all runs are selected", () => {
   assert.deepEqual(
-    toggleVisibleRunSelection(selected, ["run-1", "run-2"]),
-    ["hidden"],
+    batchDeletionPayload(true, ["run-1"]),
+    { delete_all: true },
   );
 });
