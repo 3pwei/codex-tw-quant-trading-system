@@ -23,6 +23,44 @@ export type BacktestTrade = {
   trading_date?: string;
   stop_loss_price?: number;
   take_profit_price?: number;
+  entry_reason?: string;
+  exit_reason?: string;
+  entry_context?: Record<string, number>;
+  exit_context?: Record<string, number>;
+};
+
+export type StrategySeriesPoint = {
+  time: string;
+  value: number;
+  group?: string;
+};
+
+export type StrategySeries = {
+  key: string;
+  label: string;
+  panel: "price" | "strategy";
+  type: "line" | "histogram" | "threshold" | "state";
+  color?: string;
+  points: StrategySeriesPoint[];
+  metadata?: Record<string, unknown>;
+};
+
+export type StrategyParameter = {
+  key: string;
+  label: string;
+  value: number;
+  display_value: number | string;
+  unit?: string;
+  important?: boolean;
+};
+
+export type StrategyVisualization = {
+  schema_version: number;
+  strategy: { key: string; name: string };
+  parameters: StrategyParameter[];
+  panels: { key: string; label: string; order: number; collapsible?: boolean; default_visible?: boolean }[];
+  overlays: StrategySeries[];
+  diagnostics: StrategySeries[];
 };
 
 export type LinearChannelPoint = {
@@ -56,7 +94,14 @@ export type BacktestChartPayload = {
   bars: BacktestBar[];
   trades: BacktestTrade[];
   overlays: StrategyOverlay[];
+  visualization?: StrategyVisualization;
 };
+
+export function hasDiagnostics(
+  visualization: StrategyVisualization | null | undefined,
+): boolean {
+  return Boolean(visualization?.diagnostics.some(series => series.points.length));
+}
 
 export function isRangeInterval(interval: string): boolean {
   return interval === "1d" || interval === "1w";

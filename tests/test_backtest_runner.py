@@ -42,6 +42,8 @@ class StrategyBacktestTests(unittest.TestCase):
                 "stop_loss_price": 98.0,
                 "take_profit_price": 106.0,
                 "reason": "signal_confirmed",
+                "trigger_reason": "test_indicator_crossed",
+                "context": {"test_indicator": 1.25},
                 "contract": bars[0].contract,
                 "trading_date": bars[0].trading_date.isoformat(),
             },
@@ -54,6 +56,7 @@ class StrategyBacktestTests(unittest.TestCase):
                 "stop_loss_price": 98.0,
                 "take_profit_price": 106.0,
                 "reason": "test_exit",
+                "context": {"test_indicator": 0.25},
                 "contract": bars[1].contract,
                 "trading_date": bars[1].trading_date.isoformat(),
             },
@@ -68,6 +71,9 @@ class StrategyBacktestTests(unittest.TestCase):
         self.assertEqual(first.event_counts["fill"], 2)
         self.assertEqual(len(first.trades), 1)
         self.assertEqual(first.trades[0]["exit_reason"], "test_exit")
+        self.assertEqual(first.trades[0]["entry_reason"], "test_indicator_crossed")
+        self.assertEqual(first.trades[0]["entry_context"], {"test_indicator": 1.25})
+        self.assertEqual(first.trades[0]["exit_context"], {"test_indicator": 0.25})
         for event in first.execution_events:
             if event["kind"] in {"order_intent", "risk_decision", "fill"}:
                 self.assertIsNotNone(event["meta"]["causation_id"])
@@ -92,6 +98,8 @@ class StrategyBacktestTests(unittest.TestCase):
         self.assertEqual(trade["exit_reason"], "session_end")
         self.assertEqual(trade["stop_loss_price"], 102.382)
         self.assertEqual(trade["take_profit_price"], 104.236)
+        self.assertEqual(trade["entry_reason"], "opening_range_breakout_up")
+        self.assertIn("volume_ratio", trade["entry_context"])
         self.assertEqual(result["execution"]["engine"], "deterministic_event_engine")
         self.assertEqual(result["execution"]["event_counts"]["fill"], 2)
 

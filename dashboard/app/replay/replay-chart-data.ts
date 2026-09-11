@@ -30,7 +30,7 @@ function signalMarker(
     position: long ? entry ? "belowBar" : "aboveBar" : entry ? "aboveBar" : "belowBar",
     color: entry ? strategy.color : "#f5b942",
     shape: entry ? long ? "arrowUp" : "arrowDown" : "circle",
-    text: `${strategy.name} · ${entry ? long ? "多進" : "空進" : "出場"} ${formatPrice(signal.price)}`,
+    text: `${strategy.name} · ${entry ? long ? "多進" : "空進" : "出場"} · ${signal.trigger_reason ?? signal.reason} · ${formatPrice(signal.price)}`,
   };
 }
 

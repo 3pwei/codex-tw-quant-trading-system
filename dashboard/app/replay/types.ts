@@ -10,11 +10,15 @@ export type ReplaySignal = {
   strategy: string; event: "entry" | "exit"; direction: "long" | "short";
   time: string; price: number; stop_loss_price: number;
   take_profit_price: number; reason: string;
+  trigger_reason?: string;
+  context?: Record<string, number>;
 };
 
 export type ReplayStrategy = {
   key: string; name: string; color: string; kind?: "composite";
   version?: number; signals: ReplaySignal[];
+  visualization?: import("../backtest/trade-chart-model").StrategyVisualization;
+  parameters?: Record<string, number>;
 };
 
 export type ReplayAccount = {

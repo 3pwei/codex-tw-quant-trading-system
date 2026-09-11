@@ -88,6 +88,9 @@ class BacktestHistoryTests(unittest.TestCase):
                 detail = client.get(f"/api/backtest-runs/{run_id}").json()
                 self.assertEqual(detail["strategy_snapshot"]["opening_range_minutes"], 15)
                 self.assertNotIn("bars", detail["result"])
+                self.assertEqual(
+                    detail["result"]["visualization"]["schema_version"], 1
+                )
 
                 second = client.post(
                     "/api/backtest-runs",
@@ -162,8 +165,22 @@ class BacktestHistoryTests(unittest.TestCase):
                     "session": "night", "trading_date": "2026-08-25",
                 },
             ]
+            saved_result = self.saved_chart_result(trades)
+            saved_result["visualization"] = {
+                "schema_version": 1,
+                "strategy": {"key": "ma_crossover", "name": "MA Crossover"},
+                "parameters": [],
+                "panels": [],
+                "overlays": [],
+                "diagnostics": [{
+                    "key": "zero", "label": "Zero", "panel": "strategy",
+                    "type": "threshold", "color": "#64748b",
+                    "points": [{"time": "2026-08-26T15:00:00+08:00", "value": 0}],
+                    "metadata": {"value": 0},
+                }],
+            }
             saved = repo.save_backtest_run(
-                self.saved_chart_result(trades),
+                saved_result,
                 "atomic", "ma_crossover", None, {},
             )
             settings = LiveSettings(
@@ -187,6 +204,9 @@ class BacktestHistoryTests(unittest.TestCase):
                 self.assertEqual(len(payload["bars"]), 60)
                 self.assertEqual(
                     [trade["trade_index"] for trade in payload["trades"]], [0, 1]
+                )
+                self.assertEqual(
+                    payload["visualization"]["diagnostics"][0]["points"], []
                 )
 
     def test_saved_daily_chart_uses_the_contract_range_not_sessions(self):
@@ -242,6 +262,7 @@ class BacktestHistoryTests(unittest.TestCase):
                     [item["trading_date"] for item in payload["bars"]],
                     ["2026-08-25", "2026-08-26"],
                 )
+                self.assertNotIn("visualization", payload)
 
     def test_legacy_dow_momentum_key_backtests_and_loads_saved_snapshot(self):
         with tempfile.TemporaryDirectory() as directory:

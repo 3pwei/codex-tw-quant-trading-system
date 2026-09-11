@@ -18,7 +18,7 @@
 | 風控 | 帳戶與資料隔離、回測停損停利、Paper 進場風險檢查、部位／每日限制、連敗冷卻、Kill Switch |
 | 平台 | Cloudflare OTP、FastAPI RBAC、申請與審核、Rate Limit、Request Size Limit、稽核紀錄 |
 | 穩定性 | 重啟復原、SQLite verified backup、Queue／WebSocket／DB／主機監控、五種服務狀態 |
-| UI | `/trade/` 整合即時圖表與 Paper 下單；回測以盤次共用互動 K 線、點選交易聚焦進出場；手機 Bottom Sheet |
+| UI | `/trade/` 整合即時圖表與 Paper 下單；Backtest／History／Replay 提供策略 overlays、診斷副圖、參數摘要與進出場判斷脈絡；手機 Bottom Sheet |
 | 部署 | Docker、Caddy、AWS Lightsail、GitHub Actions、Python 套件鎖定 |
 
 Level 2 工程能力已實作；每個正式候選版本仍須依 [Level 2 完成標準](docs/level2-definition-of-done.md) 留存四小時 soak 與人工驗收證據。Live execution foundation 已具備可測試的 simulation 組裝邊界，但 production 固定使用 `DisabledExecutionWorker`，不載入 CA、不建立真實下單 client，也不接受 HTTP 真實委託。本平台不宣稱具備可用的實盤券商整合或 HFT 能力。
@@ -219,7 +219,7 @@ API_MAX_REQUEST_BODY_BYTES=262144
 | 身分 | `GET /api/me`、`POST /api/access-requests` |
 | 行情 | `GET /api/health`、`GET /api/kbars`、`WS /ws/market/{symbol}` |
 | 策略 | `/api/strategies`、`/api/composite-strategies`、`/api/strategy-signals` |
-| 回測 | `/api/backtest`、`/api/backtest-runs`；執行紀錄可逐筆勾選，或一次全選帳號全部紀錄（包含未載入頁面）後批次刪除 |
+| 回測 | `/api/backtest`、`/api/backtest-runs`；新結果包含向後相容的 `visualization.schema_version=1` 診斷資料；執行紀錄可逐筆勾選或批次刪除 |
 | 回放 | `/api/replay/prepare`、`/api/replay/sessions/{session_id}` |
 | Paper | `/api/paper/account`、`/api/paper/orders`、`/api/paper/fills`、`/api/paper/kill-switch` |
 | 管理 | `/api/admin/users`、`/api/admin/access-requests`、`/api/admin/health`、`/api/admin/audit` |

@@ -12,6 +12,7 @@ import type {
   Session,
 } from "./types";
 import { useReplayChart } from "./use-replay-chart";
+import { StrategyParameterSummary, StrategySeriesLegend } from "../backtest/strategy-diagnostics";
 
 export type {
   ReplayBar,
@@ -43,6 +44,7 @@ export default function ReplayDashboard() {
   const [tradeTab, setTradeTab] = useState<"positions" | "orders" | "fills">("positions");
   const [tradeBusy, setTradeBusy] = useState("");
   const [tradeNotice, setTradeNotice] = useState("");
+  const [diagnosticsVisible, setDiagnosticsVisible] = useState(true);
 
   useEffect(() => {
     let active = true;
@@ -71,7 +73,7 @@ export default function ReplayDashboard() {
     if (next && !next.sessions.some(item => item.key === session)) setSession(next.sessions[0]?.key ?? "day");
   };
 
-  const { hostRef } = useReplayChart({ snapshot, trading, cursor });
+  const { hostRef, hoveredSignal } = useReplayChart({ snapshot, trading, cursor, diagnosticsVisible });
   useEffect(() => {
     if (!playing || !snapshot) return;
     const timer = window.setInterval(() => setCursor(value => { if (value >= snapshot.bars.length - 1) { setPlaying(false); return value; } return value + 1; }), Math.max(50, 1000 / speed));
@@ -210,7 +212,10 @@ export default function ReplayDashboard() {
     {snapshot && <>
       <section className="replay-player panel">
         <div className="replay-player-head"><div><span>REPLAY SNAPSHOT · {snapshot.snapshot_id.slice(0, 8).toUpperCase()}</span><h2>{snapshot.symbol} · {snapshot.trading_date} · {snapshot.session === "day" ? "日盤" : "夜盤"}</h2></div><div className="replay-quote"><small>{formatTaipeiClock(current?.time)} · {snapshot.interval_name}</small><strong>{formatPrice(current?.close)}</strong><em>{progress}%</em></div></div>
-        <div className="replay-chart" ref={hostRef} />
+        <StrategyParameterSummary visualizations={snapshot.strategies.flatMap(strategy => strategy.visualization ? [strategy.visualization] : [])} />
+        <StrategySeriesLegend visualizations={snapshot.strategies.flatMap(strategy => strategy.visualization ? [strategy.visualization] : [])} />
+        {snapshot.strategies.some(strategy => strategy.visualization?.diagnostics.length) && <div className="replay-diagnostic-toggle"><button type="button" onClick={() => setDiagnosticsVisible(value => !value)}>{diagnosticsVisible ? "收合策略診斷" : "展開策略診斷"}</button></div>}
+        <div className="replay-chart-stage"><div className="replay-chart" ref={hostRef} />{hoveredSignal && <aside className="strategy-trigger-tooltip"><b>{hoveredSignal.strategyName} · {hoveredSignal.signal.event.toUpperCase()} · {hoveredSignal.signal.direction.toUpperCase()}</b><span>{hoveredSignal.signal.trigger_reason ?? hoveredSignal.signal.reason}</span><span>價格 {formatPrice(hoveredSignal.signal.price)}</span><span>停損 {formatPrice(hoveredSignal.signal.stop_loss_price)} · 停利 {formatPrice(hoveredSignal.signal.take_profit_price)}</span>{Object.entries(hoveredSignal.signal.context ?? {}).slice(0, 5).map(([key, value]) => <span key={key}>{key} = {Number(value).toFixed(4)}</span>)}</aside>}</div>
         <div className="replay-controls"><button onClick={() => { setPlaying(false); setCursor(0); }} aria-label="回到開頭">↺</button><button onClick={() => { setPlaying(false); setCursor(value => Math.max(0, value - 1)); }} aria-label="上一根">｜◀</button><button className="play" onClick={() => { if (cursor >= snapshot.bars.length - 1) setCursor(0); setPlaying(value => !value); }}>{playing ? "暫停" : "播放"}</button><button onClick={() => { setPlaying(false); setCursor(value => Math.min(snapshot.bars.length - 1, value + 1)); }} aria-label="下一根">▶｜</button><label><span>速度</span><select value={speed} onChange={event => setSpeed(Number(event.target.value))}>{[0.5, 1, 2, 5, 10].map(value => <option key={value} value={value}>{value}×</option>)}</select></label><input aria-label="回放進度" type="range" min={0} max={Math.max(0, snapshot.bars.length - 1)} value={cursor} onChange={event => { setPlaying(false); setCursor(Number(event.target.value)); }} /><small>{cursor + 1} / {snapshot.bars.length} 根</small></div>
       </section>
       <section className="replay-trading panel">

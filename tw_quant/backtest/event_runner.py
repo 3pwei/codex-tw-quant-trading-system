@@ -187,9 +187,11 @@ def run_historical_events(
         raise ValueError("historical signals must align with a closed K bar")
 
     entries = [signal for signal in signals if signal["event"] == "entry"]
+    exits = [signal for signal in signals if signal["event"] == "exit"]
     serialized: list[dict[str, object]] = []
     for index, trade in enumerate(pipeline.ledger.trades):
         entry = entries[index]
+        exit_signal = exits[index] if index < len(exits) else {}
         mfe, mae = _excursion(
             closed,
             contract=trade.contract,
@@ -226,6 +228,12 @@ def run_historical_events(
                 "mfe": mfe,
                 "mae": mae,
                 "exit_reason": trade.exit_reason,
+                "entry_reason": str(
+                    entry.get("trigger_reason") or entry.get("reason")
+                    or "signal_confirmed"
+                ),
+                "entry_context": dict(entry.get("context") or {}),
+                "exit_context": dict(exit_signal.get("context") or {}),
             }
         )
 

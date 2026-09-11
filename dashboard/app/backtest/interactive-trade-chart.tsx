@@ -1,12 +1,13 @@
 "use client";
 
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   CandlestickSeries,
   ColorType,
   createChart,
   createSeriesMarkers,
   HistogramSeries,
+  LineStyle,
   LineSeries,
   type IChartApi,
   type IPriceLine,
@@ -23,7 +24,11 @@ import {
   type BacktestBar,
   type BacktestTrade,
   type StrategyOverlay,
+  type StrategySeries,
+  type StrategyVisualization,
+  hasDiagnostics,
 } from "./trade-chart-model";
+import { StrategyParameterSummary, StrategySeriesLegend } from "./strategy-diagnostics";
 
 const taipeiDate = new Intl.DateTimeFormat("zh-TW", {
   timeZone: "Asia/Taipei",
@@ -95,6 +100,7 @@ type InteractiveTradeChartProps = {
   trades: BacktestTrade[];
   selectedTrade: BacktestTrade;
   overlays?: StrategyOverlay[];
+  visualization?: StrategyVisualization;
   rangeMode?: boolean;
   focusSelection?: boolean;
 };
@@ -104,6 +110,7 @@ export default function InteractiveTradeChart({
   trades,
   selectedTrade,
   overlays = [],
+  visualization,
   rangeMode = false,
   focusSelection = true,
 }: InteractiveTradeChartProps) {
@@ -112,8 +119,16 @@ export default function InteractiveTradeChart({
   const candleRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const volumeRef = useRef<ISeriesApi<"Histogram"> | null>(null);
   const markersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
-  const overlayRefs = useRef<ISeriesApi<"Line">[]>([]);
+  const overlayRefs = useRef<Array<ISeriesApi<"Line"> | ISeriesApi<"Histogram">>>([]);
   const riskRefs = useRef<IPriceLine[]>([]);
+  const [diagnosticsVisible, setDiagnosticsVisible] = useState(
+    hasDiagnostics(visualization),
+  );
+  const [hovered, setHovered] = useState<{
+    event: "entry" | "exit";
+    trade: BacktestTrade;
+  } | null>(null);
+  const showDiagnostics = diagnosticsVisible && hasDiagnostics(visualization);
   const selectedKey = `${selectedTrade.entry_time}:${selectedTrade.exit_time}`;
   const barRevision = useMemo(
     () => `${bars.length}:${bars[0]?.timestamp ?? ""}:${bars.at(-1)?.timestamp ?? ""}`,
@@ -124,7 +139,7 @@ export default function InteractiveTradeChart({
     if (!hostRef.current) return;
     const chart = createChart(hostRef.current, {
       width: hostRef.current.clientWidth,
-      height: 460,
+      height: showDiagnostics ? 610 : 460,
       layout: {
         background: { type: ColorType.Solid, color: "#07120f" },
         textColor: "#9fb0c7",
@@ -166,7 +181,12 @@ export default function InteractiveTradeChart({
     markersRef.current = createSeriesMarkers(candles, []);
     const observer = new ResizeObserver(entries => {
       const width = Math.floor(entries[0]?.contentRect.width ?? 0);
-      if (width > 0) chart.applyOptions({ width, height: window.innerWidth < 700 ? 400 : 460 });
+      if (width > 0) chart.applyOptions({
+        width,
+        height: window.innerWidth < 700
+          ? showDiagnostics ? 520 : 400
+          : showDiagnostics ? 610 : 460,
+      });
     });
     observer.observe(hostRef.current);
     return () => {
@@ -179,7 +199,7 @@ export default function InteractiveTradeChart({
       overlayRefs.current = [];
       riskRefs.current = [];
     };
-  }, [rangeMode]);
+  }, [rangeMode, showDiagnostics]);
 
   useEffect(() => {
     const chart = chartRef.current;
@@ -202,7 +222,62 @@ export default function InteractiveTradeChart({
     const chartTimes = new Map(
       bars.map(bar => [bar.timestamp.slice(0, 16), barTime(bar, rangeMode)]),
     );
-    overlays.filter(item => item.type === "linear_channel").forEach(overlay => {
+    const addGenericSeries = (item: StrategySeries, pane: number) => {
+      const groups = new Map<string, typeof item.points>();
+      const sourcePoints = item.type === "threshold"
+        && typeof item.metadata?.value === "number"
+        && bars.length
+        ? [
+            { time: bars[0].timestamp, value: item.metadata.value },
+            { time: bars[bars.length - 1].timestamp, value: item.metadata.value },
+          ]
+        : item.points;
+      sourcePoints
+        .filter(point => chartTimes.has(point.time.slice(0, 16)))
+        .forEach(point => {
+          const key = point.group ?? item.key;
+          groups.set(key, [...(groups.get(key) ?? []), point]);
+        });
+      groups.forEach(points => {
+        if (!points.length) return;
+        if (item.type === "histogram" || item.type === "state") {
+          const created = chart.addSeries(HistogramSeries, {
+            color: item.color ?? "#64748b",
+            priceLineVisible: false,
+            lastValueVisible: false,
+            ...(item.metadata?.scale_id ? { priceScaleId: String(item.metadata.scale_id) } : {}),
+          }, pane);
+          created.setData(points.map(point => ({
+            time: chartTimes.get(point.time.slice(0, 16)) ?? chartTime(point.time),
+            value: point.value,
+            color: item.color,
+          })));
+          overlayRefs.current.push(created);
+          return;
+        }
+        const created = chart.addSeries(LineSeries, {
+          color: item.color ?? "#94a3b8",
+          lineWidth: item.type === "threshold" ? 1 : 2,
+          lineStyle: item.type === "threshold" ? LineStyle.Dashed : LineStyle.Solid,
+          priceLineVisible: false,
+          lastValueVisible: false,
+          title: item.label,
+          ...(item.metadata?.scale_id ? { priceScaleId: String(item.metadata.scale_id) } : {}),
+        }, pane);
+        created.setData(points.map(point => ({
+          time: chartTimes.get(point.time.slice(0, 16)) ?? chartTime(point.time),
+          value: point.value,
+        })));
+        overlayRefs.current.push(created);
+      });
+    };
+    if (visualization) {
+      visualization.overlays.forEach(item => addGenericSeries(item, 0));
+      if (showDiagnostics) {
+        visualization.diagnostics.forEach(item => addGenericSeries(item, 2));
+        chart.panes()[2]?.setHeight(window.innerWidth < 700 ? 120 : 150);
+      }
+    } else overlays.filter(item => item.type === "linear_channel").forEach(overlay => {
       const groups = new Map<string, typeof overlay.points>();
       overlay.points
         .filter(point => chartTimes.has(point.time.slice(0, 16)))
@@ -227,7 +302,7 @@ export default function InteractiveTradeChart({
       });
     });
     chart.timeScale().fitContent();
-  }, [barRevision, bars, overlays, rangeMode]);
+  }, [barRevision, bars, overlays, rangeMode, showDiagnostics, visualization]);
 
   useEffect(() => {
     const candles = candleRef.current;
@@ -263,13 +338,49 @@ export default function InteractiveTradeChart({
     }
   }, [bars, focusSelection, rangeMode, trades, selectedKey, selectedTrade]);
 
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart || !bars.length) return;
+    const events = trades.flatMap(trade => [
+      { time: anchorTime(bars, trade.entry_time, rangeMode), event: "entry" as const, trade },
+      { time: anchorTime(bars, trade.exit_time, rangeMode), event: "exit" as const, trade },
+    ]);
+    const handler = (param: { time?: Time }) => {
+      if (param.time == null) { setHovered(null); return; }
+      const match = events.find(item => Number(item.time) === Number(param.time));
+      setHovered(match ? { event: match.event, trade: match.trade } : null);
+    };
+    chart.subscribeCrosshairMove(handler);
+    return () => chart.unsubscribeCrosshairMove(handler);
+  }, [bars, rangeMode, trades]);
+
+  const hoverContext = hovered?.event === "entry"
+    ? hovered.trade.entry_context
+    : hovered?.trade.exit_context;
+
   return <div className="interactive-trade-chart">
+    {visualization && <StrategyParameterSummary visualizations={[visualization]} />}
+    {visualization && <StrategySeriesLegend visualizations={[visualization]} />}
     <div className="interactive-chart-toolbar">
       <span>滾輪／拖曳／雙指可縮放</span>
-      <button type="button" onClick={() => chartRef.current?.timeScale().fitContent()}>
-        顯示全時段
-      </button>
+      <div>
+        {hasDiagnostics(visualization) && <button type="button" onClick={() => setDiagnosticsVisible(value => !value)}>
+          {showDiagnostics ? "收合策略診斷" : "展開策略診斷"}
+        </button>}
+        <button type="button" onClick={() => chartRef.current?.timeScale().fitContent()}>
+          顯示全時段
+        </button>
+      </div>
     </div>
-    <div ref={hostRef} className="interactive-chart-host" aria-label="互動 K 線與交易進出場位置" />
+    <div className="interactive-chart-stage">
+      <div ref={hostRef} className="interactive-chart-host" aria-label="互動 K 線、策略診斷與交易進出場位置" />
+      {hovered && <aside className="strategy-trigger-tooltip">
+        <b>{hovered.event === "entry" ? "ENTRY" : "EXIT"} · {hovered.trade.direction.toUpperCase()}</b>
+        <span>{hovered.event === "entry" ? hovered.trade.entry_reason ?? "signal_confirmed" : hovered.trade.exit_reason ?? "strategy_exit"}</span>
+        <span>價格 {formatPrice(hovered.event === "entry" ? hovered.trade.entry_price : hovered.trade.exit_price)}</span>
+        <span>停損 {formatPrice(hovered.trade.stop_loss_price)} · 停利 {formatPrice(hovered.trade.take_profit_price)}</span>
+        {Object.entries(hoverContext ?? {}).slice(0, 5).map(([key, value]) => <span key={key}>{key} = {Number(value).toFixed(4)}</span>)}
+      </aside>}
+    </div>
   </div>;
 }

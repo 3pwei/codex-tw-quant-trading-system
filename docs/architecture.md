@@ -64,6 +64,13 @@ Dashboard 的頁面元件只負責畫面組合與使用者操作。共用 HTTP b
 時間格式集中於 `dashboard/app/lib/formatters.ts`。Live 的行情 WebSocket、K 線圖與
 Paper overlay 分別由專用 hook 管理；Paper 帳戶輪詢及 Replay 圖表生命週期也不得
 重新放回頁面元件。hook 可以依賴 API client 與純型別，不能直接依賴其他頁面的 UI。
+
+策略分析結果可附加 `visualization.schema_version=1`。此契約以 `overlays`、
+`diagnostics`、`panels` 與 `parameters` 描述圖層，所有 series 具有穩定的 key、label、
+panel、type、timestamp points 與可選 metadata。指標在策略分析時一次計算；Backtest
+直接保存，History chart endpoint 只依可見時間範圍裁切，Replay 則依游標顯示既有
+points，不在 React render 階段重算。舊 `overlays` 欄位保留給既有 Dow Channel 結果，
+沒有 `visualization` 的歷史紀錄仍顯示 K 棒、成交量與進出場點。
 Paper／Replay 的共用資料契約分別位於功能目錄的 `types.ts`；page component 與 hook
 只能共同依賴型別檔，hook 不得反向 import page component。WebSocket 重連與 stale
 watchdog、Paper 帳戶載入、Replay 游標與圖表事件可見性必須通過 Dashboard 行為測試。
