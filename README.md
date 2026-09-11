@@ -217,7 +217,7 @@ API_MAX_REQUEST_BODY_BYTES=262144
 | 身分 | `GET /api/me`、`POST /api/access-requests` |
 | 行情 | `GET /api/health`、`GET /api/kbars`、`WS /ws/market/{symbol}` |
 | 策略 | `/api/strategies`、`/api/composite-strategies`、`/api/strategy-signals` |
-| 回測 | `/api/backtest`、`/api/backtest-runs`；集合 `DELETE` 支援勾選或刪除帳號全部紀錄 |
+| 回測 | `/api/backtest`、`/api/backtest-runs`；執行紀錄可逐筆勾選，或一次全選帳號全部紀錄（包含未載入頁面）後批次刪除 |
 | 回放 | `/api/replay/prepare`、`/api/replay/sessions/{session_id}` |
 | Paper | `/api/paper/account`、`/api/paper/orders`、`/api/paper/fills`、`/api/paper/kill-switch` |
 | 管理 | `/api/admin/users`、`/api/admin/access-requests`、`/api/admin/health`、`/api/admin/audit` |
