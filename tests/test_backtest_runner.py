@@ -95,6 +95,12 @@ class StrategyBacktestTests(unittest.TestCase):
         self.assertEqual(result["metadata"]["interval"], "1 分鐘")
         self.assertEqual(len(result["trades"]), 1)
         trade = result["trades"][0]
+        self.assertEqual(
+            trade["trigger_time"], bars[15].time.isoformat(timespec="milliseconds")
+        )
+        self.assertEqual(
+            trade["entry_time"], bars[16].time.isoformat(timespec="milliseconds")
+        )
         self.assertEqual(trade["exit_reason"], "session_end")
         self.assertEqual(trade["stop_loss_price"], 102.382)
         self.assertEqual(trade["take_profit_price"], 104.236)

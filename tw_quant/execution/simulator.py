@@ -28,6 +28,7 @@ def simulate_signals(
     previous_entry_intent = 0
     pending_entry_reason = "signal_confirmed"
     pending_entry_context: dict[str, object] = {}
+    pending_entry_trigger_time: str | None = None
     pending_exit_context: dict[str, object] = {}
     levels = RiskLevels(0.0, 0.0)
 
@@ -47,6 +48,7 @@ def simulate_signals(
         reason: str,
         context: Mapping[str, object] | None = None,
         trigger_reason: str | None = None,
+        trigger_time: str | None = None,
     ) -> None:
         payload: dict[str, object] = {
                 "strategy": strategy,
@@ -65,6 +67,8 @@ def simulate_signals(
             payload["context"] = dict(context)
         if trigger_reason:
             payload["trigger_reason"] = trigger_reason
+        if trigger_time:
+            payload["trigger_time"] = trigger_time
         signals.append(payload)
 
     for index, row in bars.iterrows():
@@ -86,9 +90,11 @@ def simulate_signals(
             emit(
                 "entry", row, entry_price, "signal_confirmed",
                 pending_entry_context, pending_entry_reason,
+                pending_entry_trigger_time,
             )
             pending_entry = 0
             pending_entry_context = {}
+            pending_entry_trigger_time = None
 
         if position:
             risk_exit = triggered_exit(
@@ -118,6 +124,9 @@ def simulate_signals(
                 int(index), "signal_confirmed"
             )
             pending_entry_context = row_context(index)
+            pending_entry_trigger_time = row["timestamp"].isoformat(
+                timespec="milliseconds"
+            )
 
     if force_final and position:
         row = bars.iloc[-1]

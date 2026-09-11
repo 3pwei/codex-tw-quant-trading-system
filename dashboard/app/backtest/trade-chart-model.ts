@@ -13,6 +13,7 @@ export type BacktestBar = {
 export type BacktestTrade = {
   trade_index?: number;
   direction: "long" | "short";
+  trigger_time?: string;
   entry_time: string;
   exit_time: string;
   entry_price: number;

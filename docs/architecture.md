@@ -71,6 +71,12 @@ panel、type、timestamp points 與可選 metadata。指標在策略分析時一
 直接保存，History chart endpoint 只依可見時間範圍裁切，Replay 則依游標顯示既有
 points，不在 React render 階段重算。舊 `overlays` 欄位保留給既有 Dow Channel 結果，
 沒有 `visualization` 的歷史紀錄仍顯示 K 棒、成交量與進出場點。
+`GET /api/backtest-runs/{run_id}` 不回傳完整 visualization，避免 History detail 與 chart
+重複下載 diagnostics；不可變的完整快照仍保存在 `result_json`，只由 chart endpoint 依
+交易可視範圍取用。Dashboard 的通用 series preparation 會依
+`point.group ?? series.key` 拆分獨立圖層，並由 Backtest 與 Replay 共用 threshold 端點
+規則。next-open entry 同時保存訊號確認的 `trigger_time` 與實際成交的 `entry_time`，
+其中 diagnostic context 固定屬於 `trigger_time`。
 Paper／Replay 的共用資料契約分別位於功能目錄的 `types.ts`；page component 與 hook
 只能共同依賴型別檔，hook 不得反向 import page component。WebSocket 重連與 stale
 watchdog、Paper 帳戶載入、Replay 游標與圖表事件可見性必須通過 Dashboard 行為測試。

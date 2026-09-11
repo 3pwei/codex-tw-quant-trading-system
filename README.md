@@ -219,7 +219,7 @@ API_MAX_REQUEST_BODY_BYTES=262144
 | 身分 | `GET /api/me`、`POST /api/access-requests` |
 | 行情 | `GET /api/health`、`GET /api/kbars`、`WS /ws/market/{symbol}` |
 | 策略 | `/api/strategies`、`/api/composite-strategies`、`/api/strategy-signals` |
-| 回測 | `/api/backtest`、`/api/backtest-runs`；新結果包含向後相容的 `visualization.schema_version=1` 診斷資料；執行紀錄可逐筆勾選或批次刪除 |
+| 回測 | `/api/backtest`、`/api/backtest-runs`；新結果包含向後相容的 `visualization.schema_version=1` 診斷資料，History detail 不重複傳送完整 points，chart endpoint 才按範圍載入；執行紀錄可逐筆勾選或批次刪除 |
 | 回放 | `/api/replay/prepare`、`/api/replay/sessions/{session_id}` |
 | Paper | `/api/paper/account`、`/api/paper/orders`、`/api/paper/fills`、`/api/paper/kill-switch` |
 | 管理 | `/api/admin/users`、`/api/admin/access-requests`、`/api/admin/health`、`/api/admin/audit` |
