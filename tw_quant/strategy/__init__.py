@@ -6,7 +6,7 @@ from .definitions import (
     OpeningRangeBreakout,
     OpeningRangeBreakoutConfig,
 )
-from .engine import analyze_strategies
+from .engine import analyze_strategies, evaluate_strategy_intents
 from .parameters import (
     SUPPORTED_STRATEGIES,
     default_strategy_parameters,
@@ -15,6 +15,7 @@ from .parameters import (
 )
 from .composite import (
     default_composite_definition,
+    evaluate_composite_intents,
     generate_composite_signals,
     new_composite_id,
     validate_composite_dependencies,
@@ -28,10 +29,12 @@ __all__ = [
     "OpeningRangeBreakoutConfig",
     "SUPPORTED_STRATEGIES",
     "analyze_strategies",
+    "evaluate_strategy_intents",
     "default_strategy_parameters",
     "strategy_catalog",
     "validate_strategy_parameters",
     "default_composite_definition",
+    "evaluate_composite_intents",
     "generate_composite_signals",
     "new_composite_id",
     "validate_composite_dependencies",

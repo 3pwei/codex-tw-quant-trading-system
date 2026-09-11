@@ -10,12 +10,15 @@ Replay 與 Paper Trading；真實券商下單尚未啟用。架構調整採漸�
 |---|---|---|---|
 | 歷史回測 | `tw_quant.backtest.runner` | 先產生策略訊號，再重建事件與模擬成交 | 不會連線 |
 | 即時策略 | `GET /api/strategy-signals` | 重新分析目前 K 棒並回傳訊號 | 不會送單 |
+| Strategy Runtime | `/api/trading-runtimes` | 只在 closed K 保存 owner-scoped Observe Decision | 不會送單 |
 | Replay | `/api/replay/sessions/*` | 隔離帳戶中的手動模擬市價單 | 不會連線 |
 | Paper | `POST /api/paper/orders` | 帳戶風控後，以伺服器行情模擬成交 | 不會連線 |
 | Shioaji Simulation | `ShioajiSimulationExecutionClient` | SDK 整合測試，尚未接 API／Worker | 模擬環境限定 |
 | Live | `OrderExecutor` port | `DisabledBroker` fail closed | 停用 |
 
-「即時策略訊號」和「Paper 委託」目前沒有自動串接。任何自動交易功能都必須透過
+Strategy Runtime 目前只提供 Observe Mode：它保存 immutable strategy snapshot、
+closed-bar cursor 與 deterministic Trading Decision，不建立 Order Intent、Fill 或
+Position。「即時策略訊號」和「Paper 委託」目前沒有自動串接。任何自動交易功能都必須透過
 持久化的 Strategy Runner、帳戶風控與 Order Manager，不得由 API 查詢或前端直接
 呼叫券商 adapter。
 
@@ -55,7 +58,8 @@ Paper、策略管理、Replay 與回測流程集中於 `live/application/`；app
 
 SQLite 仍可由單一 `SQLiteBarRepository` adapter 管理同一資料庫，但應用層不得依賴
 包含全部 persistence 能力的介面。`MarketRepository` 只提供 K 棒與 Tick 去重；
-`StrategyRepository` 只提供策略參數及組合策略；`BacktestRepository` 只提供回測結果。
+`StrategyRepository` 只提供策略參數及組合策略；`BacktestRepository` 只提供回測結果；
+`TradingRuntimeRepository` 只提供 Runtime、Decision 與原子 cursor 更新。
 只有 `create_app()` composition root 可使用整合三者的 `ApplicationRepository`。
 `BarRepository` 暫時保留為相容 alias，新程式不得再以它宣告 application dependency。
 
@@ -83,7 +87,8 @@ watchdog、Paper 帳戶載入、Replay 游標與圖表事件可見性必須通�
 
 新增 Live Execution 時沿用以下責任邊界：
 
-1. Strategy Runner 只消費已收盤 K 棒並產生具冪等 ID 的 `SignalEvent`。
+1. Strategy Runner 只消費已收盤 K 棒；Observe Mode 僅保存具冪等 ID 的
+   `TradingDecision`，未來 execution mode 才可經明確風控產生 `SignalEvent`。
 2. `LiveOrderManager` 先將核准委託與 outbox 原子寫入，再交給 `BrokerPort`。
 3. Risk Gate 只能核准、縮減或拒絕，不得自行建立成交。
 4. Broker Adapter 只轉換請求與回報，不包含策略規則。

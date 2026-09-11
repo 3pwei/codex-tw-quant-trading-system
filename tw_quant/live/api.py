@@ -23,6 +23,7 @@ from .application import (
     PaperApplicationService,
     ResearchApplicationService,
     StrategyApplicationService,
+    TradingRuntimeApplicationService,
 )
 from .api_models import (
     AdminUserCreate,
@@ -36,6 +37,7 @@ from .api_models import (
     ReplayCursorUpdate,
     ReplayPrepareRequest,
     StrategyParametersUpdate,
+    TradingRuntimeCreate,
 )
 from .api_routes import (
     build_admin_router,
@@ -44,6 +46,7 @@ from .api_routes import (
     build_research_router,
     build_strategy_router,
     build_system_router,
+    build_trading_runtime_router,
 )
 from .api_routes.admin import system_status
 from .api_security import (
@@ -63,6 +66,7 @@ __all__ = [
     "CompositeStrategyPurge", "CompositeStrategyUpdate", "PaperControlRequest",
     "PaperOrderCreate", "ReplayCursorUpdate", "ReplayPrepareRequest",
     "StrategyParametersUpdate", "_rate_limit_scope", "create_app", "system_status",
+    "TradingRuntimeCreate",
 ]
 
 
@@ -148,6 +152,10 @@ def create_app(
         repo, repo, repo, replay_trading, config.symbol
     )
     strategy_app = StrategyApplicationService(repo, repo, config.symbol)
+    runtime_app = TradingRuntimeApplicationService(
+        repo, repo, repo, config.symbol, config.history_limit
+    )
+    service.add_bar_listener(runtime_app.on_bar)
     execution_worker = DisabledExecutionWorker()
 
     @asynccontextmanager
@@ -160,6 +168,7 @@ def create_app(
             await service.stop()
             await execution_worker.stop()
             service.remove_bar_listener(paper.on_bar)
+            service.remove_bar_listener(runtime_app.on_bar)
             replay_trading.close()
             paper.close()
             repo.close()
@@ -186,6 +195,7 @@ def create_app(
         paper_app=paper_app,
         research_app=research_app,
         strategy_app=strategy_app,
+        runtime_app=runtime_app,
         execution_worker=execution_worker,
     )
     app.state.api_dependencies = deps
@@ -197,6 +207,7 @@ def create_app(
     app.state.replay_trading = replay_trading
     app.state.host_monitor = deps.host_monitor
     app.state.rate_limiter = limiter
+    app.state.trading_runtime = runtime_app
 
     app.add_middleware(
         CORSMiddleware,
@@ -213,6 +224,7 @@ def create_app(
         build_market_router(deps),
         build_strategy_router(deps),
         build_research_router(deps),
+        build_trading_runtime_router(deps),
     ):
         app.include_router(router)
 

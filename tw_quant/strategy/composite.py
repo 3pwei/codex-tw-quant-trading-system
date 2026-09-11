@@ -315,6 +315,7 @@ def generate_composite_signals(
         tuple[str, int],
         tuple[list[dict[str, object]], list[dict[str, object]]],
     ] | None = None,
+    _intent_sink: list[dict[str, object]] | None = None,
 ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
     """Run one composite definition on canonical closed 1-minute bars.
 
@@ -347,12 +348,20 @@ def generate_composite_signals(
     position = 0
     entry_at: datetime | None = None
     levels = RiskLevels(0.0, 0.0)
-    pending_entry: tuple[str, list[dict[str, object]]] | None = None
+    pending_entry: tuple[
+        str, list[dict[str, object]], datetime
+    ] | None = None
     pending_exit: str | None = None
     last_signature: tuple[object, ...] | None = None
 
-    def emit(event: str, bar: KBar, price: float, reason: str) -> None:
-        signals.append({
+    def emit(
+        event: str,
+        bar: KBar,
+        price: float,
+        reason: str,
+        trigger_time: datetime | None = None,
+    ) -> None:
+        payload: dict[str, object] = {
             "strategy": "composite",
             "event": event,
             "direction": "long" if position == 1 else "short",
@@ -364,7 +373,12 @@ def generate_composite_signals(
             "contract": bar.contract,
             "session": bar.session,
             "trading_date": bar.trading_date.isoformat(),
-        })
+        }
+        if trigger_time is not None:
+            payload["trigger_time"] = trigger_time.isoformat(
+                timespec="milliseconds"
+            )
+        signals.append(payload)
 
     for index, bar in enumerate(bars):
         if position and pending_exit:
@@ -373,7 +387,7 @@ def generate_composite_signals(
             entry_at = None
             pending_exit = None
         if position == 0 and pending_entry:
-            direction, matched = pending_entry
+            direction, matched, trigger_at = pending_entry
             if any(
                 item["contract"] != bar.contract or item["session"] != bar.session
                 for item in matched
@@ -383,7 +397,9 @@ def generate_composite_signals(
             position = 1 if direction == "long" else -1
             entry_at = bar.time
             levels = calculate_levels(bar.open, position, risk)
-            emit("entry", bar, bar.open, "composite_confirmed")
+            emit(
+                "entry", bar, bar.open, "composite_confirmed", trigger_at
+            )
             trace.append({
                 "time": bar.time.isoformat(timespec="milliseconds"),
                 "event": "entry",
@@ -423,6 +439,27 @@ def generate_composite_signals(
                 if signature != last_signature:
                     pending_exit = "composite_exit"
                     last_signature = signature
+                    if _intent_sink is not None:
+                        _intent_sink.append({
+                            "strategy": "composite",
+                            "action": "exit",
+                            "direction": direction,
+                            "trigger_time": bar.time.isoformat(
+                                timespec="milliseconds"
+                            ),
+                            "source_bar_time": bar.time.isoformat(
+                                timespec="milliseconds"
+                            ),
+                            "reason": "composite_exit",
+                            "context": {
+                                "matched_rules": [
+                                    item["rule_id"] for item in exit_events
+                                ]
+                            },
+                            "contract": bar.contract,
+                            "session": bar.session,
+                            "trading_date": bar.trading_date.isoformat(),
+                        })
         elif pending_entry is None:
             for direction in allowed:
                 setup_ok, setup_events = _group_match(definition["setup"], latest, direction, bar.time)  # type: ignore[arg-type]
@@ -430,8 +467,33 @@ def generate_composite_signals(
                 matched_events = setup_events + entry_events
                 signature = tuple((item["rule_id"], item["time"]) for item in matched_events)
                 if setup_ok and entry_ok and entry_events and signature != last_signature:
-                    pending_entry = (direction, matched_events)
+                    pending_entry = (direction, matched_events, bar.time)
                     last_signature = signature
+                    if _intent_sink is not None:
+                        _intent_sink.append({
+                            "strategy": "composite",
+                            "action": "entry",
+                            "direction": direction,
+                            "trigger_time": bar.time.isoformat(
+                                timespec="milliseconds"
+                            ),
+                            "source_bar_time": bar.time.isoformat(
+                                timespec="milliseconds"
+                            ),
+                            "reason": "composite_confirmed",
+                            "context": {
+                                "matched_rules": [
+                                    item["rule_id"] for item in matched_events
+                                ],
+                                "matched_rule_times": [
+                                    str(item["time"])
+                                    for item in matched_events
+                                ],
+                            },
+                            "contract": bar.contract,
+                            "session": bar.session,
+                            "trading_date": bar.trading_date.isoformat(),
+                        })
                     break
 
         if position and index + 1 < len(bars):
@@ -445,3 +507,14 @@ def generate_composite_signals(
     if position:
         emit("exit", bars[-1], bars[-1].close, "range_end")
     return signals, trace
+
+
+def evaluate_composite_intents(
+    source_bars: list[KBar], definition: Mapping[str, object]
+) -> list[dict[str, object]]:
+    """Return composite decisions at confirmation time without execution."""
+    intents: list[dict[str, object]] = []
+    generate_composite_signals(
+        source_bars, definition, _intent_sink=intents
+    )
+    return intents
