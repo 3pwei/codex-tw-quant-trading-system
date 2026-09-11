@@ -46,7 +46,6 @@ _STRATEGY_EXIT_REASONS = {
 
 def _signal_simulation_policy(strategy: str) -> SignalSimulationPolicy:
     return SignalSimulationPolicy(
-        max_entries_per_group=1,
         strategy_exit_reason=_STRATEGY_EXIT_REASONS.get(strategy, "strategy_exit"),
     )
 

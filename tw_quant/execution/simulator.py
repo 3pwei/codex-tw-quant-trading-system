@@ -21,7 +21,7 @@ def simulate_signals(
     position = 0
     pending_entry = 0
     pending_exit = False
-    filled_entries = 0
+    previous_entry_intent = 0
     levels = RiskLevels(0.0, 0.0)
 
     def emit(event: str, row: pd.Series, price: float, reason: str) -> None:
@@ -57,7 +57,6 @@ def simulate_signals(
             entry_price = float(row["open"])
             levels = calculate_levels(entry_price, position, risk)
             emit("entry", row, entry_price, "signal_confirmed")
-            filled_entries += 1
             pending_entry = 0
 
         if position:
@@ -77,14 +76,11 @@ def simulate_signals(
             side = "long" if position == 1 else "short"
             pending_exit = bool(exits.loc[index, side])
 
-        if (
-            position == 0
-            and pending_entry == 0
-            and filled_entries < policy.max_entries_per_group
-        ):
-            candidate = int(entries.loc[index])
-            if candidate in (-1, 1):
-                pending_entry = candidate
+        candidate = int(entries.loc[index])
+        is_new_intent = candidate in (-1, 1) and candidate != previous_entry_intent
+        previous_entry_intent = candidate
+        if position == 0 and pending_entry == 0 and is_new_intent:
+            pending_entry = candidate
 
     if force_final and position:
         row = bars.iloc[-1]

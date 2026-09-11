@@ -128,6 +128,29 @@ class StrategyBacktestTests(unittest.TestCase):
         self.assertEqual(result["trades"][0]["stop_loss_price"], 101.97)
         self.assertEqual(result["trades"][0]["take_profit_price"], 106.09)
 
+    def test_backtest_allows_more_than_two_trades_in_one_session(self):
+        values = [
+            100, 101, 102, 99, 98, 101, 103, 99,
+            97, 102, 104, 98, 96, 103, 105,
+        ]
+        result = run_strategy_backtest(
+            [make_bar(index, close) for index, close in enumerate(values)],
+            "ma_crossover",
+            date(2026, 8, 25),
+            date(2026, 8, 25),
+            parameters={
+                "short_window": 2,
+                "long_window": 3,
+                "stop_loss_pct": 0.2,
+                "take_profit_pct": 0.5,
+            },
+        )
+
+        self.assertEqual(len(result["trades"]), 3)
+        self.assertTrue(
+            all(trade["trading_date"] == "2026-08-25" for trade in result["trades"])
+        )
+
     def test_backtest_reports_selected_timeframe(self):
         bars = [make_bar(index, 100.0) for index in range(20)]
         result = run_strategy_backtest(

@@ -27,8 +27,10 @@ Closed K → strategy intent → next-open / risk exit price
          → simulated full FillEvent → PositionEvent
 ```
 
-策略模擬政策目前預設每個分析群組最多一個進場。日內群組是合約、時段與交易日；
-日 K／週 K 群組目前只有合約。這是明確的研究政策，不是 Paper 帳戶限制。
+策略模擬不限制每個分析群組或交易日的進場次數；平倉後出現新的有效 entry intent
+即可再次進場。連續維持同方向的條件只算一個 intent，必須先回到 neutral，才會為
+同方向重新武裝，避免停損後每根 K 棒反覆進場。Paper／Live 的帳戶每日額度仍由
+`AccountRiskGate` 獨立控制，不套用至歷史回測。
 
 ### Paper 與 Replay
 
