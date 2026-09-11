@@ -1,0 +1,73 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import {
+  backtestChartTime,
+  barsForTrade,
+  scopeKeyForTrade,
+  tradeFocusRange,
+  tradesForScope,
+  type BacktestBar,
+  type BacktestTrade,
+} from "../app/backtest/trade-chart-model.ts";
+
+const bars: BacktestBar[] = Array.from({ length: 60 }, (_, index) => ({
+  timestamp: new Date(Date.UTC(2026, 8, 9, 7, index)).toISOString(),
+  open: 100 + index,
+  high: 101 + index,
+  low: 99 + index,
+  close: 100 + index,
+  volume: 1,
+  contract: "TMFU6",
+  session: "night",
+  trading_date: "2026-09-10",
+}));
+
+const trade = (entry: number, session = "night"): BacktestTrade => ({
+  direction: "long",
+  entry_time: bars[entry].timestamp,
+  exit_time: bars[entry + 2].timestamp,
+  entry_price: 100,
+  exit_price: 102,
+  net_pnl: 2,
+  contract: "TMFU6",
+  session,
+  trading_date: "2026-09-10",
+});
+
+test("intraday charts share bars and trades only inside one session", () => {
+  const selected = trade(20);
+  const dayTrade = trade(30, "day");
+  assert.equal(barsForTrade(bars, selected, "5m").length, 60);
+  assert.deepEqual(tradesForScope([selected, trade(40), dayTrade], selected, "5m"), [selected, trade(40)]);
+  assert.match(scopeKeyForTrade(selected, "5m"), /2026-09-10:night$/);
+});
+
+test("daily charts share a contract range without session grouping", () => {
+  const first = trade(10, "night");
+  const second = trade(30, "day");
+  assert.deepEqual(tradesForScope([first, second], first, "1d"), [first, second]);
+  assert.equal(barsForTrade(bars, first, "1d").length, 60);
+});
+
+test("daily chart time uses trading date instead of the previous night timestamp", () => {
+  const nightBar = {
+    ...bars[0],
+    timestamp: "2026-09-09T15:00:00+08:00",
+    trading_date: "2026-09-10",
+  };
+  assert.equal(
+    backtestChartTime(nightBar, true),
+    Date.parse("2026-09-10T00:00:00Z") / 1000,
+  );
+  assert.equal(
+    backtestChartTime(nightBar, false),
+    Date.parse(nightBar.timestamp) / 1000,
+  );
+});
+
+test("trade focus keeps context and a useful minimum width", () => {
+  assert.deepEqual(tradeFocusRange(bars, trade(20)), { from: 3, to: 38 });
+  assert.deepEqual(tradeFocusRange(bars, trade(0)), { from: 0, to: 35 });
+  assert.equal(tradeFocusRange([], trade(0)), null);
+});

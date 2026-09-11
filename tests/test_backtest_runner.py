@@ -150,6 +150,7 @@ class StrategyBacktestTests(unittest.TestCase):
         self.assertTrue(
             all(trade["trading_date"] == "2026-08-25" for trade in result["trades"])
         )
+        self.assertTrue(all(trade["session"] == "night" for trade in result["trades"]))
 
     def test_backtest_reports_selected_timeframe(self):
         bars = [make_bar(index, 100.0) for index in range(20)]
