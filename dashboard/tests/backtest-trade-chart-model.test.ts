@@ -7,6 +7,7 @@ import {
   scopeKeyForTrade,
   tradeFocusRange,
   tradesForScope,
+  hasDiagnostics,
   type BacktestBar,
   type BacktestTrade,
 } from "../app/backtest/trade-chart-model.ts";
@@ -70,4 +71,30 @@ test("trade focus keeps context and a useful minimum width", () => {
   assert.deepEqual(tradeFocusRange(bars, trade(20)), { from: 3, to: 38 });
   assert.deepEqual(tradeFocusRange(bars, trade(0)), { from: 0, to: 35 });
   assert.equal(tradeFocusRange([], trade(0)), null);
+});
+
+test("legacy chart payloads without diagnostics remain safe", () => {
+  assert.equal(hasDiagnostics(undefined), false);
+  assert.equal(hasDiagnostics({
+    schema_version: 1,
+    strategy: { key: "legacy", name: "Legacy" },
+    parameters: [],
+    panels: [],
+    overlays: [],
+    diagnostics: [],
+  }), false);
+});
+
+test("generic diagnostic series are detected without strategy-specific branching", () => {
+  assert.equal(hasDiagnostics({
+    schema_version: 1,
+    strategy: { key: "rsi_mean_reversion", name: "RSI" },
+    parameters: [],
+    panels: [{ key: "strategy", label: "策略診斷", order: 2 }],
+    overlays: [],
+    diagnostics: [{
+      key: "rsi", label: "RSI", panel: "strategy", type: "line",
+      points: [{ time: bars[0].timestamp, value: 28.4 }],
+    }],
+  }), true);
 });

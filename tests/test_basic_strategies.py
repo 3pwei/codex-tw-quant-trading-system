@@ -63,6 +63,68 @@ def bars(
 
 
 class BasicStrategyTests(unittest.TestCase):
+    def test_each_strategy_exposes_versioned_generic_visualization(self):
+        source = bars(
+            [100 + ((index % 12) - 6) * 1.5 for index in range(96)],
+            volumes=[100 + (index % 7) * 40 for index in range(96)],
+            start=datetime(2026, 9, 1, 15, 0, tzinfo=TAIPEI),
+        )
+        expected = {
+            "orb": ({"opening_range_upper"}, {"volume_ratio"}),
+            "bnf": ({"bnf_mean"}, {"z_score"}),
+            "ma_crossover": ({"short_ma", "long_ma"}, {"ma_spread"}),
+            "ema_trend": ({"fast_ema", "slow_ema"}, {"ema_spread"}),
+            "donchian_breakout": ({"donchian_upper", "donchian_midpoint", "donchian_lower"}, {"channel_width"}),
+            "rsi_mean_reversion": (set(), {"rsi", "rsi_oversold", "rsi_exit", "rsi_overbought"}),
+            "bollinger_mean_reversion": ({"bollinger_upper", "bollinger_mean", "bollinger_lower"}, {"percent_b"}),
+            "macd_momentum": (set(), {"macd", "macd_signal", "macd_histogram"}),
+            "vwap_reversion": ({"vwap", "vwap_entry_upper", "vwap_entry_lower"}, {"vwap_deviation_pct"}),
+            "atr_breakout": (set(), {"atr", "required_move", "close_move"}),
+            "volume_breakout": ({"breakout_upper", "breakout_lower"}, {"volume", "average_volume", "volume_ratio"}),
+        }
+        parameters = {
+            "orb": {"opening_range_minutes": 5, "volume_window": 2},
+            "bnf": {"mean_window": 3, "std_window": 3, "rsi_period": 2},
+            "ma_crossover": {"short_window": 2, "long_window": 4},
+            "ema_trend": {"fast_period": 2, "slow_period": 4},
+            "donchian_breakout": {"lookback_period": 3},
+            "rsi_mean_reversion": {"rsi_period": 2},
+            "bollinger_mean_reversion": {"window": 3},
+            "macd_momentum": {"fast_period": 2, "slow_period": 4, "signal_period": 2},
+            "atr_breakout": {"atr_period": 2},
+            "volume_breakout": {"price_lookback": 3, "volume_window": 3},
+        }
+        for key, (overlay_keys, diagnostic_keys) in expected.items():
+            with self.subTest(strategy=key):
+                result = analyze_strategies(
+                    source, [key], parameters={key: parameters.get(key, {})}
+                )["strategies"][0]
+                value = result["visualization"]
+                self.assertEqual(value["schema_version"], 1)
+                self.assertEqual(value["strategy"]["key"], key)
+                self.assertTrue(value["parameters"])
+                self.assertTrue(overlay_keys <= {item["key"] for item in value["overlays"]})
+                self.assertTrue(diagnostic_keys <= {item["key"] for item in value["diagnostics"]})
+                for item in [*value["overlays"], *value["diagnostics"]]:
+                    self.assertIn(item["type"], {"line", "histogram", "threshold", "state"})
+                    self.assertTrue(item["points"])
+
+    def test_dow_visualization_contains_channels_and_atr_distances(self):
+        for key in ("dow_channel_pullback", "dow_channel_reversal", "linear_channel_breakout"):
+            with self.subTest(strategy=key):
+                result = analyze_strategies(
+                    bars(UP_CHANNEL_VALUES), [key], parameters={key: DOW_PARAMETERS}
+                )["strategies"][0]
+                value = result["visualization"]
+                self.assertEqual(
+                    {item["key"] for item in value["overlays"]},
+                    {"dow_upper", "dow_center", "dow_lower"},
+                )
+                self.assertTrue(
+                    {"distance_to_upper_atr", "distance_to_lower_atr"}
+                    <= {item["key"] for item in value["diagnostics"]}
+                )
+
     def test_catalog_contains_requested_strategy_families(self):
         catalog = {item["key"]: item for item in strategy_catalog()}
         expected = {

@@ -504,6 +504,29 @@ class ResearchApplicationService:
                 overlays.append({**overlay, "points": selected})
         return overlays
 
+    @classmethod
+    def _chart_visualization(
+        cls, raw: object, visible_times: set[str]
+    ) -> dict[str, object] | None:
+        """Scope precomputed diagnostic points without recalculating indicators."""
+        if not isinstance(raw, dict):
+            return None
+        result = dict(raw)
+        for bucket in ("overlays", "diagnostics"):
+            scoped = cls._chart_overlays(raw.get(bucket), visible_times)
+            raw_series = raw.get(bucket)
+            if isinstance(raw_series, list):
+                retained = {str(item.get("key")) for item in scoped}
+                for item in raw_series:
+                    if (
+                        isinstance(item, dict)
+                        and item.get("type") == "threshold"
+                        and str(item.get("key")) not in retained
+                    ):
+                        scoped.append({**item, "points": []})
+            result[bucket] = scoped
+        return result
+
     def backtest_run_chart(
         self, run_id: str, trade_index: int, owner_id: str
     ) -> dict[str, object]:
@@ -593,7 +616,7 @@ class ResearchApplicationService:
         visible_times = {
             bar.time.isoformat(timespec="milliseconds")[:16] for bar in bars
         }
-        return {
+        payload = {
             "scope": scope,
             "bars": [self._chart_bar(bar) for bar in bars],
             "trades": [
@@ -604,6 +627,12 @@ class ResearchApplicationService:
                 result.get("overlays", []), visible_times
             ),
         }
+        chart_visualization = self._chart_visualization(
+            result.get("visualization"), visible_times
+        )
+        if chart_visualization is not None:
+            payload["visualization"] = chart_visualization
+        return payload
 
     def delete_backtest_run(
         self, run_id: str, owner_id: str

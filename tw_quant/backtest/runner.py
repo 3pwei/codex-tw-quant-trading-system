@@ -118,6 +118,7 @@ def run_strategy_backtest(
             "event_counts": event_run.event_counts,
         },
         "overlays": analysis.get("overlays", []),
+        "visualization": analysis.get("visualization"),
         "bars": [
             {
                 "timestamp": bar.time.isoformat(timespec="milliseconds"),
