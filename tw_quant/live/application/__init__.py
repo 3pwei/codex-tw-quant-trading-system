@@ -8,6 +8,7 @@ from .errors import (
     ServiceUnavailableError,
 )
 from .paper import PaperApplicationService, PaperOrderInput
+from .paper_auto import PaperAutoEntryController, auto_entry_idempotency_key
 from .research import (
     BacktestInput,
     ReplayOrderInput,
@@ -26,6 +27,7 @@ __all__ = [
     "BadRequestError",
     "InvalidInputError",
     "PaperApplicationService",
+    "PaperAutoEntryController",
     "PaperOrderInput",
     "ReplayPrepareInput",
     "ReplayOrderInput",
@@ -37,4 +39,5 @@ __all__ = [
     "StrategyApplicationService",
     "TradingRuntimeApplicationService",
     "decision_fingerprint",
+    "auto_entry_idempotency_key",
 ]

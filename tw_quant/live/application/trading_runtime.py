@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from datetime import timedelta
-from typing import Mapping
+from typing import Callable, Mapping
 
 from ...market import (
     KBar,
@@ -47,7 +47,7 @@ def decision_fingerprint(
 
 
 class TradingRuntimeApplicationService:
-    """Persist observe-only decisions produced from closed canonical bars."""
+    """Persist decisions produced from closed canonical bars."""
 
     def __init__(
         self,
@@ -62,6 +62,18 @@ class TradingRuntimeApplicationService:
         self.market_repository = market_repository
         self.symbol = symbol
         self.history_limit = history_limit
+        self._decision_listeners: list[
+            Callable[[Mapping[str, object], Mapping[str, object], KBar], None]
+        ] = []
+
+    def add_decision_listener(
+        self,
+        listener: Callable[
+            [Mapping[str, object], Mapping[str, object], KBar], None
+        ],
+    ) -> None:
+        if listener not in self._decision_listeners:
+            self._decision_listeners.append(listener)
 
     def create(
         self, request: Mapping[str, object], owner_id: str
@@ -70,8 +82,8 @@ class TradingRuntimeApplicationService:
         if kind not in {"atomic", "composite"}:
             raise InvalidInputError("strategy_kind must be atomic or composite")
         mode = str(request.get("mode", "observe")).lower()
-        if mode != "observe":
-            raise InvalidInputError("only observe mode is available")
+        if mode not in {"observe", "paper_auto"}:
+            raise InvalidInputError("mode must be observe or paper_auto")
         symbol = str(request.get("symbol", self.symbol)).upper()
         if symbol != self.symbol:
             raise InvalidInputError("unsupported symbol")
@@ -165,6 +177,40 @@ class TradingRuntimeApplicationService:
             raise ResourceNotFoundError("trading runtime not found")
         return runtime
 
+    def arm(self, runtime_id: str, owner_id: str) -> dict[str, object]:
+        runtime = self.get(runtime_id, owner_id)
+        if runtime["mode"] != "paper_auto":
+            raise InvalidInputError("only paper_auto runtimes can be armed")
+        if runtime["status"] == "stopped":
+            raise InvalidInputError("a stopped runtime cannot be armed")
+        latest = [
+            bar for bar in self.market_repository.latest(
+                self.symbol, self.history_limit
+            )
+            if bar.status == "closed"
+        ]
+        cursor = (
+            latest[-1].time.isoformat(timespec="milliseconds")
+            if latest else runtime.get("last_evaluated_bar")
+        )
+        result = self.runtime_repository.set_trading_runtime_status(
+            runtime_id, owner_id, "armed", str(cursor) if cursor else None
+        )
+        assert result is not None
+        return result
+
+    def pause(self, runtime_id: str, owner_id: str) -> dict[str, object]:
+        runtime = self.get(runtime_id, owner_id)
+        if runtime["mode"] != "paper_auto":
+            raise InvalidInputError("only paper_auto runtimes can be paused")
+        if runtime["status"] == "stopped":
+            raise InvalidInputError("a stopped runtime cannot be paused")
+        result = self.runtime_repository.set_trading_runtime_status(
+            runtime_id, owner_id, "paused"
+        )
+        assert result is not None
+        return result
+
     def decisions(
         self, runtime_id: str, owner_id: str, limit: int = 200
     ) -> dict[str, object]:
@@ -252,16 +298,21 @@ class TradingRuntimeApplicationService:
                     timespec="milliseconds"
                 )
                 decisions = [
-                    self._decision(runtime, item)
+                    self._decision(runtime, item, evaluated.close)
                     for item in intents_by_time.get(evaluated_time, [])
                 ]
-                self.runtime_repository.record_runtime_evaluation(
+                inserted = self.runtime_repository.record_runtime_evaluation(
                     str(runtime["runtime_id"]), evaluated_time, decisions
                 )
+                for decision in inserted:
+                    for listener in tuple(self._decision_listeners):
+                        listener(runtime, decision, evaluated)
 
     @staticmethod
     def _decision(
-        runtime: Mapping[str, object], intent: Mapping[str, object]
+        runtime: Mapping[str, object],
+        intent: Mapping[str, object],
+        reference_price: float,
     ) -> dict[str, object]:
         version = runtime.get("strategy_version")
         decision_id = decision_fingerprint(
@@ -273,7 +324,7 @@ class TradingRuntimeApplicationService:
             str(intent["action"]),
             str(intent["direction"]),
         )
-        return {
+        decision = {
             "decision_id": decision_id,
             "runtime_id": runtime["runtime_id"],
             "owner_user_id": runtime["owner_user_id"],
@@ -288,4 +339,12 @@ class TradingRuntimeApplicationService:
             "reason": intent["reason"],
             "context": dict(intent.get("context", {})),
             "source_bar_time": intent["source_bar_time"],
+            "execution_status": (
+                "pending"
+                if runtime["mode"] == "paper_auto"
+                and intent["action"] == "entry"
+                else "not_applicable"
+            ),
+            "reference_price": reference_price,
         }
+        return decision

@@ -31,6 +31,8 @@ def required_permission(method: str, path: str) -> str | None:
     if path.startswith("/api/backtest") or path == "/api/composite-backtest":
         return "backtest.run"
     if path.startswith("/api/trading-runtimes"):
+        if method == "POST" and path.endswith("/arm"):
+            return "orders.paper"
         return "strategy.read.own" if method == "GET" else "strategy.write.own"
     if path.startswith(("/api/strategies", "/api/composite-strateg")):
         return "strategy.read.own" if method == "GET" else "strategy.write.own"

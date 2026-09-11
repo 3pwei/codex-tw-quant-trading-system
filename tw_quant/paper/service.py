@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import date, datetime
 from math import isclose
 from time import perf_counter
 from typing import Literal
@@ -30,12 +30,23 @@ class PaperOrderCommand:
     stop_loss_price: float | None
     reduce_only: bool = False
     reason: str = "manual_paper_order"
+    execution_timing: Literal["current_close", "next_bar_open"] = "current_close"
+    order_source: Literal["manual", "strategy_auto"] = "manual"
+    runtime_id: str | None = None
+    decision_id: str | None = None
+    reference_price: float | None = None
 
     def __post_init__(self) -> None:
         if not self.strategy_id:
             raise ValueError("strategy_id is required")
         if self.strategy_version < 1 or self.quantity < 1:
             raise ValueError("strategy_version and quantity must be positive")
+        if self.order_source == "strategy_auto" and not (
+            self.runtime_id and self.decision_id
+        ):
+            raise ValueError(
+                "strategy_auto orders require runtime_id and decision_id"
+            )
 
 
 @dataclass(frozen=True)
@@ -118,6 +129,41 @@ class PaperTradingService:
                 datetime.fromisoformat(str(trading_date)).date()
                 if trading_date else None
             ),
+            order_source=str(payload.get("order_source", "manual")),  # type: ignore[arg-type]
+            runtime_id=(str(payload["runtime_id"]) if payload.get("runtime_id") else None),
+            decision_id=(str(payload["decision_id"]) if payload.get("decision_id") else None),
+        )
+
+    @classmethod
+    def _order_event(cls, payload: dict[str, object]) -> OrderIntent:
+        trading_date = payload.get("trading_date")
+        return OrderIntent(
+            meta=cls._metadata(payload),
+            order_id=str(payload["order_id"]),
+            strategy_id=str(payload["strategy_id"]),
+            strategy_version=int(payload["strategy_version"]),
+            symbol=str(payload["symbol"]),
+            contract=str(payload["contract"]),
+            side=str(payload["side"]),  # type: ignore[arg-type]
+            quantity=int(payload["quantity"]),
+            order_type=str(payload.get("order_type", "market")),  # type: ignore[arg-type]
+            purpose=str(payload.get("purpose", "entry")),  # type: ignore[arg-type]
+            execution_timing=str(payload.get("execution_timing", "current_close")),  # type: ignore[arg-type]
+            reduce_only=bool(payload.get("reduce_only", False)),
+            reason=str(payload.get("reason", "strategy_signal")),
+            reference_price=float(payload.get("reference_price", 0.0)),
+            stop_loss_price=(
+                float(payload["stop_loss_price"])
+                if payload.get("stop_loss_price") is not None else None
+            ),
+            trading_date=(date.fromisoformat(str(trading_date)) if trading_date else None),
+            client_order_id=(
+                str(payload["client_order_id"])
+                if payload.get("client_order_id") else None
+            ),
+            order_source=str(payload.get("order_source", "manual")),  # type: ignore[arg-type]
+            runtime_id=(str(payload["runtime_id"]) if payload.get("runtime_id") else None),
+            decision_id=(str(payload["decision_id"]) if payload.get("decision_id") else None),
         )
 
     @staticmethod
@@ -216,6 +262,24 @@ class PaperTradingService:
                     and order_id not in fills.get(owner_id, set())
                 ):
                     issue(owner_id, "approved_order_without_fill")
+                elif (
+                    bool(decision.get("approved"))
+                    and intent.get("execution_timing") == "next_bar_open"
+                    and order_id not in fills.get(owner_id, set())
+                ):
+                    try:
+                        order = self._order_event(intent)
+                        self.pipeline.broker.on_order(order)
+                        record = self.pipeline.broker.orders[order_id]
+                        record.status = "approved"
+                        record.approved_quantity = int(
+                            decision.get("approved_quantity", order.quantity)
+                        )
+                        record.status_reason = str(
+                            decision.get("reason", "risk_approved")
+                        )
+                    except (KeyError, TypeError, ValueError):
+                        issue(owner_id, "invalid_pending_order")
 
         restored_positions = 0
         ledger_by_owner: dict[
@@ -299,6 +363,10 @@ class PaperTradingService:
             "status_reason": record.status_reason,
             "approved_quantity": record.approved_quantity,
             "fill_id": record.fill_id,
+            "execution_timing": order.execution_timing,
+            "order_source": order.order_source,
+            "runtime_id": order.runtime_id,
+            "decision_id": order.decision_id,
         }
 
     def _run(self) -> None:
@@ -330,6 +398,10 @@ class PaperTradingService:
             command.quantity,
             command.reduce_only,
             command.stop_loss_price,
+            command.execution_timing,
+            command.order_source,
+            command.runtime_id,
+            command.decision_id,
         )
         actual = (
             str(existing["strategy_id"]),
@@ -341,6 +413,10 @@ class PaperTradingService:
                 float(existing["stop_loss_price"])
                 if existing.get("stop_loss_price") is not None else None
             ),
+            str(existing.get("execution_timing", "current_close")),
+            str(existing.get("order_source", "manual")),
+            existing.get("runtime_id"),
+            existing.get("decision_id"),
         )
         if actual != expected:
             raise IdempotencyConflict(
@@ -380,7 +456,11 @@ class PaperTradingService:
         metadata = EventMetadata.create(
             kind="order_intent",
             occurred_at=submitted_at,
-            source="paper_api",
+            source=(
+                "strategy_auto_controller"
+                if command.order_source == "strategy_auto"
+                else "paper_api"
+            ),
             source_key=source_key,
             owner_id=user.user_id,
         )
@@ -394,13 +474,20 @@ class PaperTradingService:
             side=command.side,
             quantity=command.quantity,
             purpose="exit" if command.reduce_only else "entry",
-            execution_timing="current_close",
+            execution_timing=command.execution_timing,
             reduce_only=command.reduce_only,
             reason=command.reason,
-            reference_price=market_bar.close,
+            reference_price=(
+                command.reference_price
+                if command.reference_price is not None
+                else market_bar.close
+            ),
             stop_loss_price=command.stop_loss_price,
             trading_date=market_bar.trading_date,
             client_order_id=key,
+            order_source=command.order_source,
+            runtime_id=command.runtime_id,
+            decision_id=command.decision_id,
         )
         reserved_id = self.repository.reserve_key(user.user_id, key, order.order_id)
         if reserved_id != order.order_id:
@@ -494,6 +581,11 @@ class PaperTradingService:
 
     def orders(self, owner_id: str) -> list[dict[str, object]]:
         return self.repository.orders(owner_id)
+
+    def order(
+        self, owner_id: str, order_id: str
+    ) -> dict[str, object] | None:
+        return self.repository.order_snapshot(owner_id, order_id)
 
     def positions(self, owner_id: str) -> list[dict[str, object]]:
         return self.repository.positions(owner_id)

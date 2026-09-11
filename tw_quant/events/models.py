@@ -168,6 +168,9 @@ class OrderIntent:
     stop_loss_price: float | None = None
     trading_date: date | None = None
     client_order_id: str | None = None
+    order_source: Literal["manual", "strategy_auto"] = "manual"
+    runtime_id: str | None = None
+    decision_id: str | None = None
     kind: Literal["order_intent"] = field(default="order_intent", init=False)
 
     def __post_init__(self) -> None:
@@ -185,6 +188,12 @@ class OrderIntent:
             not self.client_order_id.strip() or len(self.client_order_id) > 128
         ):
             raise ValueError("client_order_id must contain 1 to 128 characters")
+        if self.order_source == "strategy_auto" and not (
+            self.runtime_id and self.decision_id
+        ):
+            raise ValueError(
+                "strategy_auto orders require runtime_id and decision_id"
+            )
 
 
 @dataclass(frozen=True)
@@ -225,6 +234,9 @@ class FillEvent:
     purpose: Literal["entry", "exit", "liquidation"] = "entry"
     reason: str = "simulated_fill"
     trading_date: date | None = None
+    order_source: Literal["manual", "strategy_auto"] = "manual"
+    runtime_id: str | None = None
+    decision_id: str | None = None
     kind: Literal["fill"] = field(default="fill", init=False)
 
     def __post_init__(self) -> None:
@@ -250,6 +262,9 @@ class PositionEvent:
     realized_pnl: float
     unrealized_pnl: float
     total_cost: float = 0.0
+    order_source: Literal["manual", "strategy_auto"] = "manual"
+    runtime_id: str | None = None
+    decision_id: str | None = None
     kind: Literal["position"] = field(default="position", init=False)
 
     def __post_init__(self) -> None:

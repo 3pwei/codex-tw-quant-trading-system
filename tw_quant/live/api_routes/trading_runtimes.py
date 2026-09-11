@@ -41,6 +41,20 @@ def build_trading_runtime_router(deps: ApiDependencies) -> APIRouter:
         except ApplicationError as exc:
             raise application_http_error(exc) from exc
 
+    @router.post("/api/trading-runtimes/{runtime_id}/arm")
+    def arm_runtime(runtime_id: str, request: Request):
+        try:
+            return deps.runtime_app.arm(runtime_id, owner_id(request))
+        except ApplicationError as exc:
+            raise application_http_error(exc) from exc
+
+    @router.post("/api/trading-runtimes/{runtime_id}/pause")
+    def pause_runtime(runtime_id: str, request: Request):
+        try:
+            return deps.runtime_app.pause(runtime_id, owner_id(request))
+        except ApplicationError as exc:
+            raise application_http_error(exc) from exc
+
     @router.get("/api/trading-runtimes/{runtime_id}/decisions")
     def decisions(
         runtime_id: str,
