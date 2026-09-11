@@ -199,26 +199,35 @@ class TradingRuntimeApplicationService:
         """LiveMarketService listener. It has no order or broker dependency."""
         if bar.status != "closed":
             return
-        for runtime in self.runtime_repository.active_trading_runtimes(
-            bar.symbol
-        ):
+        runtimes = self.runtime_repository.active_trading_runtimes(bar.symbol)
+        if not runtimes:
+            return
+        source = [
+            item
+            for item in self.market_repository.latest(
+                bar.symbol, self.history_limit
+            )
+            if item.status == "closed"
+        ]
+        intervals: dict[str, list[KBar]] = {}
+        for runtime in runtimes:
             interval = str(runtime["interval"])
             if not self._completed_interval(bar, interval):
                 continue
-            source = [
-                item
-                for item in self.market_repository.latest(
-                    bar.symbol, self.history_limit
-                )
-                if item.status == "closed"
-            ]
-            evaluated_bars = aggregate_kbars(source, interval)
+            if interval not in intervals:
+                intervals[interval] = aggregate_kbars(source, interval)
+            evaluated_bars = intervals[interval]
             if not evaluated_bars:
                 continue
-            evaluated = evaluated_bars[-1]
-            evaluated_time = evaluated.time.isoformat(timespec="milliseconds")
             cursor = runtime.get("last_evaluated_bar")
-            if cursor is not None and evaluated_time <= str(cursor):
+            pending_bars = [
+                candidate
+                for candidate in evaluated_bars
+                if cursor is None
+                or candidate.time.isoformat(timespec="milliseconds")
+                > str(cursor)
+            ]
+            if not pending_bars:
                 continue
             snapshot = runtime["strategy_snapshot"]
             assert isinstance(snapshot, Mapping)
@@ -233,14 +242,22 @@ class TradingRuntimeApplicationService:
                 raw_intents = evaluate_composite_intents(
                     source, snapshot["definition"]  # type: ignore[arg-type]
                 )
-            matching = [
-                item for item in raw_intents
-                if str(item["trigger_time"]) == evaluated_time
-            ]
-            decisions = [self._decision(runtime, item) for item in matching]
-            self.runtime_repository.record_runtime_evaluation(
-                str(runtime["runtime_id"]), evaluated_time, decisions
-            )
+            intents_by_time: dict[str, list[Mapping[str, object]]] = {}
+            for intent in raw_intents:
+                intents_by_time.setdefault(
+                    str(intent["trigger_time"]), []
+                ).append(intent)
+            for evaluated in pending_bars:
+                evaluated_time = evaluated.time.isoformat(
+                    timespec="milliseconds"
+                )
+                decisions = [
+                    self._decision(runtime, item)
+                    for item in intents_by_time.get(evaluated_time, [])
+                ]
+                self.runtime_repository.record_runtime_evaluation(
+                    str(runtime["runtime_id"]), evaluated_time, decisions
+                )
 
     @staticmethod
     def _decision(

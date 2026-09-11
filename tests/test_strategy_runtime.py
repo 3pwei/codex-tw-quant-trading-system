@@ -167,10 +167,12 @@ class TradingRuntimeTests(unittest.TestCase):
         self.service.on_bar(trigger)
         self.service.on_bar(trigger)
 
+        fill = bar(21, 91.0)
+        self.repo.save(fill)
         restarted = TradingRuntimeApplicationService(
             self.repo, self.repo, self.repo, "TMF"
         )
-        restarted.on_bar(trigger)
+        restarted.on_bar(fill)
         decisions = self.repo.trading_decisions(
             str(runtime["runtime_id"]), "owner-a", 100
         )
@@ -182,7 +184,10 @@ class TradingRuntimeTests(unittest.TestCase):
         stored = self.repo.trading_runtime(
             str(runtime["runtime_id"]), "owner-a"
         )
-        self.assertEqual(stored["last_evaluated_bar"], entries[0]["trigger_time"])
+        self.assertEqual(
+            stored["last_evaluated_bar"],
+            fill.time.isoformat(timespec="milliseconds"),
+        )
 
     def test_forming_bar_is_ignored_until_it_closes(self):
         self._seed_warmup()
