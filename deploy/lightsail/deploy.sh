@@ -12,7 +12,10 @@ if [[ ! "${COMMIT_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
   exit 2
 fi
 
-git -C "${REPOSITORY}" fetch origin --prune
+if ! git -C "${REPOSITORY}" cat-file -e "${COMMIT_SHA}^{commit}"; then
+  echo "Approved commit is not staged in the deployment repository" >&2
+  exit 3
+fi
 git -C "${REPOSITORY}" checkout --detach "${COMMIT_SHA}"
 
 if docker compose --env-file "${COMPOSE_ENV}" -f "${COMPOSE_FILE}" \

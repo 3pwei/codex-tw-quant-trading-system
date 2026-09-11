@@ -6,7 +6,9 @@
 
 ## 一般服務重啟
 
-在 `/opt/tw-quant/repo` 執行：
+在 `/opt/tw-quant/repo` 執行。正式自動部署由 GitHub Actions checkout 已驗證 commit，
+以臨時 Git bundle 傳入主機，不要求 Lightsail 保存私人 repository 的 PAT 或 deploy key；
+bundle 由 workflow 在部署結束時移除：
 
 ```bash
 sudo docker compose --env-file /opt/tw-quant/config/compose.env \
