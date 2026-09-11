@@ -455,6 +455,26 @@ class ResearchApplicationService:
             ],
         }
 
+    def delete_backtest_runs(
+        self,
+        run_ids: list[str],
+        delete_all: bool,
+        owner_id: str,
+    ) -> dict[str, object]:
+        normalized = list(dict.fromkeys(item.strip() for item in run_ids if item.strip()))
+        if delete_all and normalized:
+            raise BadRequestError("全部刪除不可同時指定個別回測紀錄")
+        if not delete_all and not normalized:
+            raise BadRequestError("至少需要選擇一筆回測紀錄")
+        result = self.backtest_repository.delete_backtest_runs(
+            normalized, delete_all, owner_id
+        )
+        if result is None:
+            raise ResourceNotFoundError(
+                "部分回測紀錄不存在，未刪除任何資料"
+            )
+        return result
+
     def _session(self, session_id: str, owner_id: str):
         try:
             return self.replay_sessions.get(session_id, owner_id)

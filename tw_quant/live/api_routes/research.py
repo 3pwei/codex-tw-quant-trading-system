@@ -8,6 +8,7 @@ from ..api_context import ApiDependencies
 from ..api_errors import application_http_error
 from ..api_models import (
     BacktestExecutionRequest,
+    BacktestRunPurge,
     PaperOrderCreate,
     ReplayCursorUpdate,
     ReplayPrepareRequest,
@@ -189,6 +190,15 @@ def build_research_router(deps: ApiDependencies) -> APIRouter:
         return deps.research_app.backtest_runs(
             owner_id(request), limit, offset, strategy_key
         )
+
+    @router.delete("/api/backtest-runs")
+    def delete_backtest_runs(purge: BacktestRunPurge, request: Request):
+        try:
+            return deps.research_app.delete_backtest_runs(
+                purge.run_ids, purge.delete_all, owner_id(request)
+            )
+        except ApplicationError as exc:
+            raise application_http_error(exc) from exc
 
     @router.get("/api/backtest-runs/{run_id}")
     def backtest_run(run_id: str, request: Request):

@@ -120,6 +120,116 @@ class BacktestHistoryTests(unittest.TestCase):
                     client.delete(f"/api/backtest-runs/{run_id}").status_code, 404
                 )
 
+    def test_batch_delete_is_atomic_and_can_delete_all_owned_runs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "market.sqlite3"
+            repo = SQLiteBarRepository(path)
+            for minute, close in enumerate([100, 100, 102, 103, 101, 99]):
+                repo.save(bar(minute, close))
+            settings = LiveSettings(
+                mode="mock", db_path=str(path),
+                replay_csv=str(ROOT / "data/mock_tmf_ticks.csv"),
+                replay_speed=1000, heartbeat_seconds=0.05,
+            )
+            app = create_app(
+                settings,
+                feed=ReplayFeed(settings.replay_csv, speed=1000, loop=False),
+                repository=repo,
+            )
+            payload = {
+                "strategy": "orb", "interval": "1m",
+                "start": "2026-08-25", "end": "2026-08-25",
+            }
+            with TestClient(app) as client:
+                run_ids = [
+                    client.post("/api/backtest-runs", json=payload).json()[
+                        "history_run_id"
+                    ]
+                    for _ in range(3)
+                ]
+
+                empty = client.request(
+                    "DELETE", "/api/backtest-runs", json={"run_ids": []}
+                )
+                self.assertEqual(empty.status_code, 400, empty.text)
+
+                deleted = client.request(
+                    "DELETE", "/api/backtest-runs",
+                    json={"run_ids": run_ids[:2]},
+                )
+                self.assertEqual(deleted.status_code, 200, deleted.text)
+                self.assertEqual(deleted.json()["deleted_runs"], 2)
+                self.assertEqual(
+                    deleted.json()["released_strategy_references"], 0
+                )
+
+                missing = client.request(
+                    "DELETE", "/api/backtest-runs",
+                    json={"run_ids": [run_ids[2], "missing-run"]},
+                )
+                self.assertEqual(missing.status_code, 404, missing.text)
+                self.assertEqual(
+                    client.get(f"/api/backtest-runs/{run_ids[2]}").status_code,
+                    200,
+                )
+
+                conflicting = client.request(
+                    "DELETE", "/api/backtest-runs",
+                    json={"run_ids": [run_ids[2]], "delete_all": True},
+                )
+                self.assertEqual(conflicting.status_code, 400, conflicting.text)
+
+                deleted_all = client.request(
+                    "DELETE", "/api/backtest-runs",
+                    json={"delete_all": True},
+                )
+                self.assertEqual(deleted_all.status_code, 200, deleted_all.text)
+                self.assertEqual(deleted_all.json()["deleted_runs"], 1)
+                self.assertEqual(
+                    client.get("/api/backtest-runs").json()["runs"], []
+                )
+
+    def test_batch_delete_never_crosses_owner_boundaries(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = SQLiteBarRepository(Path(directory) / "market.sqlite3")
+            result = {
+                "metadata": {
+                    "strategy": "ORB", "symbol": "TMF", "interval": "1m",
+                    "date_range": "2026-08-25 ～ 2026-08-25",
+                },
+                "summary": {},
+                "trades": [],
+            }
+            try:
+                owner_one = repo.save_backtest_run(
+                    result, "atomic", "orb", None, {}, "owner-1"
+                )
+                owner_two = repo.save_backtest_run(
+                    result, "atomic", "orb", None, {}, "owner-2"
+                )
+
+                rejected = repo.delete_backtest_runs(
+                    [owner_one["run_id"], owner_two["run_id"]],
+                    owner_user_id="owner-1",
+                )
+                self.assertIsNone(rejected)
+                self.assertIsNotNone(
+                    repo.backtest_run(owner_one["run_id"], "owner-1")
+                )
+
+                deleted = repo.delete_backtest_runs(
+                    [], delete_all=True, owner_user_id="owner-1"
+                )
+                self.assertEqual(deleted["deleted_runs"], 1)
+                self.assertIsNone(
+                    repo.backtest_run(owner_one["run_id"], "owner-1")
+                )
+                self.assertIsNotNone(
+                    repo.backtest_run(owner_two["run_id"], "owner-2")
+                )
+            finally:
+                repo.close()
+
     def test_empty_legacy_reference_table_is_migrated(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "legacy.sqlite3"

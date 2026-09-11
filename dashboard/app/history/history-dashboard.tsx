@@ -3,6 +3,11 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { exitReasonLabel } from "../components/exit-reason";
+import {
+  allVisibleRunsSelected,
+  toggleRunSelection,
+  toggleVisibleRunSelection,
+} from "./history-selection";
 
 type Summary = Record<string, number | null>;
 type Run = {
@@ -40,6 +45,8 @@ export default function HistoryDashboard() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [batchDeleting, setBatchDeleting] = useState(false);
+  const [selectedRunIds, setSelectedRunIds] = useState<string[]>([]);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
 
@@ -64,6 +71,7 @@ export default function HistoryDashboard() {
       if (!response.ok) throw new Error(body.detail ?? "無法刪除回測紀錄");
       const remaining = runs.filter(run => run.run_id !== detail.run_id);
       setRuns(remaining); setSelectedId(""); setDetail(null);
+      setSelectedRunIds(current => current.filter(runId => runId !== detail.run_id));
       setNotice(body.released_strategy_reference ? "回測紀錄已刪除，策略版本引用已解除。" : "回測紀錄已刪除。");
       if (remaining.length) await loadDetail(remaining[0].run_id);
     } catch (reason) { setError(reason instanceof Error ? reason.message : "無法刪除回測紀錄"); }
@@ -103,6 +111,61 @@ export default function HistoryDashboard() {
     return matchesKind && matchesOutcome && (!needle || `${run.strategy_name} ${run.strategy_key}`.toLowerCase().includes(needle));
   }), [runs, query, kind, outcome]);
 
+  const visibleRunIds = filtered.map(run => run.run_id);
+  const allVisibleSelected = allVisibleRunsSelected(
+    selectedRunIds, visibleRunIds
+  );
+
+  const deleteRuns = async (deleteAll: boolean) => {
+    if (batchDeleting || (!deleteAll && !selectedRunIds.length)) return;
+    const expected = deleteAll ? "刪除全部" : "永久刪除";
+    const target = deleteAll
+      ? "此帳號的所有執行記錄（包含尚未載入的頁面）"
+      : `已選取的 ${selectedRunIds.length} 筆執行記錄`;
+    const confirmation = window.prompt(
+      `將永久刪除${target}，刪除後無法復原，並會解除策略版本引用。\n\n請輸入「${expected}」確認：`
+    );
+    if (confirmation !== expected) return;
+
+    setBatchDeleting(true); setError(""); setNotice("");
+    try {
+      const response = await fetch(`${apiBase()}/api/backtest-runs`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(deleteAll
+          ? { delete_all: true }
+          : { run_ids: selectedRunIds }),
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.detail ?? "無法刪除執行記錄");
+
+      const deleted = deleteAll ? new Set(runs.map(run => run.run_id)) : new Set(selectedRunIds);
+      setRuns(current => deleteAll
+        ? []
+        : current.filter(run => !deleted.has(run.run_id)));
+      if (deleteAll) setHasMore(false);
+      setSelectedRunIds([]);
+      if (deleteAll || deleted.has(selectedId)) {
+        setSelectedId(""); setDetail(null);
+      }
+      const released = Number(body.released_strategy_references ?? 0);
+      setNotice(
+        `已永久刪除 ${body.deleted_runs} 筆執行記錄${released ? `，並解除 ${released} 筆策略版本引用` : ""}。`
+      );
+      try {
+        const refreshed = await fetch(`${apiBase()}/api/backtest-runs?limit=${PAGE_SIZE}`, { cache: "no-store" });
+        const refreshedBody = await refreshed.json();
+        if (!refreshed.ok) throw new Error();
+        setRuns(refreshedBody.runs);
+        setHasMore(Boolean(refreshedBody.has_more));
+      } catch {
+        setError("刪除已完成，但清單重新載入失敗；請重新整理頁面。");
+      }
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "無法刪除執行記錄");
+    } finally { setBatchDeleting(false); }
+  };
+
   if (loading) return <div className="history-layout history-layout-loading" aria-busy="true" aria-label="正在讀取回測紀錄">
     <aside className="panel history-index history-index-loading">
       <div className="history-skeleton history-skeleton-control" />
@@ -134,7 +197,11 @@ export default function HistoryDashboard() {
     <aside className="panel history-index">
       <div className="history-filters"><input aria-label="搜尋策略" placeholder="搜尋策略名稱" value={query} onChange={event => setQuery(event.target.value)} /><select aria-label="策略類型" value={kind} onChange={event => setKind(event.target.value)}><option value="all">全部類型</option><option value="atomic">基本策略</option><option value="composite">組合策略</option></select><select aria-label="交易結果" value={outcome} onChange={event => setOutcome(event.target.value)}><option value="all">全部結果</option><option value="traded">有交易</option><option value="empty">無交易</option></select></div>
       <div className="history-count">顯示 {filtered.length} 筆 · 已載入 {runs.length} 筆</div>
-      <div className="history-runs">{filtered.map(run => <button type="button" className={selectedId === run.run_id ? "active" : ""} key={run.run_id} onClick={() => void loadDetail(run.run_id).catch(reason => setError(reason instanceof Error ? reason.message : "無法取得回測明細"))}><span><b>{run.strategy_name}{run.strategy_version ? ` · v${run.strategy_version}` : ""}</b><em>{run.strategy_kind === "composite" ? "組合" : run.interval}</em>{run.trade_count === 0 && <i>無交易</i>}</span><small>{run.start_date} ～ {run.end_date}</small><strong className={Number(run.summary.net_profit ?? 0) >= 0 ? "profit" : "loss"}>{signedMoney(Number(run.summary.net_profit ?? 0))}</strong><time>{formatTime(run.created_at)}</time></button>)}</div>
+      <div className="history-bulk-actions">
+        <label><input type="checkbox" disabled={!visibleRunIds.length || batchDeleting} checked={allVisibleSelected} onChange={() => setSelectedRunIds(current => toggleVisibleRunSelection(current, visibleRunIds))} />全選目前顯示</label>
+        <div><button type="button" disabled={!selectedRunIds.length || batchDeleting} onClick={() => void deleteRuns(false)}>{batchDeleting ? "刪除中…" : `刪除已選（${selectedRunIds.length}）`}</button><button className="danger" type="button" disabled={batchDeleting} onClick={() => void deleteRuns(true)}>刪除全部記錄</button></div>
+      </div>
+      <div className="history-runs">{filtered.map(run => <article className={`history-run-row${selectedId === run.run_id ? " active" : ""}`} key={run.run_id}><input aria-label={`選取 ${run.strategy_name} ${run.start_date} 至 ${run.end_date}`} type="checkbox" disabled={batchDeleting} checked={selectedRunIds.includes(run.run_id)} onChange={() => setSelectedRunIds(current => toggleRunSelection(current, run.run_id))} /><button type="button" className="history-run-open" onClick={() => void loadDetail(run.run_id).catch(reason => setError(reason instanceof Error ? reason.message : "無法取得回測明細"))}><span><b>{run.strategy_name}{run.strategy_version ? ` · v${run.strategy_version}` : ""}</b><em>{run.strategy_kind === "composite" ? "組合" : run.interval}</em>{run.trade_count === 0 && <i>無交易</i>}</span><small>{run.start_date} ～ {run.end_date}</small><strong className={Number(run.summary.net_profit ?? 0) >= 0 ? "profit" : "loss"}>{signedMoney(Number(run.summary.net_profit ?? 0))}</strong><time>{formatTime(run.created_at)}</time></button></article>)}</div>
       {hasMore && <button className="history-load-more" type="button" disabled={loadingMore} onClick={() => void loadMore()}>{loadingMore ? "載入中…" : "載入更多"}</button>}
     </aside>
     <section className="history-detail">

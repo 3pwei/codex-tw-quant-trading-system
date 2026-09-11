@@ -114,6 +114,12 @@ class BacktestRepository(Protocol):
     def delete_backtest_run(
         self, run_id: str, owner_user_id: str | None = None
     ) -> dict[str, object] | None: ...
+    def delete_backtest_runs(
+        self,
+        run_ids: list[str],
+        delete_all: bool = False,
+        owner_user_id: str | None = None,
+    ) -> dict[str, object] | None: ...
 
 
 class ApplicationRepository(
@@ -1088,6 +1094,58 @@ class SQLiteBarRepository:
             row["strategy_kind"] == "composite"
         )
         return deleted
+
+    def delete_backtest_runs(
+        self,
+        run_ids: list[str],
+        delete_all: bool = False,
+        owner_user_id: str | None = None,
+    ) -> dict[str, object] | None:
+        owner = self._owner(owner_user_id)
+        ids = list(dict.fromkeys(item.strip() for item in run_ids if item.strip()))
+        if not delete_all and not ids:
+            raise ValueError("至少需要選擇一筆回測紀錄")
+
+        with self.lock:
+            try:
+                self.connection.execute("BEGIN IMMEDIATE")
+                if delete_all:
+                    rows = self.connection.execute(
+                        "SELECT run_id,strategy_kind FROM backtest_runs "
+                        "WHERE owner_user_id=?",
+                        (owner,),
+                    ).fetchall()
+                    self.connection.execute(
+                        "DELETE FROM backtest_runs WHERE owner_user_id=?",
+                        (owner,),
+                    )
+                else:
+                    placeholders = ",".join("?" for _ in ids)
+                    rows = self.connection.execute(
+                        f"SELECT run_id,strategy_kind FROM backtest_runs "
+                        f"WHERE run_id IN ({placeholders}) AND owner_user_id=?",
+                        [*ids, owner],
+                    ).fetchall()
+                    found = {str(row["run_id"]) for row in rows}
+                    if any(run_id not in found for run_id in ids):
+                        self.connection.rollback()
+                        return None
+                    self.connection.execute(
+                        f"DELETE FROM backtest_runs "
+                        f"WHERE run_id IN ({placeholders}) AND owner_user_id=?",
+                        [*ids, owner],
+                    )
+                self.connection.commit()
+            except Exception:
+                self.connection.rollback()
+                raise
+
+        return {
+            "deleted_runs": len(rows),
+            "released_strategy_references": sum(
+                row["strategy_kind"] == "composite" for row in rows
+            ),
+        }
 
     def close(self) -> None:
         with self.lock:
