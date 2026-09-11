@@ -12,7 +12,7 @@
 |---|---|
 | 行情 | Shioaji quote-only、Mock Replay、Tick callback → Queue → Worker、1 分 K 聚合、WebSocket |
 | 週期 | `1m`、`5m`、`10m`、`15m`、`30m`、`1h`、`1d`、`1w`，共用同一份 1 分 K 資料 |
-| 策略 | 11 套基本策略、多週期 Setup／Entry／Exit／Risk、ALL／ANY、三層組合策略引用 |
+| 策略 | 14 套基本策略（含三種共用 Dow Channel 結構的進場邏輯）、多週期 Setup／Entry／Exit／Risk、ALL／ANY、三層組合策略引用 |
 | 版本 | 不可變版本、參數快照、名稱唯一、封存、引用保護及回測追溯 |
 | 執行 | Backtest／Replay／Paper 共用事件語意；Live foundation 提供 durable outbox、callback audit、Recovery Lock、三方對帳與 Execution Worker |
 | 風控 | 帳戶與資料隔離、回測停損停利、Paper 進場風險檢查、部位／每日限制、連敗冷卻、Kill Switch |
@@ -44,6 +44,8 @@ flowchart TD
 - 行情資料全平台共用；策略、版本、回測與 Paper 資料依 `owner_user_id` 隔離。
 - Live 下單基礎先持久化 order／outbox，再由 Recovery Lock 控制 dispatch；callback 只觸發 audit 與券商狀態 refresh。
 - 券商 orders、fills、positions 全部一致才允許 worker 進入 ready；production 目前保持 disabled／locked。
+
+Dow Channel 策略共用同一套 confirmed pivot、ATR、HH／HL、LH／LL 與平行軌道偵測；`Dow Channel Pullback` 在邊界測試後收回時順勢進場，`Dow Channel Reversal` 在反向突破趨勢軌道時反向進場，`Dow Channel Momentum` 則沿既有趨勢突破外側軌道。既有 key `linear_channel_breakout` 保留為 Momentum 的 canonical key，確保歷史回測、參數快照及組合策略引用持續有效。
 
 主要程式位置：
 

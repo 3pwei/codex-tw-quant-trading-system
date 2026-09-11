@@ -129,7 +129,12 @@ Broker refresh 只能使用具 owner index 的 read model，不得反覆掃描�
 
 ## 相容與淘汰原則
 
-- `linear_channel_breakout` 現為 Dow Theory 策略的相容 key；對外遷移完成前保留。
+- `linear_channel_breakout` 是 Dow Channel Momentum 的 canonical 相容 key，歷史 snapshot、
+  已存參數與 Composite 規則均不得改寫。Pullback、Reversal 與 Momentum 共用
+  `detect_linear_channels()`；不得複製 pivot、ATR 或 channel detector。
+- Dow Channel 的 `invalidation_bars` 只決定 detector 何時正式移除軌道，不能隱性代表
+  reversal position exit。Pullback／Momentum 可在正式失效事件後 next-open 出場；
+  Reversal 本身由反向突破進場，只使用共用停損／停利，避免被同一突破立刻平倉。
 - `tw_quant.engine.BacktestEngine` 是較早期的日內股票回測路徑；新 TMF 功能不得再
   增加對它的依賴。
 - `execution.simulator` 負責策略層的 next-open 研究語意；

@@ -120,6 +120,44 @@ class BacktestHistoryTests(unittest.TestCase):
                     client.delete(f"/api/backtest-runs/{run_id}").status_code, 404
                 )
 
+    def test_legacy_dow_momentum_key_backtests_and_loads_saved_snapshot(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "market.sqlite3"
+            repo = SQLiteBarRepository(path)
+            for minute, close in enumerate([100, 102, 101, 103, 102, 104]):
+                repo.save(bar(minute, close))
+            settings = LiveSettings(
+                mode="mock", db_path=str(path),
+                replay_csv=str(ROOT / "data/mock_tmf_ticks.csv"),
+                replay_speed=1000, heartbeat_seconds=0.05,
+            )
+            app = create_app(
+                settings,
+                feed=ReplayFeed(settings.replay_csv, speed=1000, loop=False),
+                repository=repo,
+            )
+            with TestClient(app) as client:
+                response = client.post(
+                    "/api/backtest-runs",
+                    json={
+                        "strategy": "linear_channel_breakout",
+                        "interval": "1m",
+                        "start": "2026-08-25",
+                        "end": "2026-08-25",
+                    },
+                )
+                self.assertEqual(response.status_code, 201, response.text)
+                detail = client.get(
+                    f"/api/backtest-runs/{response.json()['history_run_id']}"
+                )
+                self.assertEqual(detail.status_code, 200, detail.text)
+                self.assertEqual(
+                    detail.json()["strategy_key"], "linear_channel_breakout"
+                )
+                self.assertEqual(
+                    detail.json()["strategy_snapshot"]["atr_period"], 14
+                )
+
     def test_batch_delete_is_atomic_and_can_delete_all_owned_runs(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "market.sqlite3"
