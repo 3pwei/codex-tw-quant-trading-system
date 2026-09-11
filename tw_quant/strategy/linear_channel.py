@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 import pandas as pd
+
+
+DowChannelEntryMode = Literal["pullback", "reversal", "momentum"]
 
 
 @dataclass(frozen=True)
@@ -59,6 +63,8 @@ def _confirmed_pivot(
         return None
     start = candidate - confirmation_bars
     sample = bars.iloc[start:current + 1]
+    if "status" in sample and not bool(sample["status"].eq("closed").all()):
+        return None
     high = float(bars.iloc[candidate]["high"])
     low = float(bars.iloc[candidate]["low"])
     is_high = high >= float(sample["high"].max())
@@ -141,9 +147,10 @@ def detect_linear_channels(
     """Detect locked Dow Theory channels using only confirmed swing points."""
     columns = [
         "upper", "center", "lower", "slope", "direction", "channel_start",
-        "anchor_1", "anchor_2",
+        "anchor_1", "anchor_2", "atr", "invalidated",
     ]
     output = pd.DataFrame(index=bars.index, columns=columns)
+    output["invalidated"] = False
     atr = _atr(bars, atr_period)
     pivots: list[Pivot] = []
     active: DowChannel | None = None
@@ -151,14 +158,18 @@ def detect_linear_channels(
     invalid_count = 0
 
     for current in range(len(bars)):
-        pivot = _confirmed_pivot(
-            bars,
-            current,
-            confirmation_bars,
-            atr,
-            pivot_reversal_atr,
-            pivots[-1] if pivots else None,
-            minimum_pivot_distance,
+        closed = "status" not in bars or bars.iloc[current]["status"] == "closed"
+        pivot = (
+            _confirmed_pivot(
+                bars,
+                current,
+                confirmation_bars,
+                atr,
+                pivot_reversal_atr,
+                pivots[-1] if pivots else None,
+                minimum_pivot_distance,
+            )
+            if closed else None
         )
         if pivot is not None:
             pivots.append(pivot)
@@ -185,20 +196,100 @@ def detect_linear_channels(
             active.confirmed_at,
             active.first_anchor.index,
             active.second_anchor.index,
+            atr.iloc[current],
+            False,
         ]
-        close = float(bars.iloc[current]["close"])
-        invalid = close < lower if active.direction == "up" else close > upper
-        invalid_count = invalid_count + 1 if invalid else 0
-        if invalid_count >= invalidation_bars:
-            blocked_signature = (
-                active.direction,
-                active.first_anchor.index,
-                active.second_anchor.index,
-            )
-            active = None
-            invalid_count = 0
+        if closed:
+            close = float(bars.iloc[current]["close"])
+            invalid = close < lower if active.direction == "up" else close > upper
+            invalid_count = invalid_count + 1 if invalid else 0
+            if invalid_count >= invalidation_bars:
+                output.loc[bars.index[current], "invalidated"] = True
+                blocked_signature = (
+                    active.direction,
+                    active.first_anchor.index,
+                    active.second_anchor.index,
+                )
+                active = None
+                invalid_count = 0
 
     return output
+
+
+def dow_channel_signals(
+    bars: pd.DataFrame,
+    channels: pd.DataFrame,
+    *,
+    entry_mode: DowChannelEntryMode,
+    boundary_tolerance_atr: float = 0.0,
+) -> tuple[pd.Series, pd.DataFrame | None]:
+    """Apply one entry policy to a shared, already-confirmed Dow channel."""
+    close = bars["close"].astype(float)
+    high = bars["high"].astype(float)
+    low = bars["low"].astype(float)
+    closed = (
+        bars["status"].eq("closed")
+        if "status" in bars else pd.Series(True, index=bars.index)
+    )
+    available = channels["upper"].notna() & channels["lower"].notna()
+    uptrend = channels["direction"].eq("up")
+    downtrend = channels["direction"].eq("down")
+    entries = pd.Series(0, index=bars.index, dtype="int8")
+
+    if entry_mode == "pullback":
+        tolerance = channels["atr"].astype(float) * boundary_tolerance_atr
+        tested_lower = low.between(
+            channels["lower"].astype(float) - tolerance,
+            channels["lower"].astype(float) + tolerance,
+        )
+        tested_upper = high.between(
+            channels["upper"].astype(float) - tolerance,
+            channels["upper"].astype(float) + tolerance,
+        )
+        entries.loc[
+            closed & available & uptrend & tested_lower
+            & (close >= channels["lower"])
+        ] = 1
+        entries.loc[
+            closed & available & downtrend & tested_upper
+            & (close <= channels["upper"])
+        ] = -1
+    else:
+        previous_close = close.shift(1)
+        previous_closed = closed.shift(1, fill_value=False)
+        slope = channels["slope"].astype(float)
+        previous_upper = channels["upper"].astype(float) - slope
+        previous_lower = channels["lower"].astype(float) - slope
+        eligible = closed & previous_closed & available
+        if entry_mode == "momentum":
+            entries.loc[
+                eligible & uptrend & (previous_close <= previous_upper)
+                & (close > channels["upper"])
+            ] = 1
+            entries.loc[
+                eligible & downtrend & (previous_close >= previous_lower)
+                & (close < channels["lower"])
+            ] = -1
+        elif entry_mode == "reversal":
+            entries.loc[
+                eligible & uptrend & (previous_close >= previous_lower)
+                & (close < channels["lower"])
+            ] = -1
+            entries.loc[
+                eligible & downtrend & (previous_close <= previous_upper)
+                & (close > channels["upper"])
+            ] = 1
+        else:  # pragma: no cover - guarded by the strategy registry
+            raise ValueError(f"unsupported Dow channel entry mode: {entry_mode}")
+
+    if entry_mode == "reversal":
+        return entries, None
+    invalidated = channels["invalidated"].fillna(False).astype(bool)
+    exits = pd.DataFrame({
+        "long": closed & invalidated & uptrend,
+        "short": closed & invalidated & downtrend,
+    }, index=bars.index)
+    return entries, exits
 
 
 def serialize_channel_overlay(

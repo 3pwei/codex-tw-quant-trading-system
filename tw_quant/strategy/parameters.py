@@ -14,6 +14,8 @@ SUPPORTED_STRATEGIES = (
     "ma_crossover",
     "ema_trend",
     "donchian_breakout",
+    "dow_channel_pullback",
+    "dow_channel_reversal",
     "linear_channel_breakout",
     "rsi_mean_reversion",
     "bollinger_mean_reversion",
@@ -33,6 +35,16 @@ RISK_FIELDS = {
         "label": "停利", "kind": "percent", "unit": "%",
         "default": 0.012, "min": 0.0001, "max": 0.5, "step": 0.0001,
     },
+}
+
+
+DOW_CHANNEL_FIELDS = {
+    "atr_period": {"label": "ATR 週期", "kind": "integer", "unit": "根 K", "default": 14, "min": 2, "max": 200, "step": 1},
+    "pivot_reversal_atr": {"label": "轉折幅度", "kind": "number", "unit": "倍 ATR", "default": 1.5, "min": 0.1, "max": 10, "step": 0.1},
+    "confirmation_bars": {"label": "轉折確認", "kind": "integer", "unit": "根 K", "default": 2, "min": 1, "max": 20, "step": 1},
+    "minimum_pivot_distance": {"label": "轉折最小間距", "kind": "integer", "unit": "根 K", "default": 5, "min": 1, "max": 100, "step": 1},
+    "minimum_channel_bars": {"label": "軌道最小跨度", "kind": "integer", "unit": "根 K", "default": 10, "min": 2, "max": 300, "step": 1},
+    "invalidation_bars": {"label": "軌道失效確認", "kind": "integer", "unit": "根 K", "default": 2, "min": 1, "max": 10, "step": 1},
 }
 
 
@@ -216,19 +228,45 @@ STRATEGY_DEFINITIONS: dict[str, dict[str, object]] = {
             **RISK_FIELDS,
         },
     },
+    "dow_channel_pullback": {
+        "key": "dow_channel_pullback",
+        "name": "Dow Channel Pullback",
+        "category": "Trend",
+        "description": "價格回測既有 Dow 趨勢軌道邊界並重新回到軌道內時，沿原趨勢方向進場。",
+        "color": "#2dd4bf",
+        "fields": {
+            **DOW_CHANNEL_FIELDS,
+            "boundary_tolerance_atr": {
+                "label": "邊界容許範圍",
+                "kind": "number",
+                "unit": "ATR",
+                "default": 0.2,
+                "min": 0,
+                "max": 3,
+                "step": 0.1,
+            },
+            **RISK_FIELDS,
+        },
+    },
+    "dow_channel_reversal": {
+        "key": "dow_channel_reversal",
+        "name": "Dow Channel Reversal",
+        "category": "Reversal",
+        "description": "既有 Dow 趨勢軌道遭反向有效突破時，視為趨勢結構失效並反向進場。",
+        "color": "#fb7185",
+        "fields": {
+            **DOW_CHANNEL_FIELDS,
+            **RISK_FIELDS,
+        },
+    },
     "linear_channel_breakout": {
         "key": "linear_channel_breakout",
-        "name": "Dow Theory 自動軌道突破",
-        "category": "Breakout",
-        "description": "以確認波峰波谷、HH/HL 或 LH/LL 市場結構建立並鎖定平行軌道。",
+        "name": "Dow Channel Momentum",
+        "category": "Momentum",
+        "description": "既有 Dow 趨勢成立後，價格沿趨勢方向突破外側軌道時順勢進場。",
         "color": "#fbbf24",
         "fields": {
-            "atr_period": {"label": "ATR 週期", "kind": "integer", "unit": "根 K", "default": 14, "min": 2, "max": 200, "step": 1},
-            "pivot_reversal_atr": {"label": "轉折幅度", "kind": "number", "unit": "倍 ATR", "default": 1.5, "min": 0.1, "max": 10, "step": 0.1},
-            "confirmation_bars": {"label": "轉折確認", "kind": "integer", "unit": "根 K", "default": 2, "min": 1, "max": 20, "step": 1},
-            "minimum_pivot_distance": {"label": "轉折最小間距", "kind": "integer", "unit": "根 K", "default": 5, "min": 1, "max": 100, "step": 1},
-            "minimum_channel_bars": {"label": "軌道最小跨度", "kind": "integer", "unit": "根 K", "default": 10, "min": 2, "max": 300, "step": 1},
-            "invalidation_bars": {"label": "失效確認", "kind": "integer", "unit": "根 K", "default": 2, "min": 1, "max": 10, "step": 1},
+            **DOW_CHANNEL_FIELDS,
             **RISK_FIELDS,
         },
     },

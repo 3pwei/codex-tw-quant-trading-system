@@ -14,7 +14,19 @@ from .parameters import (
     strategy_catalog,
     validate_strategy_parameters,
 )
-from .linear_channel import detect_linear_channels, serialize_channel_overlay
+from .linear_channel import (
+    DowChannelEntryMode,
+    detect_linear_channels,
+    dow_channel_signals,
+    serialize_channel_overlay,
+)
+
+
+_DOW_CHANNEL_ENTRY_MODES: dict[str, DowChannelEntryMode] = {
+    "dow_channel_pullback": "pullback",
+    "dow_channel_reversal": "reversal",
+    "linear_channel_breakout": "momentum",
+}
 
 
 _STRATEGY_EXIT_REASONS = {
@@ -22,6 +34,8 @@ _STRATEGY_EXIT_REASONS = {
     "ma_crossover": "opposite_signal",
     "ema_trend": "opposite_signal",
     "donchian_breakout": "channel_midpoint",
+    "dow_channel_pullback": "channel_invalidation",
+    "dow_channel_reversal": "opposite_structure",
     "linear_channel_breakout": "channel_invalidation",
     "rsi_mean_reversion": "mean_reversion",
     "bollinger_mean_reversion": "mean_reversion",
@@ -140,9 +154,11 @@ def _rsi(close: pd.Series, period: int) -> pd.Series:
     return result.mask((gain == 0) & (loss == 0), 50.0)
 
 
-def _linear_channel_signals(
-    bars: pd.DataFrame, parameters: dict[str, int | float]
-) -> tuple[pd.Series, pd.DataFrame, pd.DataFrame]:
+def _dow_channel_analysis(
+    key: str,
+    bars: pd.DataFrame,
+    parameters: dict[str, int | float],
+) -> tuple[pd.Series, pd.DataFrame | None, pd.DataFrame]:
     channels = detect_linear_channels(
         bars,
         atr_period=int(parameters["atr_period"]),
@@ -152,26 +168,14 @@ def _linear_channel_signals(
         minimum_channel_bars=int(parameters["minimum_channel_bars"]),
         invalidation_bars=int(parameters["invalidation_bars"]),
     )
-    close = bars["close"].astype(float)
-    available = channels["upper"].notna() & channels["lower"].notna()
-    entries = pd.Series(0, index=bars.index, dtype="int8")
-    previous_close = close.shift(1)
-    previous_upper = channels["upper"] - channels["slope"].astype(float)
-    previous_lower = channels["lower"] - channels["slope"].astype(float)
-    uptrend = channels["direction"] == "up"
-    downtrend = channels["direction"] == "down"
-    entries.loc[
-        available & uptrend & (previous_close <= previous_upper)
-        & (close > channels["upper"])
-    ] = 1
-    entries.loc[
-        available & downtrend & (previous_close >= previous_lower)
-        & (close < channels["lower"])
-    ] = -1
-    exits = pd.DataFrame({
-        "long": available & uptrend & (close < channels["lower"]),
-        "short": available & downtrend & (close > channels["upper"]),
-    }, index=bars.index)
+    entries, exits = dow_channel_signals(
+        bars,
+        channels,
+        entry_mode=_DOW_CHANNEL_ENTRY_MODES[key],
+        boundary_tolerance_atr=float(
+            parameters.get("boundary_tolerance_atr", 0.0)
+        ),
+    )
     return entries, exits, channels
 
 
@@ -202,8 +206,8 @@ def _technical_signals(
         entries.loc[close < lower] = -1
         midpoint = (upper + lower) / 2
         exits = pd.DataFrame({"long": close < midpoint, "short": close > midpoint}, index=bars.index)
-    elif key == "linear_channel_breakout":
-        entries, exits, _ = _linear_channel_signals(bars, parameters)
+    elif key in _DOW_CHANNEL_ENTRY_MODES:
+        entries, exits, _ = _dow_channel_analysis(key, bars, parameters)
     elif key == "rsi_mean_reversion":
         indicator = _rsi(close, int(parameters["rsi_period"]))
         entries = pd.Series(0, index=bars.index, dtype="int8")
@@ -358,8 +362,10 @@ def analyze_strategies(
             if higher_timeframe and key == "vwap_reversion":
                 continue
             values = resolved[key]
-            if key == "linear_channel_breakout":
-                entries, exits, channels = _linear_channel_signals(session_bars, values)
+            if key in _DOW_CHANNEL_ENTRY_MODES:
+                entries, exits, channels = _dow_channel_analysis(
+                    key, session_bars, values
+                )
                 overlay = serialize_channel_overlay(session_bars, channels)
                 existing_overlays = catalog[key]["overlays"]
                 if existing_overlays:

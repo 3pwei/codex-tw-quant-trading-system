@@ -6,12 +6,29 @@ from tw_quant.market import KBar
 from tw_quant.strategy import (
     SUPPORTED_STRATEGIES,
     analyze_strategies,
+    default_composite_definition,
     strategy_catalog,
+    validate_composite_definition,
     validate_strategy_parameters,
 )
 
 
 TAIPEI = ZoneInfo("Asia/Taipei")
+DOW_PARAMETERS = {
+    "atr_period": 2,
+    "pivot_reversal_atr": 0.1,
+    "confirmation_bars": 1,
+    "minimum_pivot_distance": 1,
+    "minimum_channel_bars": 2,
+    "invalidation_bars": 2,
+    "stop_loss_pct": 0.2,
+    "take_profit_pct": 0.5,
+}
+UP_CHANNEL_VALUES = [
+    100, 102, 106, 110, 108, 106, 105, 107, 111,
+    115, 113, 111, 110, 112, 116, 120, 125, 126,
+]
+DOWN_CHANNEL_VALUES = [200 - (value - 100) for value in UP_CHANNEL_VALUES]
 
 
 def bars(
@@ -52,7 +69,9 @@ class BasicStrategyTests(unittest.TestCase):
             "ma_crossover": "Trend",
             "ema_trend": "Trend",
             "donchian_breakout": "Breakout",
-            "linear_channel_breakout": "Breakout",
+            "dow_channel_pullback": "Trend",
+            "dow_channel_reversal": "Reversal",
+            "linear_channel_breakout": "Momentum",
             "orb": "Breakout",
             "rsi_mean_reversion": "Mean Reversion",
             "bollinger_mean_reversion": "Mean Reversion",
@@ -159,9 +178,8 @@ class BasicStrategyTests(unittest.TestCase):
                 validate_strategy_parameters(key, parameters)
 
     def test_dow_channel_requires_confirmed_market_structure(self):
-        values = [100, 102, 106, 110, 108, 106, 105, 107, 111, 115, 113, 111, 110, 112, 116, 120, 125, 126]
         result = analyze_strategies(
-            bars(values),
+            bars(UP_CHANNEL_VALUES),
             ["linear_channel_breakout"],
             parameters={"linear_channel_breakout": {
                 "atr_period": 2,
@@ -180,10 +198,9 @@ class BasicStrategyTests(unittest.TestCase):
         self.assertGreater(points[-1]["center"], points[-1]["lower"])
 
     def test_dow_channel_overlay_combines_all_trading_sessions(self):
-        values = [100, 102, 106, 110, 108, 106, 105, 107, 111, 115, 113, 111, 110, 112, 116, 120, 125, 126]
         result = analyze_strategies(
-            bars(values) + bars(
-                values,
+            bars(UP_CHANNEL_VALUES) + bars(
+                UP_CHANNEL_VALUES,
                 start=datetime(2026, 9, 2, 15, 0, tzinfo=TAIPEI),
             ),
             ["linear_channel_breakout"],
@@ -225,6 +242,152 @@ class BasicStrategyTests(unittest.TestCase):
             if signal["event"] == "exit"
         ]
         self.assertEqual(exits[0]["reason"], "channel_invalidation")
+        self.assertEqual(
+            exits[0]["time"],
+            bars(values)[22].time.isoformat(timespec="milliseconds"),
+        )
+
+    def test_pullback_enters_long_on_next_open_after_lower_boundary_reclaim(self):
+        source = bars([*UP_CHANNEL_VALUES, 115, 116])
+        source[18].low = 114.9
+        result = analyze_strategies(
+            source,
+            ["dow_channel_pullback"],
+            parameters={"dow_channel_pullback": {
+                **DOW_PARAMETERS, "boundary_tolerance_atr": 0.2,
+            }},
+        )["strategies"][0]
+        entries = [item for item in result["signals"] if item["event"] == "entry"]
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["direction"], "long")
+        self.assertEqual(
+            entries[0]["time"],
+            source[19].time.isoformat(timespec="milliseconds"),
+        )
+        self.assertEqual(entries[0]["price"], source[19].open)
+
+    def test_pullback_enters_short_on_next_open_after_upper_boundary_rejection(self):
+        source = bars([*DOWN_CHANNEL_VALUES, 185, 184])
+        source[18].high = 185.1
+        result = analyze_strategies(
+            source,
+            ["dow_channel_pullback"],
+            parameters={"dow_channel_pullback": {
+                **DOW_PARAMETERS, "boundary_tolerance_atr": 0.2,
+            }},
+        )["strategies"][0]
+        entries = [item for item in result["signals"] if item["event"] == "entry"]
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["direction"], "short")
+        self.assertEqual(
+            entries[0]["time"],
+            source[19].time.isoformat(timespec="milliseconds"),
+        )
+
+    def test_pullback_exits_only_after_formal_channel_invalidation(self):
+        source = bars([*UP_CHANNEL_VALUES, 115, 116, 110, 109, 108])
+        signals = analyze_strategies(
+            source,
+            ["dow_channel_pullback"],
+            parameters={"dow_channel_pullback": {
+                **DOW_PARAMETERS, "boundary_tolerance_atr": 0.2,
+            }},
+        )["strategies"][0]["signals"]
+        self.assertEqual(
+            [(item["event"], item["time"], item["reason"]) for item in signals],
+            [
+                (
+                    "entry", source[19].time.isoformat(timespec="milliseconds"),
+                    "signal_confirmed",
+                ),
+                (
+                    "exit", source[22].time.isoformat(timespec="milliseconds"),
+                    "channel_invalidation",
+                ),
+            ],
+        )
+
+    def test_reversal_breaks_up_channel_short_without_immediate_strategy_exit(self):
+        source = bars([*UP_CHANNEL_VALUES, 110, 109])
+        signals = analyze_strategies(
+            source,
+            ["dow_channel_reversal"],
+            parameters={"dow_channel_reversal": DOW_PARAMETERS},
+        )["strategies"][0]["signals"]
+        self.assertEqual(
+            [(item["event"], item["direction"]) for item in signals],
+            [("entry", "short")],
+        )
+        self.assertEqual(
+            signals[0]["time"],
+            source[19].time.isoformat(timespec="milliseconds"),
+        )
+
+    def test_reversal_breaks_down_channel_long(self):
+        source = bars([*DOWN_CHANNEL_VALUES, 190, 191])
+        signals = analyze_strategies(
+            source,
+            ["dow_channel_reversal"],
+            parameters={"dow_channel_reversal": DOW_PARAMETERS},
+        )["strategies"][0]["signals"]
+        self.assertEqual(
+            [(item["event"], item["direction"]) for item in signals],
+            [("entry", "long")],
+        )
+
+    def test_momentum_preserves_up_and_down_channel_breakouts(self):
+        for values, direction in (
+            (UP_CHANNEL_VALUES, "long"),
+            (DOWN_CHANNEL_VALUES, "short"),
+        ):
+            with self.subTest(direction=direction):
+                entries = [
+                    item for item in analyze_strategies(
+                        bars(values),
+                        ["linear_channel_breakout"],
+                        parameters={"linear_channel_breakout": DOW_PARAMETERS},
+                    )["strategies"][0]["signals"]
+                    if item["event"] == "entry"
+                ]
+                self.assertEqual(entries[0]["direction"], direction)
+
+    def test_unconfirmed_pivot_and_forming_boundary_cross_emit_no_signal(self):
+        unconfirmed = bars(UP_CHANNEL_VALUES[:14])
+        unconfirmed[-1].status = "forming"
+        result = analyze_strategies(
+            unconfirmed,
+            ["linear_channel_breakout"],
+            parameters={"linear_channel_breakout": DOW_PARAMETERS},
+        )["strategies"][0]
+        self.assertEqual(result["overlays"][0]["points"], [])
+        self.assertEqual(result["signals"], [])
+
+        forming_cross = bars(UP_CHANNEL_VALUES)
+        forming_cross[16].status = "forming"
+        signals = analyze_strategies(
+            forming_cross,
+            ["linear_channel_breakout"],
+            parameters={"linear_channel_breakout": DOW_PARAMETERS},
+        )["strategies"][0]["signals"]
+        self.assertFalse(any(item["event"] == "entry" for item in signals))
+
+    def test_pullback_tolerance_and_legacy_composite_reference_are_valid(self):
+        parameters = validate_strategy_parameters("dow_channel_pullback", {})
+        self.assertEqual(parameters["boundary_tolerance_atr"], 0.2)
+        with self.assertRaises(ValueError):
+            validate_strategy_parameters(
+                "dow_channel_pullback", {"boundary_tolerance_atr": 3.1}
+            )
+
+        definition = default_composite_definition()
+        definition["entry"]["rules"] = [{
+            "strategy": "linear_channel_breakout", "interval": "1m",
+        }]
+        validated = validate_composite_definition(definition)
+        self.assertEqual(
+            validated["entry"]["rules"][0]["strategy"],
+            "linear_channel_breakout",
+        )
 
     def test_legacy_regression_channel_parameters_migrate_to_dow_defaults(self):
         migrated = validate_strategy_parameters("linear_channel_breakout", {
