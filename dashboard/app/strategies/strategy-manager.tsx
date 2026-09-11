@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect, useState } from "react";
 
 type ParameterField = {
@@ -155,7 +154,6 @@ export default function StrategyManager() {
         </div>
         <div className="strategy-actions">
           <button className="secondary" type="button" onClick={() => resetDraft(strategy)}>恢復預設</button>
-          <Link href={`/composite-strategies/new/?strategy=${strategy.key}`}>用此策略建立組合</Link>
           <button type="button" disabled={saving === strategy.key} onClick={() => save(strategy)}>
             {saving === strategy.key ? "儲存中…" : "儲存參數"}
           </button>
