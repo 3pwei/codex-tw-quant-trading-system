@@ -23,7 +23,7 @@ class TradingRuntimeCreate(BaseModel):
     symbol: Annotated[str, Field(min_length=1, max_length=32)] = "TMF"
     interval: Annotated[str, Field(min_length=1, max_length=16)] = "1m"
     quantity: int = Field(default=1, ge=1, le=100)
-    mode: Literal["observe"] = "observe"
+    mode: Literal["observe", "paper_auto"] = "observe"
 
 
 class CompositeStrategyUpdate(BaseModel):

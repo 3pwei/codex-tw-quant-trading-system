@@ -106,6 +106,9 @@ class SimulatedBroker:
             purpose=order.purpose,
             reason=order.reason,
             trading_date=order.trading_date,
+            order_source=order.order_source,
+            runtime_id=order.runtime_id,
+            decision_id=order.decision_id,
         )
         record.status = "filled"
         record.status_reason = "simulated_fill"

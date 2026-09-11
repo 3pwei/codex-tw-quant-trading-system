@@ -21,6 +21,7 @@ from ..replay import ReplayTradingSessionRegistry
 from .api_context import ApiDependencies
 from .application import (
     PaperApplicationService,
+    PaperAutoEntryController,
     ResearchApplicationService,
     StrategyApplicationService,
     TradingRuntimeApplicationService,
@@ -140,7 +141,6 @@ def create_app(
     paper = PaperTradingService(SQLitePaperRepository(config.db_path))
     replay_trading = ReplayTradingSessionRegistry()
     limiter = rate_limiter or _build_rate_limiter(config)
-    service.add_bar_listener(paper.on_bar)
     paper_app = PaperApplicationService(
         repo,
         paper,
@@ -155,6 +155,12 @@ def create_app(
     runtime_app = TradingRuntimeApplicationService(
         repo, repo, repo, config.symbol, config.history_limit
     )
+    paper_auto = PaperAutoEntryController(
+        repo, identity_repo, service, paper
+    )
+    runtime_app.add_decision_listener(paper_auto.on_decision)
+    service.add_bar_listener(paper.on_bar)
+    service.add_bar_listener(paper_auto.after_bar)
     service.add_bar_listener(runtime_app.on_bar)
     execution_worker = DisabledExecutionWorker()
 
@@ -168,6 +174,7 @@ def create_app(
             await service.stop()
             await execution_worker.stop()
             service.remove_bar_listener(paper.on_bar)
+            service.remove_bar_listener(paper_auto.after_bar)
             service.remove_bar_listener(runtime_app.on_bar)
             replay_trading.close()
             paper.close()
@@ -208,6 +215,7 @@ def create_app(
     app.state.host_monitor = deps.host_monitor
     app.state.rate_limiter = limiter
     app.state.trading_runtime = runtime_app
+    app.state.paper_auto_entry = paper_auto
 
     app.add_middleware(
         CORSMiddleware,

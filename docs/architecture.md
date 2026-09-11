@@ -10,17 +10,17 @@ Replay 與 Paper Trading；真實券商下單尚未啟用。架構調整採漸�
 |---|---|---|---|
 | 歷史回測 | `tw_quant.backtest.runner` | 先產生策略訊號，再重建事件與模擬成交 | 不會連線 |
 | 即時策略 | `GET /api/strategy-signals` | 重新分析目前 K 棒並回傳訊號 | 不會送單 |
-| Strategy Runtime | `/api/trading-runtimes` | 只在 closed K 保存 owner-scoped Observe Decision | 不會送單 |
+| Strategy Runtime | `/api/trading-runtimes` | closed K 保存 Decision；armed `paper_auto` 可送 Paper entry | 不會連接真實券商 |
 | Replay | `/api/replay/sessions/*` | 隔離帳戶中的手動模擬市價單 | 不會連線 |
 | Paper | `POST /api/paper/orders` | 帳戶風控後，以伺服器行情模擬成交 | 不會連線 |
 | Shioaji Simulation | `ShioajiSimulationExecutionClient` | SDK 整合測試，尚未接 API／Worker | 模擬環境限定 |
 | Live | `OrderExecutor` port | `DisabledBroker` fail closed | 停用 |
 
-Strategy Runtime 目前只提供 Observe Mode：它保存 immutable strategy snapshot、
-closed-bar cursor 與 deterministic Trading Decision，不建立 Order Intent、Fill 或
-Position。「即時策略訊號」和「Paper 委託」目前沒有自動串接。任何自動交易功能都必須透過
-持久化的 Strategy Runner、帳戶風控與 Order Manager，不得由 API 查詢或前端直接
-呼叫券商 adapter。
+Strategy Runtime 提供 Observe Mode，以及預設 paused、必須明確 armed 的 Paper Auto
+Mode。Paper Auto 目前只處理 entry：closed-bar durable Decision 經 market/account/
+permission/recovery/kill-switch gate 與 `AccountRiskGate` 後建立 `next_bar_open`
+OrderIntent，再由既有 simulated broker 產生 Fill 與 Position。它不處理策略 exit、SL、
+TP，也不依賴或建構真實券商 client。
 
 ## 現有模組責任
 

@@ -27,6 +27,9 @@ export type PaperPosition = {
   realized_pnl: number;
   unrealized_pnl: number;
   total_cost: number;
+  order_source?: "manual" | "strategy_auto";
+  runtime_id?: string | null;
+  decision_id?: string | null;
 };
 
 export type PaperOrder = {
@@ -42,6 +45,11 @@ export type PaperOrder = {
   stop_loss_price: number | null;
   status: "pending_risk" | "approved" | "rejected" | "filled";
   status_reason: string;
+  execution_timing?: "current_close" | "next_bar_open";
+  order_source?: "manual" | "strategy_auto";
+  runtime_id?: string | null;
+  decision_id?: string | null;
+  actual_fill_price?: number | null;
 };
 
 export type PaperFill = {
@@ -58,6 +66,9 @@ export type PaperFill = {
   tax: number;
   slippage: number;
   purpose: "entry" | "exit" | "liquidation";
+  order_source?: "manual" | "strategy_auto";
+  runtime_id?: string | null;
+  decision_id?: string | null;
   meta: { occurred_at: string };
 };
 

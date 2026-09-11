@@ -32,6 +32,9 @@ class PositionState:
     entry_tax: float = 0.0
     realized_pnl: float = 0.0
     total_cost: float = 0.0
+    order_source: Literal["manual", "strategy_auto"] = "manual"
+    runtime_id: str | None = None
+    decision_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -141,6 +144,9 @@ class PositionLedger:
             realized_pnl=state.realized_pnl,
             unrealized_pnl=self._unrealized(state, mark_price),
             total_cost=state.total_cost,
+            order_source=state.order_source,
+            runtime_id=state.runtime_id,
+            decision_id=state.decision_id,
         )
 
     def on_fill(self, event: DomainEvent) -> list[PositionEvent] | None:
@@ -158,6 +164,10 @@ class PositionLedger:
             event.contract,
         )
         state = self._positions.setdefault(key, PositionState(key))
+        if state.quantity == 0:
+            state.order_source = event.order_source
+            state.runtime_id = event.runtime_id
+            state.decision_id = event.decision_id
         signed_fill = event.quantity if event.side == "buy" else -event.quantity
         old_quantity = state.quantity
         old_abs = abs(old_quantity)

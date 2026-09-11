@@ -174,6 +174,10 @@ class SQLitePaperRepository:
                 "status_reason": "awaiting_risk",
                 "approved_quantity": 0,
                 "fill_id": None,
+                "execution_timing": payload.get("execution_timing", "current_close"),
+                "order_source": payload.get("order_source", "manual"),
+                "runtime_id": payload.get("runtime_id"),
+                "decision_id": payload.get("decision_id"),
             }
             self.connection.execute(
                 "INSERT INTO paper_order_read_model("
@@ -277,6 +281,9 @@ class SQLitePaperRepository:
                 "realized_pnl": payload["realized_pnl"],
                 "unrealized_pnl": payload["unrealized_pnl"],
                 "total_cost": payload.get("total_cost", 0.0),
+                "order_source": payload.get("order_source", "manual"),
+                "runtime_id": payload.get("runtime_id"),
+                "decision_id": payload.get("decision_id"),
             }
             self.connection.execute(
                 "INSERT INTO paper_position_read_model("

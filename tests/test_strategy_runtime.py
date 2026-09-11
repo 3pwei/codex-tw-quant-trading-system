@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi.testclient import TestClient
 
-from tw_quant.auth import Role, SQLiteAuthRepository
+from tw_quant.auth import Role, SQLiteAuthRepository, TradingMode
 from tw_quant.live.api import create_app
 from tw_quant.live.application import TradingRuntimeApplicationService
 from tw_quant.live.application.errors import ResourceNotFoundError
@@ -282,12 +282,16 @@ class RuntimeFeed:
 
 
 class TradingRuntimeApiTests(unittest.TestCase):
-    def test_observe_api_is_owner_scoped_and_rejects_paper_auto(self):
+    def test_runtime_api_is_owner_scoped_and_paper_auto_starts_paused(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "runtime-api.sqlite3"
             identities = SQLiteAuthRepository(path)
             identities.create_user("a@example.com", role=Role.RESEARCHER)
             identities.create_user("b@example.com", role=Role.ADMIN)
+            identities.create_user(
+                "c@example.com", role=Role.TRADER,
+                trading_mode=TradingMode.PAPER,
+            )
             repository = SQLiteBarRepository(path)
             settings = LiveSettings(
                 mode="mock",
@@ -313,6 +317,10 @@ class TradingRuntimeApiTests(unittest.TestCase):
                 "X-Authenticated-Subject": "subject-b",
                 "X-Authenticated-Email": "b@example.com",
             }
+            owner_c = {
+                "X-Authenticated-Subject": "subject-c",
+                "X-Authenticated-Email": "c@example.com",
+            }
             with TestClient(app) as client:
                 created = client.post(
                     "/api/trading-runtimes",
@@ -335,12 +343,27 @@ class TradingRuntimeApiTests(unittest.TestCase):
                     f"/api/trading-runtimes/{runtime_id}/decisions",
                     headers=owner_a,
                 ).status_code, 200)
-                rejected = client.post(
+                paper_auto = client.post(
                     "/api/trading-runtimes",
                     headers=owner_a,
                     json={"strategy_id": "bnf", "mode": "paper_auto"},
                 )
-                self.assertEqual(rejected.status_code, 422)
+                self.assertEqual(paper_auto.status_code, 201)
+                self.assertEqual(paper_auto.json()["status"], "paused")
+                self.assertEqual(client.post(
+                    f"/api/trading-runtimes/{paper_auto.json()['runtime_id']}/arm",
+                    headers=owner_a,
+                ).status_code, 403)
+                trader_auto = client.post(
+                    "/api/trading-runtimes", headers=owner_c,
+                    json={"strategy_id": "bnf", "mode": "paper_auto"},
+                )
+                armed = client.post(
+                    f"/api/trading-runtimes/{trader_auto.json()['runtime_id']}/arm",
+                    headers=owner_c,
+                )
+                self.assertEqual(armed.status_code, 200, armed.text)
+                self.assertEqual(armed.json()["status"], "armed")
                 stopped = client.post(
                     f"/api/trading-runtimes/{runtime_id}/stop",
                     headers=owner_a,

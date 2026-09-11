@@ -122,6 +122,8 @@ class PaperTradingApiTests(unittest.TestCase):
         self.assertEqual(order["lifecycle_status"], "filled")
         self.assertEqual(order["client_order_id"], "mobile-tap-1")
         self.assertEqual(order["reference_price"], 20_000)
+        self.assertEqual(order["order_source"], "manual")
+        self.assertIsNone(order["runtime_id"])
 
         repeated = self.client.post("/api/paper/orders", headers=headers, json=payload)
         self.assertEqual(repeated.status_code, 201, repeated.text)
@@ -134,10 +136,13 @@ class PaperTradingApiTests(unittest.TestCase):
         ).json()
         self.assertEqual(account["account"]["open_contracts"], 1)
         self.assertEqual(account["positions"][0]["quantity"], 1)
-        self.assertEqual(len(self.client.get(
+        self.assertEqual(account["positions"][0]["order_source"], "manual")
+        fills = self.client.get(
             "/api/paper/fills",
             headers=self.headers("cf-trader", "trader@example.com"),
-        ).json()["fills"]), 1)
+        ).json()["fills"]
+        self.assertEqual(len(fills), 1)
+        self.assertEqual(fills[0]["order_source"], "manual")
 
     def test_rapid_repeated_mobile_taps_create_one_order_and_fill(self):
         headers = self.headers(

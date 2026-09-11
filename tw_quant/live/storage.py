@@ -111,6 +111,15 @@ class BacktestRepository(Protocol):
     def backtest_run(
         self, run_id: str, owner_user_id: str | None = None
     ) -> dict[str, object] | None: ...
+    def delete_backtest_run(
+        self, run_id: str, owner_user_id: str | None = None
+    ) -> dict[str, object] | None: ...
+    def delete_backtest_runs(
+        self,
+        run_ids: list[str],
+        delete_all: bool = False,
+        owner_user_id: str | None = None,
+    ) -> dict[str, object] | None: ...
 
 
 class TradingRuntimeRepository(Protocol):
@@ -129,6 +138,13 @@ class TradingRuntimeRepository(Protocol):
     def stop_trading_runtime(
         self, runtime_id: str, owner_user_id: str
     ) -> dict[str, object] | None: ...
+    def set_trading_runtime_status(
+        self,
+        runtime_id: str,
+        owner_user_id: str,
+        status: str,
+        last_evaluated_bar: str | None = None,
+    ) -> dict[str, object] | None: ...
     def trading_decisions(
         self, runtime_id: str, owner_user_id: str, limit: int
     ) -> list[dict[str, object]]: ...
@@ -137,16 +153,13 @@ class TradingRuntimeRepository(Protocol):
         runtime_id: str,
         evaluated_bar: str,
         decisions: list[dict[str, object]],
-    ) -> int: ...
-    def delete_backtest_run(
-        self, run_id: str, owner_user_id: str | None = None
+    ) -> list[dict[str, object]]: ...
+    def update_decision_execution(
+        self, decision_id: str, owner_user_id: str, values: dict[str, object]
     ) -> dict[str, object] | None: ...
-    def delete_backtest_runs(
-        self,
-        run_ids: list[str],
-        delete_all: bool = False,
-        owner_user_id: str | None = None,
-    ) -> dict[str, object] | None: ...
+    def auto_entry_decisions(
+        self, symbol: str, statuses: tuple[str, ...]
+    ) -> list[dict[str, object]]: ...
 
 
 class ApplicationRepository(
@@ -488,7 +501,7 @@ class SQLiteBarRepository:
                 updated_at TEXT NOT NULL,
                 CHECK(strategy_kind IN ('atomic', 'composite')),
                 CHECK(mode IN ('observe', 'paper_auto')),
-                CHECK(status IN ('active', 'stopped'))
+                CHECK(status IN ('active', 'paused', 'armed', 'stopped'))
             );
             CREATE INDEX IF NOT EXISTS idx_strategy_runtimes_owner_updated
                 ON strategy_runtimes(owner_user_id, updated_at DESC);
@@ -509,6 +522,12 @@ class SQLiteBarRepository:
                 reason TEXT NOT NULL,
                 context_json TEXT NOT NULL,
                 source_bar_time TEXT NOT NULL,
+                execution_status TEXT NOT NULL DEFAULT 'not_applicable',
+                execution_reason TEXT,
+                order_id TEXT,
+                reference_price REAL,
+                planned_stop_price REAL,
+                actual_fill_price REAL,
                 created_at TEXT NOT NULL,
                 FOREIGN KEY(runtime_id) REFERENCES strategy_runtimes(runtime_id)
                     ON DELETE CASCADE,
@@ -519,7 +538,90 @@ class SQLiteBarRepository:
                 ON trading_decisions(runtime_id, trigger_time DESC);
             """
         )
+        runtime_sql = self.connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' "
+            "AND name='strategy_runtimes'"
+        ).fetchone()[0]
+        if "'armed'" not in runtime_sql:
+            self._upgrade_trading_runtime_schema()
+        decision_columns = {
+            row["name"] for row in self.connection.execute(
+                "PRAGMA table_info(trading_decisions)"
+            ).fetchall()
+        }
+        for name, definition in (
+            ("execution_status", "TEXT NOT NULL DEFAULT 'not_applicable'"),
+            ("execution_reason", "TEXT"),
+            ("order_id", "TEXT"),
+            ("reference_price", "REAL"),
+            ("planned_stop_price", "REAL"),
+            ("actual_fill_price", "REAL"),
+        ):
+            if name not in decision_columns:
+                self.connection.execute(
+                    f"ALTER TABLE trading_decisions ADD COLUMN {name} {definition}"
+                )
         self.connection.commit()
+
+    def _upgrade_trading_runtime_schema(self) -> None:
+        """Upgrade the PR #98 runtime tables without an external migration."""
+        self.connection.execute("PRAGMA foreign_keys=OFF")
+        try:
+            self.connection.executescript(
+                """
+                ALTER TABLE trading_decisions RENAME TO trading_decisions_legacy;
+                ALTER TABLE strategy_runtimes RENAME TO strategy_runtimes_legacy;
+                CREATE TABLE strategy_runtimes (
+                    runtime_id TEXT PRIMARY KEY, owner_user_id TEXT NOT NULL,
+                    strategy_kind TEXT NOT NULL, strategy_id TEXT NOT NULL,
+                    strategy_version INTEGER, strategy_snapshot_json TEXT NOT NULL,
+                    symbol TEXT NOT NULL, interval TEXT NOT NULL,
+                    quantity INTEGER NOT NULL, mode TEXT NOT NULL,
+                    status TEXT NOT NULL, last_evaluated_bar TEXT,
+                    last_decision TEXT, created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    CHECK(strategy_kind IN ('atomic', 'composite')),
+                    CHECK(mode IN ('observe', 'paper_auto')),
+                    CHECK(status IN ('active', 'paused', 'armed', 'stopped'))
+                );
+                INSERT INTO strategy_runtimes SELECT * FROM strategy_runtimes_legacy;
+                CREATE TABLE trading_decisions (
+                    decision_id TEXT PRIMARY KEY, runtime_id TEXT NOT NULL,
+                    owner_user_id TEXT NOT NULL, strategy_id TEXT NOT NULL,
+                    strategy_version INTEGER, symbol TEXT NOT NULL,
+                    contract TEXT NOT NULL, interval TEXT NOT NULL,
+                    trigger_time TEXT NOT NULL, direction TEXT NOT NULL,
+                    action TEXT NOT NULL, reason TEXT NOT NULL,
+                    context_json TEXT NOT NULL, source_bar_time TEXT NOT NULL,
+                    execution_status TEXT NOT NULL DEFAULT 'not_applicable',
+                    execution_reason TEXT, order_id TEXT, reference_price REAL,
+                    planned_stop_price REAL, actual_fill_price REAL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(runtime_id) REFERENCES strategy_runtimes(runtime_id)
+                        ON DELETE CASCADE,
+                    CHECK(direction IN ('long', 'short')),
+                    CHECK(action IN ('entry', 'exit', 'none'))
+                );
+                INSERT INTO trading_decisions(
+                    decision_id,runtime_id,owner_user_id,strategy_id,
+                    strategy_version,symbol,contract,interval,trigger_time,
+                    direction,action,reason,context_json,source_bar_time,created_at
+                ) SELECT decision_id,runtime_id,owner_user_id,strategy_id,
+                    strategy_version,symbol,contract,interval,trigger_time,
+                    direction,action,reason,context_json,source_bar_time,created_at
+                    FROM trading_decisions_legacy;
+                DROP TABLE trading_decisions_legacy;
+                DROP TABLE strategy_runtimes_legacy;
+                CREATE INDEX idx_strategy_runtimes_owner_updated
+                    ON strategy_runtimes(owner_user_id, updated_at DESC);
+                CREATE INDEX idx_strategy_runtimes_active_symbol
+                    ON strategy_runtimes(status, symbol);
+                CREATE INDEX idx_trading_decisions_runtime_time
+                    ON trading_decisions(runtime_id, trigger_time DESC);
+                """
+            )
+        finally:
+            self.connection.execute("PRAGMA foreign_keys=ON")
 
     def claim_legacy_ownership(self, owner_user_id: str) -> None:
         if not owner_user_id or owner_user_id == DEFAULT_OWNER_ID:
@@ -577,6 +679,12 @@ class SQLiteBarRepository:
             "reason": row["reason"],
             "context": json.loads(row["context_json"]),
             "source_bar_time": row["source_bar_time"],
+            "execution_status": row["execution_status"],
+            "execution_reason": row["execution_reason"],
+            "order_id": row["order_id"],
+            "reference_price": row["reference_price"],
+            "planned_stop_price": row["planned_stop_price"],
+            "actual_fill_price": row["actual_fill_price"],
             "created_at": row["created_at"],
         }
 
@@ -601,7 +709,8 @@ class SQLiteBarRepository:
                         sort_keys=True,
                     ),
                     runtime["symbol"], runtime["interval"],
-                    runtime["quantity"], runtime["mode"], "active",
+                    runtime["quantity"], runtime["mode"],
+                    "active" if runtime["mode"] == "observe" else "paused",
                     runtime.get("last_evaluated_bar"), None, now, now,
                 ),
             )
@@ -637,8 +746,9 @@ class SQLiteBarRepository:
     ) -> list[dict[str, object]]:
         with self.lock:
             rows = self.connection.execute(
-                "SELECT * FROM strategy_runtimes WHERE status='active' "
-                "AND mode='observe' AND symbol=? ORDER BY created_at",
+                "SELECT * FROM strategy_runtimes WHERE symbol=? AND ("
+                "(status='active' AND mode='observe') OR "
+                "(status='armed' AND mode='paper_auto')) ORDER BY created_at",
                 (symbol,),
             ).fetchall()
         return [self._runtime_row(row) for row in rows]
@@ -653,6 +763,34 @@ class SQLiteBarRepository:
                 "WHERE runtime_id=? AND owner_user_id=?",
                 (now, runtime_id, owner_user_id),
             )
+            self.connection.commit()
+            row = self.connection.execute(
+                "SELECT * FROM strategy_runtimes WHERE runtime_id=? "
+                "AND owner_user_id=?", (runtime_id, owner_user_id)
+            ).fetchone()
+        return self._runtime_row(row) if row else None
+
+    def set_trading_runtime_status(
+        self,
+        runtime_id: str,
+        owner_user_id: str,
+        status: str,
+        last_evaluated_bar: str | None = None,
+    ) -> dict[str, object] | None:
+        now = datetime.now().astimezone().isoformat(timespec="seconds")
+        with self.lock:
+            if last_evaluated_bar is None:
+                self.connection.execute(
+                    "UPDATE strategy_runtimes SET status=?,updated_at=? "
+                    "WHERE runtime_id=? AND owner_user_id=?",
+                    (status, now, runtime_id, owner_user_id),
+                )
+            else:
+                self.connection.execute(
+                    "UPDATE strategy_runtimes SET status=?,last_evaluated_bar=?,"
+                    "updated_at=? WHERE runtime_id=? AND owner_user_id=?",
+                    (status, last_evaluated_bar, now, runtime_id, owner_user_id),
+                )
             self.connection.commit()
             row = self.connection.execute(
                 "SELECT * FROM strategy_runtimes WHERE runtime_id=? "
@@ -676,9 +814,9 @@ class SQLiteBarRepository:
         runtime_id: str,
         evaluated_bar: str,
         decisions: list[dict[str, object]],
-    ) -> int:
+    ) -> list[dict[str, object]]:
         now = datetime.now().astimezone().isoformat(timespec="seconds")
-        inserted = 0
+        inserted: list[dict[str, object]] = []
         last_decision: str | None = None
         with self.lock:
             try:
@@ -689,21 +827,22 @@ class SQLiteBarRepository:
                 ).fetchone()
                 if (
                     runtime is None
-                    or runtime["status"] != "active"
+                    or runtime["status"] not in {"active", "armed"}
                     or (
                         runtime["last_evaluated_bar"] is not None
                         and evaluated_bar <= runtime["last_evaluated_bar"]
                     )
                 ):
                     self.connection.rollback()
-                    return 0
+                    return []
                 for decision in decisions:
                     cursor = self.connection.execute(
                         "INSERT OR IGNORE INTO trading_decisions("
                         "decision_id,runtime_id,owner_user_id,strategy_id,"
                         "strategy_version,symbol,contract,interval,trigger_time,"
                         "direction,action,reason,context_json,source_bar_time,"
-                        "created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        "execution_status,reference_price,created_at) "
+                        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         (
                             decision["decision_id"], runtime_id,
                             decision["owner_user_id"], decision["strategy_id"],
@@ -715,11 +854,14 @@ class SQLiteBarRepository:
                                 decision.get("context", {}),
                                 ensure_ascii=False, sort_keys=True,
                             ),
-                            decision["source_bar_time"], now,
+                            decision["source_bar_time"],
+                            decision.get("execution_status", "not_applicable"),
+                            decision.get("reference_price"),
+                            now,
                         ),
                     )
                     if cursor.rowcount:
-                        inserted += 1
+                        inserted.append(decision)
                         last_decision = str(decision["decision_id"])
                 if last_decision is None:
                     previous = self.connection.execute(
@@ -737,6 +879,49 @@ class SQLiteBarRepository:
                 self.connection.rollback()
                 raise
         return inserted
+
+    def update_decision_execution(
+        self, decision_id: str, owner_user_id: str, values: dict[str, object]
+    ) -> dict[str, object] | None:
+        allowed = {
+            "execution_status", "execution_reason", "order_id",
+            "reference_price", "planned_stop_price", "actual_fill_price",
+        }
+        updates = {key: value for key, value in values.items() if key in allowed}
+        if not updates:
+            raise ValueError("at least one execution field is required")
+        assignments = ",".join(f"{key}=?" for key in updates)
+        with self.lock:
+            self.connection.execute(
+                f"UPDATE trading_decisions SET {assignments} "
+                "WHERE decision_id=? AND owner_user_id=?",
+                (*updates.values(), decision_id, owner_user_id),
+            )
+            self.connection.commit()
+            row = self.connection.execute(
+                "SELECT * FROM trading_decisions WHERE decision_id=? "
+                "AND owner_user_id=?", (decision_id, owner_user_id)
+            ).fetchone()
+        return self._decision_row(row) if row else None
+
+    def auto_entry_decisions(
+        self, symbol: str, statuses: tuple[str, ...]
+    ) -> list[dict[str, object]]:
+        if not statuses:
+            return []
+        placeholders = ",".join("?" for _ in statuses)
+        with self.lock:
+            rows = self.connection.execute(
+                "SELECT decision.* FROM trading_decisions AS decision "
+                "JOIN strategy_runtimes AS runtime "
+                "ON runtime.runtime_id=decision.runtime_id "
+                "WHERE decision.symbol=? AND decision.action='entry' "
+                "AND runtime.mode='paper_auto' "
+                f"AND decision.execution_status IN ({placeholders}) "
+                "ORDER BY decision.trigger_time",
+                (symbol, *statuses),
+            ).fetchall()
+        return [self._decision_row(row) for row in rows]
 
     def save(self, bar: KBar) -> None:
         values = (
