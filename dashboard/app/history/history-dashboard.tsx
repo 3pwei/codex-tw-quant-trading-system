@@ -2,6 +2,11 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
+import InteractiveTradeChart from "../backtest/interactive-trade-chart";
+import {
+  type BacktestChartPayload,
+  type BacktestTrade,
+} from "../backtest/trade-chart-model";
 import { exitReasonLabel } from "../components/exit-reason";
 import {
   batchDeletionPayload,
@@ -15,11 +20,7 @@ type Run = {
   interval: string; start_date: string; end_date: string; status: string;
   created_at: string; trade_count: number; summary: Summary;
 };
-type Trade = {
-  direction: "long" | "short"; entry_time: string; exit_time: string;
-  entry_price: number; exit_price: number; net_pnl: number; total_cost: number;
-  stop_loss_price?: number; take_profit_price?: number; exit_reason: string;
-};
+type Trade = BacktestTrade & { total_cost: number; exit_reason: string };
 type Detail = Run & {
   strategy_snapshot: Record<string, unknown>;
   result: { config: Record<string, unknown>; trades: Trade[]; equity: Record<string, unknown>[] };
@@ -36,6 +37,11 @@ export default function HistoryDashboard() {
   const [runs, setRuns] = useState<Run[]>([]);
   const [selectedId, setSelectedId] = useState("");
   const [detail, setDetail] = useState<Detail | null>(null);
+  const [selectedTradeIndex, setSelectedTradeIndex] = useState(0);
+  const [chart, setChart] = useState<BacktestChartPayload | null>(null);
+  const [chartCache, setChartCache] = useState<Record<string, BacktestChartPayload>>({});
+  const [chartLoading, setChartLoading] = useState(false);
+  const [chartError, setChartError] = useState("");
   const [query, setQuery] = useState("");
   const [kind, setKind] = useState("all");
   const [outcome, setOutcome] = useState("all");
@@ -50,13 +56,39 @@ export default function HistoryDashboard() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
 
+  const loadChart = async (runId: string, tradeIndex: number) => {
+    const cacheKey = `${runId}:${tradeIndex}`;
+    const cached = chartCache[cacheKey];
+    setSelectedTradeIndex(tradeIndex); setChartError("");
+    if (cached) { setChart(cached); return; }
+    setChartLoading(true);
+    try {
+      const response = await fetch(`${apiBase()}/api/backtest-runs/${runId}/chart?trade_index=${tradeIndex}`, { cache: "no-store" });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.detail ?? "無法取得交易圖表");
+      const payload = body as BacktestChartPayload;
+      setChart(payload);
+      setChartCache(current => {
+        const next = { ...current, [cacheKey]: payload };
+        payload.trades.forEach(trade => {
+          if (trade.trade_index != null) next[`${runId}:${trade.trade_index}`] = payload;
+        });
+        return next;
+      });
+    } catch (reason) {
+      setChart(null);
+      setChartError(reason instanceof Error ? reason.message : "無法取得交易圖表");
+    } finally { setChartLoading(false); }
+  };
+
   const loadDetail = async (runId: string) => {
-    setSelectedId(runId); setDetail(null); setDetailLoading(true); setError("");
+    setSelectedId(runId); setDetail(null); setChart(null); setSelectedTradeIndex(0); setDetailLoading(true); setError(""); setChartError("");
     try {
       const response = await fetch(`${apiBase()}/api/backtest-runs/${runId}`, { cache: "no-store" });
       const body = await response.json();
       if (!response.ok) throw new Error(body.detail ?? "無法取得回測明細");
       setDetail(body);
+      if (body.result?.trades?.length) await loadChart(runId, 0);
     } finally { setDetailLoading(false); }
   };
 
@@ -70,7 +102,7 @@ export default function HistoryDashboard() {
       const body = await response.json();
       if (!response.ok) throw new Error(body.detail ?? "無法刪除回測紀錄");
       const remaining = runs.filter(run => run.run_id !== detail.run_id);
-      setRuns(remaining); setSelectedId(""); setDetail(null);
+      setRuns(remaining); setSelectedId(""); setDetail(null); setChart(null);
       setSelectedRunIds(current => current.filter(runId => runId !== detail.run_id));
       setNotice(body.released_strategy_reference ? "回測紀錄已刪除，策略版本引用已解除。" : "回測紀錄已刪除。");
       if (remaining.length) await loadDetail(remaining[0].run_id);
@@ -140,7 +172,7 @@ export default function HistoryDashboard() {
       setSelectedRunIds([]);
       setAllRunsSelected(false);
       if (allRunsSelected || deleted.has(selectedId)) {
-        setSelectedId(""); setDetail(null);
+        setSelectedId(""); setDetail(null); setChart(null);
       }
       const released = Number(body.released_strategy_references ?? 0);
       setNotice(
@@ -206,7 +238,10 @@ export default function HistoryDashboard() {
       {!detailLoading && detail && <>
       <header className="panel history-detail-head"><div><span>BACKTEST RUN · {detail.run_id.slice(0, 8)}</span><h2>{detail.strategy_name}{detail.strategy_version ? ` · v${detail.strategy_version}` : ""}</h2><p>{detail.symbol} · {detail.start_date} ～ {detail.end_date} · {formatTime(detail.created_at)}</p></div><div className="history-result-actions"><strong className={net >= 0 ? "profit" : "loss"}>{signedMoney(net)}</strong><button type="button" disabled={deleting} onClick={() => void deleteRun()}>{deleting ? "刪除中…" : "永久刪除"}</button></div></header>
       <div className="history-metrics"><article><span>總報酬</span><b>{decimal.format(Number(summary.return_pct ?? 0))}%</b></article><article><span>最大回撤</span><b>{decimal.format(Number(summary.max_drawdown_pct ?? 0))}%</b></article><article><span>勝率</span><b>{decimal.format(Number(summary.win_rate_pct ?? 0))}%</b></article><article><span>交易次數</span><b>{detail.trade_count}</b></article><article><span>Profit Factor</span><b>{summary.profit_factor == null ? "N/A" : decimal.format(Number(summary.profit_factor))}</b></article></div>
-      <section className="panel history-ledger"><div className="panel-head"><div><span>SAVED RESULT</span><h2>交易明細</h2></div><small>策略快照與結果已保存</small></div><div className="table-scroll"><table><thead><tr><th>#</th><th>方向</th><th>進場</th><th>出場</th><th>停損／停利</th><th>成本</th><th>淨損益</th><th>原因</th></tr></thead><tbody>{detail.result.trades.map((trade, index) => <tr key={`${trade.entry_time}-${index}`}><td>{index + 1}</td><td><i className={`dir ${trade.direction}`}>{trade.direction === "long" ? "多" : "空"}</i></td><td>{formatTime(trade.entry_time)}<small>{decimal.format(trade.entry_price)}</small></td><td>{formatTime(trade.exit_time)}<small>{decimal.format(trade.exit_price)}</small></td><td><span className="loss">{decimal.format(trade.stop_loss_price ?? 0)}</span><small className="profit">{decimal.format(trade.take_profit_price ?? 0)}</small></td><td>NT$ {money.format(trade.total_cost)}</td><td className={trade.net_pnl >= 0 ? "profit" : "loss"}><b>{signedMoney(trade.net_pnl)}</b></td><td>{exitReasonLabel(trade.exit_reason)}</td></tr>)}</tbody></table>{!detail.result.trades.length && <p className="history-empty-trades">此回測沒有產生完整交易。</p>}</div></section>
+      {chartLoading && <section className="panel history-trade-chart history-chart-state">正在載入交易時段 K 棒…</section>}
+      {!chartLoading && chart && <section className="panel history-trade-chart"><div className="panel-head"><div><span>TRADE EXPLORER</span><h2>{chart.scope.label} · {chart.scope.contract}</h2></div><small>{chart.scope.kind === "range" ? "日／週 K 回測區間" : "同時段交易共用一張圖"}</small></div><InteractiveTradeChart key={chart.scope.key} bars={chart.bars} trades={chart.trades} selectedTrade={chart.trades.find(trade => trade.trade_index === selectedTradeIndex) ?? detail.result.trades[selectedTradeIndex]} overlays={chart.overlays} rangeMode={chart.scope.kind === "range"}/></section>}
+      {!chartLoading && chartError && <section className="panel history-trade-chart history-chart-state"><b>交易明細仍可使用</b><p>{chartError}</p></section>}
+      <section className="panel history-ledger"><div className="panel-head"><div><span>SAVED RESULT</span><h2>交易明細</h2></div><small>點選交易可聚焦進出場 K 棒</small></div><div className="table-scroll"><table><thead><tr><th>#</th><th>方向</th><th>進場</th><th>出場</th><th>停損／停利</th><th>成本</th><th>淨損益</th><th>原因</th></tr></thead><tbody>{detail.result.trades.map((trade, index) => <tr key={`${trade.entry_time}-${index}`} className={selectedTradeIndex === index ? "selected" : ""} onClick={() => void loadChart(detail.run_id, index)}><td>{index + 1}</td><td><i className={`dir ${trade.direction}`}>{trade.direction === "long" ? "多" : "空"}</i></td><td>{formatTime(trade.entry_time)}<small>{decimal.format(trade.entry_price)}</small></td><td>{formatTime(trade.exit_time)}<small>{decimal.format(trade.exit_price)}</small></td><td><span className="loss">{decimal.format(trade.stop_loss_price ?? 0)}</span><small className="profit">{decimal.format(trade.take_profit_price ?? 0)}</small></td><td>NT$ {money.format(trade.total_cost)}</td><td className={trade.net_pnl >= 0 ? "profit" : "loss"}><b>{signedMoney(trade.net_pnl)}</b></td><td>{exitReasonLabel(trade.exit_reason)}</td></tr>)}</tbody></table>{!detail.result.trades.length && <p className="history-empty-trades">此回測沒有產生完整交易。</p>}</div></section>
       </>}
     </section>
   </div>;

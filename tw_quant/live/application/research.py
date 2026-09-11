@@ -14,6 +14,7 @@ from ...backtest import (
     validate_date_range,
 )
 from ...market import (
+    KBar,
     SUPPORTED_TIMEFRAMES,
     TIMEFRAME_LABELS,
     aggregate_kbars,
@@ -439,6 +440,170 @@ class ResearchApplicationService:
         if item is None:
             raise ResourceNotFoundError("找不到回測紀錄")
         return item
+
+    @staticmethod
+    def _chart_bar(bar: KBar) -> dict[str, object]:
+        return {
+            "timestamp": bar.time.isoformat(timespec="milliseconds"),
+            "open": bar.open,
+            "high": bar.high,
+            "low": bar.low,
+            "close": bar.close,
+            "volume": bar.volume,
+            "contract": bar.contract,
+            "session": bar.session,
+            "trading_date": bar.trading_date.isoformat(),
+        }
+
+    @staticmethod
+    def _trade_session(
+        trade: dict[str, object], source_bars: list[KBar]
+    ) -> tuple[str, str]:
+        stored_session = str(trade.get("session") or "")
+        stored_date = str(trade.get("trading_date") or "")
+        if stored_session in {"day", "night"} and stored_date:
+            return stored_session, stored_date
+        occurred_at = datetime.fromisoformat(str(trade["entry_time"]))
+        contract = str(trade.get("contract") or "")
+        candidates = [
+            bar for bar in source_bars
+            if not contract or bar.contract == contract
+        ]
+        if stored_date:
+            candidates = [
+                bar for bar in candidates
+                if bar.trading_date.isoformat() == stored_date
+            ]
+        if not candidates:
+            raise ResourceNotFoundError("找不到這筆交易使用的歷史 K 棒")
+        matched = min(
+            candidates,
+            key=lambda bar: abs((bar.time - occurred_at).total_seconds()),
+        )
+        return matched.session, matched.trading_date.isoformat()
+
+    @staticmethod
+    def _chart_overlays(
+        raw: object, visible_times: set[str]
+    ) -> list[dict[str, object]]:
+        overlays: list[dict[str, object]] = []
+        if not isinstance(raw, list):
+            return overlays
+        for overlay in raw:
+            if not isinstance(overlay, dict):
+                continue
+            points = overlay.get("points")
+            if not isinstance(points, list):
+                continue
+            selected = [
+                point for point in points
+                if isinstance(point, dict)
+                and str(point.get("time") or "")[:16] in visible_times
+            ]
+            if selected:
+                overlays.append({**overlay, "points": selected})
+        return overlays
+
+    def backtest_run_chart(
+        self, run_id: str, trade_index: int, owner_id: str
+    ) -> dict[str, object]:
+        """Build one lazy chart scope without duplicating bars in saved results."""
+        item = self.backtest_repository.backtest_run(run_id, owner_id)
+        if item is None:
+            raise ResourceNotFoundError("找不到回測紀錄")
+        result = item.get("result")
+        trades = result.get("trades") if isinstance(result, dict) else None
+        if not isinstance(trades, list) or not 0 <= trade_index < len(trades):
+            raise BadRequestError("交易序號超出回測結果範圍")
+        selected_trade = trades[trade_index]
+        if not isinstance(selected_trade, dict):
+            raise BadRequestError("回測交易資料格式錯誤")
+
+        contract = str(selected_trade.get("contract") or "")
+        if not contract:
+            raise BadRequestError("回測交易缺少合約資訊")
+        interval = str(item["interval"])
+        display_interval = "1m" if interval == "multi" else interval
+        try:
+            validate_timeframe(display_interval)
+        except ValueError as exc:
+            raise BadRequestError("回測紀錄使用不支援的 K 棒週期") from exc
+
+        range_mode = display_interval in {"1d", "1w"}
+        start = date.fromisoformat(str(item["start_date"]))
+        end = date.fromisoformat(str(item["end_date"]))
+        selected_date = str(selected_trade.get("trading_date") or "")
+        query_start = start
+        query_end = end
+        if not range_mode and selected_date:
+            query_start = query_end = date.fromisoformat(selected_date)
+        source_bars = self.market_repository.between_trading_dates(
+            str(item["symbol"]), query_start, query_end
+        )
+        if range_mode:
+            scoped_source = [bar for bar in source_bars if bar.contract == contract]
+            scoped_trades = [
+                (index, trade) for index, trade in enumerate(trades)
+                if isinstance(trade, dict)
+                and str(trade.get("contract") or "") == contract
+            ]
+            scope = {
+                "key": f"range:{display_interval}:{contract}",
+                "kind": "range",
+                "label": f"{item['start_date']} ～ {item['end_date']}",
+                "interval": display_interval,
+                "contract": contract,
+            }
+        else:
+            session, trading_date = self._trade_session(
+                selected_trade, source_bars
+            )
+            scoped_source = [
+                bar for bar in source_bars
+                if bar.contract == contract
+                and bar.session == session
+                and bar.trading_date.isoformat() == trading_date
+            ]
+            scoped_trades = []
+            for index, trade in enumerate(trades):
+                if (
+                    not isinstance(trade, dict)
+                    or str(trade.get("contract") or "") != contract
+                    or (
+                        trade.get("trading_date")
+                        and str(trade["trading_date"]) != trading_date
+                    )
+                ):
+                    continue
+                trade_session, trade_date = self._trade_session(trade, source_bars)
+                if trade_session == session and trade_date == trading_date:
+                    scoped_trades.append((index, trade))
+            scope = {
+                "key": f"session:{display_interval}:{contract}:{trading_date}:{session}",
+                "kind": "session",
+                "label": f"{trading_date} · {'日盤' if session == 'day' else '夜盤'}",
+                "interval": display_interval,
+                "contract": contract,
+                "trading_date": trading_date,
+                "session": session,
+            }
+        bars = aggregate_kbars(scoped_source, display_interval)
+        if not bars:
+            raise ResourceNotFoundError("這筆交易的歷史 K 棒已不存在")
+        visible_times = {
+            bar.time.isoformat(timespec="milliseconds")[:16] for bar in bars
+        }
+        return {
+            "scope": scope,
+            "bars": [self._chart_bar(bar) for bar in bars],
+            "trades": [
+                {**trade, "trade_index": index}
+                for index, trade in scoped_trades
+            ],
+            "overlays": self._chart_overlays(
+                result.get("overlays", []), visible_times
+            ),
+        }
 
     def delete_backtest_run(
         self, run_id: str, owner_id: str

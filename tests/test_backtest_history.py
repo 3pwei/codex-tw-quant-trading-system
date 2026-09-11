@@ -36,6 +36,25 @@ def bar(minute: int, close: float) -> KBar:
 
 
 class BacktestHistoryTests(unittest.TestCase):
+    @staticmethod
+    def saved_chart_result(
+        trades: list[dict[str, object]], interval: str = "1m"
+    ) -> dict[str, object]:
+        return {
+            "metadata": {
+                "symbol": "TMF",
+                "strategy": "Chart test",
+                "interval": interval,
+                "interval_key": interval,
+                "date_range": "2026-08-25 ～ 2026-08-26",
+            },
+            "config": {},
+            "summary": {"net_profit": 0},
+            "trades": trades,
+            "equity": [],
+            "overlays": [],
+        }
+
     def test_atomic_backtest_is_saved_and_queryable(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "market.sqlite3"
@@ -118,6 +137,110 @@ class BacktestHistoryTests(unittest.TestCase):
                 )
                 self.assertEqual(
                     client.delete(f"/api/backtest-runs/{run_id}").status_code, 404
+                )
+
+    def test_saved_chart_loads_one_intraday_session_and_all_of_its_trades(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "market.sqlite3"
+            repo = SQLiteBarRepository(path)
+            bars = [bar(minute, 100 + minute) for minute in range(60)]
+            for item in bars:
+                repo.save(item)
+            trades = [
+                {
+                    "contract": "TMFU6", "direction": "long",
+                    "entry_time": bars[5].time.isoformat(),
+                    "exit_time": bars[8].time.isoformat(),
+                    "entry_price": 105, "exit_price": 108, "net_pnl": 3,
+                    "trading_date": "2026-08-25",
+                },
+                {
+                    "contract": "TMFU6", "direction": "short",
+                    "entry_time": bars[30].time.isoformat(),
+                    "exit_time": bars[35].time.isoformat(),
+                    "entry_price": 130, "exit_price": 135, "net_pnl": -5,
+                    "session": "night", "trading_date": "2026-08-25",
+                },
+            ]
+            saved = repo.save_backtest_run(
+                self.saved_chart_result(trades),
+                "atomic", "ma_crossover", None, {},
+            )
+            settings = LiveSettings(
+                mode="mock", db_path=str(path),
+                replay_csv=str(ROOT / "data/mock_tmf_ticks.csv"),
+                replay_speed=1000, heartbeat_seconds=0.05,
+            )
+            app = create_app(
+                settings,
+                feed=ReplayFeed(settings.replay_csv, speed=1000, loop=False),
+                repository=repo,
+            )
+            with TestClient(app) as client:
+                response = client.get(
+                    f"/api/backtest-runs/{saved['run_id']}/chart?trade_index=0"
+                )
+                self.assertEqual(response.status_code, 200, response.text)
+                payload = response.json()
+                self.assertEqual(payload["scope"]["kind"], "session")
+                self.assertEqual(payload["scope"]["session"], "night")
+                self.assertEqual(len(payload["bars"]), 60)
+                self.assertEqual(
+                    [trade["trade_index"] for trade in payload["trades"]], [0, 1]
+                )
+
+    def test_saved_daily_chart_uses_the_contract_range_not_sessions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "market.sqlite3"
+            repo = SQLiteBarRepository(path)
+            first_night = bar(0, 100)
+            first_day = first_night.copy(
+                time=datetime(2026, 8, 25, 8, 45, tzinfo=TAIPEI),
+                session="day", close=110,
+            )
+            second_night = first_night.copy(
+                time=datetime(2026, 8, 25, 15, 0, tzinfo=TAIPEI),
+                trading_date=date(2026, 8, 26), close=120,
+            )
+            second_day = first_night.copy(
+                time=datetime(2026, 8, 26, 8, 45, tzinfo=TAIPEI),
+                session="day", trading_date=date(2026, 8, 26), close=130,
+            )
+            for item in (first_night, first_day, second_night, second_day):
+                repo.save(item)
+            trades = [{
+                "contract": "TMFU6", "direction": "long",
+                "entry_time": first_night.time.isoformat(),
+                "exit_time": second_night.time.isoformat(),
+                "entry_price": 100, "exit_price": 120, "net_pnl": 20,
+                "session": "night", "trading_date": "2026-08-25",
+            }]
+            saved = repo.save_backtest_run(
+                self.saved_chart_result(trades, "1d"),
+                "atomic", "ma_crossover", None, {},
+            )
+            settings = LiveSettings(
+                mode="mock", db_path=str(path),
+                replay_csv=str(ROOT / "data/mock_tmf_ticks.csv"),
+                replay_speed=1000, heartbeat_seconds=0.05,
+            )
+            app = create_app(
+                settings,
+                feed=ReplayFeed(settings.replay_csv, speed=1000, loop=False),
+                repository=repo,
+            )
+            with TestClient(app) as client:
+                response = client.get(
+                    f"/api/backtest-runs/{saved['run_id']}/chart?trade_index=0"
+                )
+                self.assertEqual(response.status_code, 200, response.text)
+                payload = response.json()
+                self.assertEqual(payload["scope"]["kind"], "range")
+                self.assertNotIn("session", payload["scope"])
+                self.assertEqual(len(payload["bars"]), 2)
+                self.assertEqual(
+                    [item["trading_date"] for item in payload["bars"]],
+                    ["2026-08-25", "2026-08-26"],
                 )
 
     def test_legacy_dow_momentum_key_backtests_and_loads_saved_snapshot(self):

@@ -209,6 +209,19 @@ def build_research_router(deps: ApiDependencies) -> APIRouter:
         except ApplicationError as exc:
             raise application_http_error(exc) from exc
 
+    @router.get("/api/backtest-runs/{run_id}/chart")
+    def backtest_run_chart(
+        run_id: str,
+        request: Request,
+        trade_index: int = Query(..., ge=0),
+    ):
+        try:
+            return deps.research_app.backtest_run_chart(
+                run_id, trade_index, owner_id(request)
+            )
+        except ApplicationError as exc:
+            raise application_http_error(exc) from exc
+
     @router.delete("/api/backtest-runs/{run_id}")
     def delete_backtest_run(run_id: str, request: Request):
         try:

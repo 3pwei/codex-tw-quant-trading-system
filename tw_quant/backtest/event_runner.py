@@ -204,6 +204,7 @@ def run_historical_events(
             {
                 "strategy": str(entry.get("strategy") or strategy_id),
                 "contract": trade.contract,
+                "session": str(entry.get("session") or ""),
                 "trading_date": str(entry.get("trading_date") or trade.trading_date),
                 "direction": trade.direction,
                 "entry_time": trade.entry_time,
