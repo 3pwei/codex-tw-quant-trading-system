@@ -72,6 +72,13 @@ jobs:
     runs-on: ubuntu-latest
     environment: lightsail-production
     steps:
+      - name: Checkout approved revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.verify.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
       - name: Configure SSH
         env:
           SSH_PRIVATE_KEY: ${{ secrets.LIGHTSAIL_SSH_PRIVATE_KEY }}
@@ -88,18 +95,20 @@ jobs:
           LIGHTSAIL_USER: ${{ vars.LIGHTSAIL_USER }}
           DEPLOY_SHA: ${{ needs.verify.outputs.sha }}
         run: |
-          # Run the target revision's host preparation before invoking the
-          # currently checked-out deploy script. This also makes the first
-          # deployment of a host-preparation change safe on small instances.
-          ssh -i ~/.ssh/lightsail \
+          bundle="${RUNNER_TEMP}/tw-quant-${DEPLOY_SHA}.bundle"
+          remote_bundle="/tmp/tw-quant-${DEPLOY_SHA}.bundle"
+          git bundle create "${bundle}" HEAD
+          git bundle verify "${bundle}"
+
+          scp -i ~/.ssh/lightsail \
             -o BatchMode=yes \
-            "${LIGHTSAIL_USER}@${LIGHTSAIL_HOST}" \
-            "sudo git -C /opt/tw-quant/repo fetch origin --prune && sudo git -C /opt/tw-quant/repo show '${DEPLOY_SHA}:deploy/lightsail/prepare-host.sh' | sudo bash"
+            "${bundle}" \
+            "${LIGHTSAIL_USER}@${LIGHTSAIL_HOST}:${remote_bundle}"
 
           ssh -i ~/.ssh/lightsail \
             -o BatchMode=yes \
             "${LIGHTSAIL_USER}@${LIGHTSAIL_HOST}" \
-            "sudo git -C /opt/tw-quant/repo show '${DEPLOY_SHA}:deploy/lightsail/deploy.sh' > /tmp/tw-quant-deploy.sh && sudo bash /tmp/tw-quant-deploy.sh '${DEPLOY_SHA}' && rm -f /tmp/tw-quant-deploy.sh"
+            "set -e; trap 'rm -f ${remote_bundle} /tmp/tw-quant-deploy.sh' EXIT; sudo git -C /opt/tw-quant/repo fetch '${remote_bundle}' HEAD; sudo git -C /opt/tw-quant/repo cat-file -e '${DEPLOY_SHA}^{commit}'; sudo git -C /opt/tw-quant/repo show '${DEPLOY_SHA}:deploy/lightsail/prepare-host.sh' | sudo bash; sudo git -C /opt/tw-quant/repo show '${DEPLOY_SHA}:deploy/lightsail/deploy.sh' > /tmp/tw-quant-deploy.sh; sudo bash /tmp/tw-quant-deploy.sh '${DEPLOY_SHA}'"
 
       - name: Verify public health endpoint
         env:
