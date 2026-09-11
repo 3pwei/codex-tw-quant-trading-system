@@ -28,6 +28,7 @@ from .api_models import (
     AdminUserCreate,
     AdminUserUpdate,
     BacktestExecutionRequest,
+    BacktestRunPurge,
     CompositeStrategyPurge,
     CompositeStrategyUpdate,
     PaperControlRequest,
@@ -58,6 +59,7 @@ from .storage import ApplicationRepository, SQLiteBarRepository
 
 __all__ = [
     "AdminUserCreate", "AdminUserUpdate", "BacktestExecutionRequest",
+    "BacktestRunPurge",
     "CompositeStrategyPurge", "CompositeStrategyUpdate", "PaperControlRequest",
     "PaperOrderCreate", "ReplayCursorUpdate", "ReplayPrepareRequest",
     "StrategyParametersUpdate", "_rate_limit_scope", "create_app", "system_status",

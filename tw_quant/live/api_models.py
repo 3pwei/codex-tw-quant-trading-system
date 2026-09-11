@@ -33,6 +33,11 @@ class BacktestExecutionRequest(BaseModel):
     version: int | None = None
 
 
+class BacktestRunPurge(BaseModel):
+    run_ids: list[ShortIdentifier] = Field(default_factory=list, max_length=500)
+    delete_all: bool = False
+
+
 class ReplayPrepareRequest(BaseModel):
     symbol: Annotated[str, Field(min_length=1, max_length=32)] = "TMF"
     trading_date: date
