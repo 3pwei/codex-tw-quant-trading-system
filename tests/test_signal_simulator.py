@@ -28,12 +28,15 @@ def bars() -> pd.DataFrame:
 
 
 class SignalSimulatorPolicyTests(unittest.TestCase):
-    def test_default_policy_keeps_one_entry_per_group(self):
-        frame = bars()
-        entries = pd.Series([1, 0, 1, 0, 0], index=frame.index)
+    def test_default_policy_allows_distinct_reentries_in_one_group(self):
+        frame = pd.concat([bars(), bars().iloc[:2]], ignore_index=True)
+        frame["timestamp"] = pd.date_range(
+            "2026-09-09 08:45", periods=7, freq="min", tz="Asia/Taipei"
+        )
+        entries = pd.Series([1, 0, 1, 0, 1, 0, 0], index=frame.index)
         exits = pd.DataFrame(
-            {"long": [False, True, False, False, False],
-             "short": [False] * 5},
+            {"long": [False, True, False, True, False, True, False],
+             "short": [False] * 7},
             index=frame.index,
         )
 
@@ -41,20 +44,19 @@ class SignalSimulatorPolicyTests(unittest.TestCase):
 
         self.assertEqual(
             [signal["event"] for signal in signals],
-            ["entry", "exit"],
+            ["entry", "exit", "entry", "exit", "entry", "exit"],
         )
 
-    def test_policy_can_allow_reentry_without_using_signal_history_as_state(self):
-        frame = bars()
-        entries = pd.Series([1, 0, 1, 0, 0], index=frame.index)
-        exits = pd.DataFrame(
-            {"long": [False, True, False, True, False],
-             "short": [False] * 5},
-            index=frame.index,
+    def test_sustained_intent_must_reset_before_same_direction_reentry(self):
+        frame = pd.concat([bars(), bars().iloc[:1]], ignore_index=True)
+        frame["timestamp"] = pd.date_range(
+            "2026-09-09 08:45", periods=6, freq="min", tz="Asia/Taipei"
         )
-        policy = SignalSimulationPolicy(
-            max_entries_per_group=2,
-            strategy_exit_reason="channel_invalidation",
+        entries = pd.Series([1, 1, 1, 0, 1, 0], index=frame.index)
+        exits = pd.DataFrame(
+            {"long": [False, True, False, False, False, False],
+             "short": [False] * 6},
+            index=frame.index,
         )
 
         signals = simulate_signals(
@@ -62,19 +64,18 @@ class SignalSimulatorPolicyTests(unittest.TestCase):
             "test",
             entries,
             exits,
-            policy=policy,
+            policy=SignalSimulationPolicy(
+                strategy_exit_reason="channel_invalidation"
+            ),
         )
 
         self.assertEqual(
             [signal["event"] for signal in signals],
-            ["entry", "exit", "entry", "exit"],
+            ["entry", "exit", "entry"],
         )
         self.assertEqual(signals[1]["reason"], "channel_invalidation")
-        self.assertEqual(signals[3]["reason"], "channel_invalidation")
 
     def test_policy_rejects_invalid_configuration(self):
-        with self.assertRaisesRegex(ValueError, "max_entries_per_group"):
-            SignalSimulationPolicy(max_entries_per_group=0)
         with self.assertRaisesRegex(ValueError, "strategy_exit_reason"):
             SignalSimulationPolicy(strategy_exit_reason=" ")
 
