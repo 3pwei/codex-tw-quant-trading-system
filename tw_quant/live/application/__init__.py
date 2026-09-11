@@ -15,6 +15,10 @@ from .research import (
     ResearchApplicationService,
 )
 from .strategies import StrategyApplicationService
+from .trading_runtime import (
+    TradingRuntimeApplicationService,
+    decision_fingerprint,
+)
 
 __all__ = [
     "ApplicationError",
@@ -31,4 +35,6 @@ __all__ = [
     "ResourceNotFoundError",
     "ServiceUnavailableError",
     "StrategyApplicationService",
+    "TradingRuntimeApplicationService",
+    "decision_fingerprint",
 ]

@@ -481,6 +481,114 @@ def _technical_signals(
     return entries, exits, overlays, diagnostics, diagnostic_context(bars, context_values)
 
 
+def _intent_context(
+    context: pd.DataFrame, index: object
+) -> dict[str, object]:
+    if index not in context.index:
+        return {}
+    return {
+        str(key): round(float(value), 8)
+        for key, value in context.loc[index].items()
+        if pd.notna(value)
+    }
+
+
+def evaluate_strategy_intents(
+    bars: Iterable[KBar],
+    strategy: str,
+    *,
+    parameters: dict[str, object] | None = None,
+    interval: str = "1m",
+) -> list[dict[str, object]]:
+    """Evaluate canonical entry/exit intents on their confirming closed bars.
+
+    This deliberately stops before next-open fill simulation and risk handling.
+    Backtest, Replay, and the observe runtime therefore share the exact atomic
+    rule implementations while retaining their separate execution semantics.
+    """
+    key = strategy.lower()
+    if key not in SUPPORTED_STRATEGIES:
+        raise ValueError(f"unsupported strategy: {strategy}")
+    values = validate_strategy_parameters(key, parameters)
+    frame = _frame(bars)
+    if frame.empty:
+        return []
+
+    higher_timeframe = interval in {"1d", "1w"}
+    group_columns: str | list[str] = "contract" if higher_timeframe else [
+        "contract", "session", "trading_date"
+    ]
+    intents: list[dict[str, object]] = []
+    for _, session_bars in frame.groupby(group_columns, sort=False):
+        session_bars = session_bars.reset_index(drop=True)
+        if key == "orb":
+            if higher_timeframe:
+                continue
+            entries, indicators = _orb_entries(session_bars, values)
+            exits = None
+            context = diagnostic_context(session_bars, indicators)
+        elif key == "bnf":
+            entries, exits, indicators = _bnf_signals(session_bars, values)
+            context = diagnostic_context(
+                session_bars, indicators[["mean", "z_score", "rsi"]]
+            )
+        elif higher_timeframe and key == "vwap_reversion":
+            continue
+        elif key in _DOW_CHANNEL_ENTRY_MODES:
+            entries, exits, channels = _dow_channel_analysis(
+                key, session_bars, values
+            )
+            overlay = serialize_channel_overlay(session_bars, channels)
+            _, context = _dow_visualization(
+                key, key, session_bars, values, channels, overlay
+            )
+        else:
+            entries, exits, _, _, context = _technical_signals(
+                key, session_bars, values
+            )
+
+        reasons = _entry_reasons(key, entries)
+        previous_entry = 0
+        for index, row in session_bars.iterrows():
+            candidate = int(entries.loc[index])
+            is_new_entry = (
+                candidate in {-1, 1} and candidate != previous_entry
+            )
+            previous_entry = candidate
+            common = {
+                "strategy": key,
+                "trigger_time": row["timestamp"].isoformat(
+                    timespec="milliseconds"
+                ),
+                "source_bar_time": row["timestamp"].isoformat(
+                    timespec="milliseconds"
+                ),
+                "contract": row["contract"],
+                "session": row["session"],
+                "trading_date": row["trading_date"],
+                "context": _intent_context(context, index),
+            }
+            if is_new_entry:
+                intents.append({
+                    **common,
+                    "action": "entry",
+                    "direction": "long" if candidate == 1 else "short",
+                    "reason": reasons.get(int(index), "signal_confirmed"),
+                })
+            if exits is not None:
+                for direction in ("long", "short"):
+                    if bool(exits.loc[index, direction]):
+                        intents.append({
+                            **common,
+                            "action": "exit",
+                            "direction": direction,
+                            "reason": _STRATEGY_EXIT_REASONS.get(
+                                key, "strategy_exit"
+                            ),
+                        })
+    return intents
+
+
 def analyze_strategies(
     bars: Iterable[KBar],
     selected: Iterable[str] = SUPPORTED_STRATEGIES,

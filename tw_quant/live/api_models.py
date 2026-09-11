@@ -16,6 +16,16 @@ class StrategyParametersUpdate(BaseModel):
     parameters: dict[str, object] = Field(max_length=50)
 
 
+class TradingRuntimeCreate(BaseModel):
+    strategy_kind: Literal["atomic", "composite"] = "atomic"
+    strategy_id: ShortIdentifier
+    strategy_version: int | None = Field(default=None, ge=1)
+    symbol: Annotated[str, Field(min_length=1, max_length=32)] = "TMF"
+    interval: Annotated[str, Field(min_length=1, max_length=16)] = "1m"
+    quantity: int = Field(default=1, ge=1, le=100)
+    mode: Literal["observe"] = "observe"
+
+
 class CompositeStrategyUpdate(BaseModel):
     definition: dict[str, object] = Field(max_length=20)
 

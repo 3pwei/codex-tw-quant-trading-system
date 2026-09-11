@@ -12,6 +12,7 @@ from .application import (
     PaperApplicationService,
     ResearchApplicationService,
     StrategyApplicationService,
+    TradingRuntimeApplicationService,
 )
 from .monitoring import HostResourceMonitor
 from .rate_limit import SlidingWindowRateLimiter
@@ -36,6 +37,7 @@ class ApiDependencies:
     paper_app: PaperApplicationService
     research_app: ResearchApplicationService
     strategy_app: StrategyApplicationService
+    runtime_app: TradingRuntimeApplicationService
     execution_worker: ExecutionWorkerMonitor
 
     def identity_from_headers(self, headers) -> AccessIdentity | None:
