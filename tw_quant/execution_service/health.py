@@ -37,7 +37,7 @@ class ExecutionServiceHealth:
 
     def to_public_dict(self) -> dict[str, object]:
         return {
-            "connections": [
+            "broker_accounts": [
                 connection.to_public_dict() for connection in self.connections
             ]
         }

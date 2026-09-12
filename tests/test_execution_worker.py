@@ -7,22 +7,46 @@ import tempfile
 import unittest
 
 from tw_quant.broker import (
+    BrokerAccountRef,
+    BrokerCapabilities,
     BrokerEvent,
     BrokerEventAuditStatus,
     BrokerOrder,
     BrokerOrderRequest,
     BrokerOrderStatus,
     BrokerReconciliationSnapshot,
+    CanonicalInstrument,
     DisabledExecutionWorker,
     ExecutionMode,
     ExecutionWorkerSettings,
     RecoveryStatus,
+    RoutedBrokerOrderRequest,
     broker_event_id,
     build_execution_runtime,
 )
 
 
 NOW = datetime(2026, 9, 10, tzinfo=timezone.utc)
+TARGET = BrokerAccountRef("shioaji", "sim-1")
+
+
+class FakeMapper:
+    def to_broker_contract(self, instrument):
+        return instrument.contract
+
+    def to_canonical_instrument(self, broker_contract):
+        return CanonicalInstrument("TMF", broker_contract)
+
+
+MAPPER = FakeMapper()
+CAPABILITIES = BrokerCapabilities(
+    supports_market_orders=True,
+    supports_cancel=True,
+)
+
+
+def routed(order_request=None):
+    return RoutedBrokerOrderRequest(TARGET, order_request or request())
 
 
 def request(client_order_id: str = "worker-order") -> BrokerOrderRequest:
@@ -114,6 +138,8 @@ class ExecutionWorkerTests(unittest.IsolatedAsyncioTestCase):
             broker_name="shioaji",
             account_id="sim-1",
             broker=broker,
+            capabilities=CAPABILITIES,
+            instrument_mapper=MAPPER,
             reconciliation_source=source,
             settings=self.settings,
         )
@@ -126,7 +152,11 @@ class ExecutionWorkerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(
                 runtime.worker.snapshot()["recovery_status"], "ready"
             )
-            runtime.manager.create(request())
+            self.assertEqual(runtime.worker.snapshot()["broker_name"], "shioaji")
+            self.assertEqual(
+                runtime.worker.snapshot()["masked_account_id"], "****im-1"
+            )
+            runtime.manager.create(routed())
             await wait_until(lambda: broker.submissions == 1)
             self.assertEqual(
                 runtime.order_repository.outbox_state("worker-order"),
@@ -147,7 +177,7 @@ class ExecutionWorkerTests(unittest.IsolatedAsyncioTestCase):
         source = SnapshotSource()
         source.error = TimeoutError("broker unavailable")
         runtime = self.runtime(broker, source)
-        runtime.order_repository.reserve(request(), occurred_at=NOW)
+        runtime.order_repository.reserve(routed(), occurred_at=NOW)
         try:
             await runtime.worker.start()
             await asyncio.sleep(0.05)
@@ -167,14 +197,15 @@ class ExecutionWorkerTests(unittest.IsolatedAsyncioTestCase):
         runtime = self.runtime(broker, SnapshotSource())
         try:
             await runtime.worker.start()
-            runtime.manager.create(request())
+            runtime.manager.create(routed())
             await wait_until(lambda: broker.submissions == 1)
             payload = {"status": "Submitted"}
             event = BrokerEvent(
                 event_id=broker_event_id(
-                    "shioaji", "FORDER", "broker-worker-order", payload
+                    "shioaji", "sim-1", "FORDER", "broker-worker-order", payload
                 ),
                 broker_name="shioaji",
+                account_id="sim-1",
                 event_type="FORDER",
                 broker_order_id="broker-worker-order",
                 received_at=NOW,
@@ -198,13 +229,16 @@ class ExecutionWorkerTests(unittest.IsolatedAsyncioTestCase):
             broker_name="shioaji",
             account_id="sim-1",
             broker=FakeBroker(),
+            capabilities=CAPABILITIES,
+            instrument_mapper=MAPPER,
             reconciliation_source=SnapshotSource(),
             settings=settings,
         )
         payload = {"sequence": 1}
         first = BrokerEvent(
-            broker_event_id("shioaji", "FORDER", "broker-1", payload),
+            broker_event_id("shioaji", "sim-1", "FORDER", "broker-1", payload),
             "shioaji",
+            "sim-1",
             "FORDER",
             "broker-1",
             NOW,
@@ -225,8 +259,11 @@ class ExecutionWorkerTests(unittest.IsolatedAsyncioTestCase):
         runtime = self.runtime(FakeBroker(), SnapshotSource())
         payload = {"status": "Submitted"}
         event = BrokerEvent(
-            broker_event_id("shioaji", "FORDER", "unknown-order", payload),
+            broker_event_id(
+                "shioaji", "sim-1", "FORDER", "unknown-order", payload
+            ),
             "shioaji",
+            "sim-1",
             "FORDER",
             "unknown-order",
             NOW,
@@ -266,6 +303,8 @@ class ExecutionWorkerTests(unittest.IsolatedAsyncioTestCase):
                 broker_name="disabled",
                 account_id="",
                 broker=FakeBroker(),
+                capabilities=CAPABILITIES,
+                instrument_mapper=MAPPER,
                 reconciliation_source=SnapshotSource(),
             )
 

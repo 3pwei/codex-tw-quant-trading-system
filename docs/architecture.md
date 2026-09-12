@@ -14,7 +14,7 @@ Replay 與 Paper Trading；真實券商下單尚未啟用。架構調整採漸�
 | Replay | `/api/replay/sessions/*` | 隔離帳戶中的手動模擬市價單 | 不會連線 |
 | Paper | `POST /api/paper/orders` | 帳戶風控後，以伺服器行情模擬成交 | 不會連線 |
 | Shioaji Simulation | `ShioajiSimulationExecutionClient` | SDK 整合測試，尚未接 API／Worker | 模擬環境限定 |
-| Live | `OrderExecutor` port | `DisabledBroker` fail closed | 停用 |
+| Live | routed outbox + `BrokerRegistry` | target-scoped `LockedBroker` fail closed | 停用 |
 
 Strategy Runtime 提供 Observe Mode，以及預設 paused、必須明確 armed 的 Paper Auto
 Mode。Paper Auto entry 由 closed-bar durable Decision 經 market/account/permission/
@@ -50,7 +50,7 @@ Fill 前會再以 executable open（含滑價）與 preliminary stop 執行 gap-
 Public Application 與 Execution Service 是不同 process/container。前者不取得 live
 broker credentials 或 CA，也不建構任何 production broker client。後者無 HTTP
 port、Caddy route 或 browser endpoint，並透過既有 SQLite live outbox/recovery 邊界與
-application 解耦。本階段 execution service 只組裝 `DisabledBroker`、
+application 解耦。本階段 execution service 只組裝 target-scoped `LockedBroker`、
 `DisabledExecutionWorker` 與永久拒絕的 admission gate，因此真實委託仍為零。
 
 ### Broker-neutral Execution Boundary
@@ -69,10 +69,57 @@ Execution connection 以 `BrokerConnectionSettings` 表達
 `BrokerAccountRef(broker_name, account_id)`；不能只以 account ID 辨識。券商專屬 env
 名稱與憑證驗證位於 adapter-side `BrokerSecretProvider`，不進入 execution application
 core。現階段只在 composition/factory layer 驗證 `disabled` 與 `shioaji`，沒有宣稱已
-支援第二家券商；Registry、Router、Capabilities 與跨券商風控留待後續 PR。
+支援第二家 production 券商。
 
 詳細 secret ownership、network isolation、fail-closed 狀態與部署遷移見
 [Live Execution Security Boundary](live-execution-security-boundary.md)。
+
+### Multi-Broker Execution Architecture
+
+```mermaid
+flowchart TD
+    A["Strategy Runtime"] --> B["Decision"]
+    B --> C["Routed Live Request<br/>BrokerAccountRef + BrokerOrderRequest"]
+    C --> D["Durable Order + Outbox"]
+    D --> E["BrokerRegistry"]
+    E --> F["BrokerPort A"]
+    E --> G["BrokerPort B"]
+    F --> H["Adapter A"]
+    G --> I["Future Adapter"]
+```
+
+`BrokerOrderRequest` 保持 Paper／Replay 相容，不包含 broker routing。Live execution
+使用 `RoutedBrokerOrderRequest` envelope，並把 `broker_name + account_id`
+同時寫入 `live_orders` 與 `live_order_outbox`。Worker restart 後只能依 durable
+target dispatch；不會讀取當下 default broker，也不會在 target unavailable 時改送
+其他 account。
+
+`BrokerRegistry` 與 adapter factory 是兩個不同責任：
+
+- factory 根據 composition layer 已註冊的 builder 建立 adapter registration；
+- registry 保存已建立、長生命週期的 account runtime，以 `BrokerAccountRef`
+  dictionary key 做 O(1) 精確解析；
+- duplicate registration、unknown target、locked/unavailable runtime 全部 fail closed；
+- registry 組裝完成後 freeze，不支援執行中 unregister。
+
+每個 `BrokerRegistration` 只保存 account ref、`BrokerPort`、
+`BrokerCapabilities`、`BrokerInstrumentMapper` 與 runtime state。Capabilities
+只供 Execution Policy 判斷 adapter 能力，Strategy 不得讀取。Instrument mapper
+負責 canonical symbol/contract 與券商 identifier 的轉換；mapping failure 不得使用
+原字串猜測或 fallback。
+
+新增券商的標準流程：
+
+1. 實作 `BrokerPort` adapter。
+2. 實作該 connection 的 credential provider。
+3. 實作 `BrokerInstrumentMapper`。
+4. 宣告 `BrokerCapabilities`。
+5. 通過共用 BrokerPort contract tests。
+6. 在 adapter factory／execution composition 註冊 builder。
+
+新增券商不應修改 Strategy Runtime、`LiveOrderManager` 或核心 Risk logic。
+目前 fake A/B 只用於 contract 與 routing tests；production 沒有第二家券商、沒有
+Shioaji production login，也沒有真實 submit path。
 
 ## 依賴方向
 

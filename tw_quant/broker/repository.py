@@ -13,6 +13,8 @@ from .models import (
     BrokerOrderStatus,
     ExecutionMode,
 )
+from .identity import BrokerAccountRef
+from .routing import RoutedBrokerOrder, RoutedBrokerOrderRequest
 
 
 def _utc_now() -> datetime:
@@ -49,6 +51,8 @@ class SQLiteLiveOrderRepository:
                 CREATE TABLE IF NOT EXISTS live_orders (
                     client_order_id TEXT PRIMARY KEY,
                     owner_user_id TEXT NOT NULL,
+                    broker_name TEXT,
+                    account_id TEXT,
                     request_json TEXT NOT NULL,
                     status TEXT NOT NULL,
                     broker_order_id TEXT,
@@ -59,12 +63,10 @@ class SQLiteLiveOrderRepository:
                 );
                 CREATE INDEX IF NOT EXISTS idx_live_orders_owner_updated
                     ON live_orders(owner_user_id, updated_at DESC);
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_live_orders_broker_order
-                    ON live_orders(broker_order_id)
-                    WHERE broker_order_id IS NOT NULL;
-
                 CREATE TABLE IF NOT EXISTS live_order_outbox (
                     client_order_id TEXT PRIMARY KEY,
+                    broker_name TEXT,
+                    account_id TEXT,
                     state TEXT NOT NULL,
                     attempt_count INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL,
@@ -72,6 +74,53 @@ class SQLiteLiveOrderRepository:
                     FOREIGN KEY(client_order_id)
                         REFERENCES live_orders(client_order_id)
                 );
+                """
+            )
+            order_columns = {
+                str(row["name"])
+                for row in self.connection.execute(
+                    "PRAGMA table_info(live_orders)"
+                ).fetchall()
+            }
+            outbox_columns = {
+                str(row["name"])
+                for row in self.connection.execute(
+                    "PRAGMA table_info(live_order_outbox)"
+                ).fetchall()
+            }
+            if "broker_name" not in order_columns:
+                self.connection.execute(
+                    "ALTER TABLE live_orders ADD COLUMN broker_name TEXT"
+                )
+            if "account_id" not in order_columns:
+                self.connection.execute(
+                    "ALTER TABLE live_orders ADD COLUMN account_id TEXT"
+                )
+            if "broker_name" not in outbox_columns:
+                self.connection.execute(
+                    "ALTER TABLE live_order_outbox ADD COLUMN broker_name TEXT"
+                )
+            if "account_id" not in outbox_columns:
+                self.connection.execute(
+                    "ALTER TABLE live_order_outbox ADD COLUMN account_id TEXT"
+                )
+            self.connection.executescript(
+                """
+                DROP INDEX IF EXISTS idx_live_orders_broker_order;
+                CREATE UNIQUE INDEX IF NOT EXISTS
+                    idx_live_orders_target_broker_order
+                    ON live_orders(broker_name, account_id, broker_order_id)
+                    WHERE broker_name IS NOT NULL
+                      AND account_id IS NOT NULL
+                      AND broker_order_id IS NOT NULL;
+                CREATE INDEX IF NOT EXISTS idx_live_outbox_target_state
+                    ON live_order_outbox(
+                        broker_name, account_id, state, created_at
+                    );
+                UPDATE live_order_outbox
+                   SET state='blocked'
+                 WHERE state IN ('pending', 'processing')
+                   AND (broker_name IS NULL OR account_id IS NULL);
                 """
             )
             self.connection.commit()
@@ -96,8 +145,13 @@ class SQLiteLiveOrderRepository:
         )
 
     def reserve(
-        self, request: BrokerOrderRequest, *, occurred_at: datetime | None = None
+        self,
+        routed_request: RoutedBrokerOrderRequest,
+        *,
+        occurred_at: datetime | None = None,
     ) -> tuple[BrokerOrder, bool]:
+        request = routed_request.request
+        target = routed_request.target
         if request.mode is not ExecutionMode.LIVE:
             raise ValueError("live order repository only accepts live orders")
         now = occurred_at or _utc_now()
@@ -110,10 +164,16 @@ class SQLiteLiveOrderRepository:
         with self.lock:
             self.connection.execute("BEGIN IMMEDIATE")
             cursor = self.connection.execute(
-                "INSERT OR IGNORE INTO live_orders VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT OR IGNORE INTO live_orders "
+                "(client_order_id, owner_user_id, broker_name, account_id, "
+                "request_json, status, broker_order_id, filled_quantity, "
+                "average_fill_price, status_reason, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     request.client_order_id,
                     request.owner_id,
+                    target.broker_name,
+                    target.account_id,
                     _request_json(request),
                     order.status.value,
                     None,
@@ -126,9 +186,14 @@ class SQLiteLiveOrderRepository:
             created = cursor.rowcount == 1
             if created:
                 self.connection.execute(
-                    "INSERT INTO live_order_outbox VALUES (?, 'pending', 0, ?, ?)",
+                    "INSERT INTO live_order_outbox "
+                    "(client_order_id, broker_name, account_id, state, "
+                    "attempt_count, created_at, updated_at) "
+                    "VALUES (?, ?, ?, 'pending', 0, ?, ?)",
                     (
                         request.client_order_id,
+                        target.broker_name,
+                        target.account_id,
                         now.isoformat(timespec="microseconds"),
                         now.isoformat(timespec="microseconds"),
                     ),
@@ -142,7 +207,18 @@ class SQLiteLiveOrderRepository:
         existing = self._order(row)
         if existing.request.owner_id != request.owner_id:
             raise ValueError("client_order_id already belongs to another owner")
+        existing_target = self._target(row)
+        if existing_target != target:
+            raise ValueError("client_order_id already belongs to another target")
         return existing, created
+
+    @staticmethod
+    def _target(row: sqlite3.Row) -> BrokerAccountRef | None:
+        broker_name = row["broker_name"]
+        account_id = row["account_id"]
+        if broker_name is None or account_id is None:
+            return None
+        return BrokerAccountRef(str(broker_name), str(account_id))
 
     def get(self, owner_id: str, client_order_id: str) -> BrokerOrder | None:
         with self.lock:
@@ -152,29 +228,59 @@ class SQLiteLiveOrderRepository:
             ).fetchone()
         return self._order(row) if row else None
 
-    def get_by_broker_order_id(self, broker_order_id: str) -> BrokerOrder | None:
+    def get_routed(
+        self, owner_id: str, client_order_id: str
+    ) -> RoutedBrokerOrder | None:
+        with self.lock:
+            row = self.connection.execute(
+                "SELECT * FROM live_orders "
+                "WHERE owner_user_id=? AND client_order_id=?",
+                (owner_id, client_order_id),
+            ).fetchone()
+        if row is None:
+            return None
+        target = self._target(row)
+        if target is None:
+            return None
+        return RoutedBrokerOrder(target, self._order(row))
+
+    def get_by_broker_order_id(
+        self, target: BrokerAccountRef, broker_order_id: str
+    ) -> BrokerOrder | None:
         if not broker_order_id.strip():
             raise ValueError("broker_order_id is required")
         with self.lock:
             row = self.connection.execute(
-                "SELECT * FROM live_orders WHERE broker_order_id=?",
-                (broker_order_id,),
+                "SELECT * FROM live_orders WHERE broker_name=? AND account_id=? "
+                "AND broker_order_id=?",
+                (target.broker_name, target.account_id, broker_order_id),
             ).fetchone()
         return self._order(row) if row else None
 
-    def orders(self, owner_id: str | None = None) -> list[BrokerOrder]:
+    def orders(
+        self,
+        owner_id: str | None = None,
+        *,
+        target: BrokerAccountRef | None = None,
+    ) -> list[BrokerOrder]:
         query = "SELECT * FROM live_orders"
+        clauses: list[str] = []
         parameters: tuple[object, ...] = ()
         if owner_id is not None:
-            query += " WHERE owner_user_id=?"
+            clauses.append("owner_user_id=?")
             parameters = (owner_id,)
+        if target is not None:
+            clauses.extend(("broker_name=?", "account_id=?"))
+            parameters += (target.broker_name, target.account_id)
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
         query += " ORDER BY updated_at, client_order_id"
         with self.lock:
             rows = self.connection.execute(query, parameters).fetchall()
         return [self._order(row) for row in rows]
 
     def reconciliation_candidates(
-        self, owner_id: str | None = None
+        self, target: BrokerAccountRef, owner_id: str | None = None
     ) -> list[BrokerOrder]:
         statuses = (
             BrokerOrderStatus.SUBMITTING,
@@ -184,8 +290,15 @@ class SQLiteLiveOrderRepository:
             BrokerOrderStatus.UNKNOWN,
         )
         placeholders = ", ".join("?" for _ in statuses)
-        query = f"SELECT * FROM live_orders WHERE status IN ({placeholders})"
-        parameters: tuple[object, ...] = tuple(status.value for status in statuses)
+        query = (
+            f"SELECT * FROM live_orders WHERE status IN ({placeholders}) "
+            "AND broker_name=? AND account_id=?"
+        )
+        parameters: tuple[object, ...] = (
+            *tuple(status.value for status in statuses),
+            target.broker_name,
+            target.account_id,
+        )
         if owner_id is not None:
             query += " AND owner_user_id=?"
             parameters += (owner_id,)
@@ -194,14 +307,21 @@ class SQLiteLiveOrderRepository:
             rows = self.connection.execute(query, parameters).fetchall()
         return [self._order(row) for row in rows]
 
-    def claim_next(self) -> BrokerOrder | None:
+    def claim_next(self, target: BrokerAccountRef) -> RoutedBrokerOrder | None:
         now = _utc_now().isoformat(timespec="microseconds")
         with self.lock:
             self.connection.execute("BEGIN IMMEDIATE")
             row = self.connection.execute(
                 "SELECT orders.* FROM live_order_outbox AS outbox "
                 "JOIN live_orders AS orders USING(client_order_id) "
-                "WHERE outbox.state='pending' ORDER BY outbox.created_at LIMIT 1"
+                "WHERE outbox.state='pending' "
+                "AND outbox.broker_name IS NOT NULL "
+                "AND outbox.account_id IS NOT NULL "
+                "AND orders.broker_name=outbox.broker_name "
+                "AND orders.account_id=outbox.account_id "
+                "AND outbox.broker_name=? AND outbox.account_id=? "
+                "ORDER BY outbox.created_at LIMIT 1",
+                (target.broker_name, target.account_id),
             ).fetchone()
             if row is None:
                 self.connection.commit()
@@ -212,7 +332,9 @@ class SQLiteLiveOrderRepository:
                 (now, row["client_order_id"]),
             )
             self.connection.commit()
-        return self._order(row)
+        stored_target = self._target(row)
+        assert stored_target is not None
+        return RoutedBrokerOrder(stored_target, self._order(row))
 
     def finish_dispatch(self, order: BrokerOrder) -> None:
         outbox_state = (

@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from typing import Mapping, Protocol, Sequence, runtime_checkable
 
 from .models import BrokerOrder, BrokerOrderRequest
+from .identity import BrokerAccountRef
+from .routing import RoutedBrokerOrder, RoutedBrokerOrderRequest
 
 
 class BrokerAccount(Protocol):
@@ -68,20 +70,34 @@ class LiveOrderStore(Protocol):
     """Persistence port used by the order manager and implemented by adapters."""
 
     def reserve(
-        self, request: BrokerOrderRequest, *, occurred_at: datetime | None = None
+        self,
+        routed_request: RoutedBrokerOrderRequest,
+        *,
+        occurred_at: datetime | None = None,
     ) -> tuple[BrokerOrder, bool]: ...
 
     def get(self, owner_id: str, client_order_id: str) -> BrokerOrder | None: ...
 
-    def get_by_broker_order_id(self, broker_order_id: str) -> BrokerOrder | None: ...
+    def get_routed(
+        self, owner_id: str, client_order_id: str
+    ) -> RoutedBrokerOrder | None: ...
 
-    def orders(self, owner_id: str | None = None) -> list[BrokerOrder]: ...
+    def get_by_broker_order_id(
+        self, target: BrokerAccountRef, broker_order_id: str
+    ) -> BrokerOrder | None: ...
 
-    def reconciliation_candidates(
-        self, owner_id: str | None = None
+    def orders(
+        self,
+        owner_id: str | None = None,
+        *,
+        target: BrokerAccountRef | None = None,
     ) -> list[BrokerOrder]: ...
 
-    def claim_next(self) -> BrokerOrder | None: ...
+    def reconciliation_candidates(
+        self, target: BrokerAccountRef, owner_id: str | None = None
+    ) -> list[BrokerOrder]: ...
+
+    def claim_next(self, target: BrokerAccountRef) -> RoutedBrokerOrder | None: ...
 
     def finish_dispatch(self, order: BrokerOrder) -> None: ...
 

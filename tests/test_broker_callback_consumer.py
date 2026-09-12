@@ -7,14 +7,20 @@ import tempfile
 import unittest
 
 from tw_quant.broker import (
+    BrokerAccountRef,
+    BrokerCapabilities,
     BrokerCallbackConsumer,
     BrokerEvent,
     BrokerEventAuditStatus,
     BrokerOrder,
     BrokerOrderRequest,
     BrokerOrderStatus,
+    BrokerRegistration,
+    BrokerRegistry,
+    CanonicalInstrument,
     ExecutionMode,
     LiveOrderManager,
+    RoutedBrokerOrderRequest,
     SQLiteBrokerEventAuditRepository,
     SQLiteLiveOrderRepository,
     broker_event_id,
@@ -23,6 +29,15 @@ from tw_quant.broker import (
 
 
 NOW = datetime(2026, 9, 9, 13, tzinfo=timezone.utc)
+TARGET = BrokerAccountRef("shioaji", "sim-1")
+
+
+class FakeMapper:
+    def to_broker_contract(self, instrument):
+        return instrument.contract
+
+    def to_canonical_instrument(self, broker_contract):
+        return CanonicalInstrument("TMF", broker_contract)
 
 
 def request() -> BrokerOrderRequest:
@@ -42,8 +57,11 @@ def request() -> BrokerOrderRequest:
 def event(broker_order_id: str | None = "broker-1") -> BrokerEvent:
     payload = {"order_id": broker_order_id, "status": "Submitted"}
     return BrokerEvent(
-        event_id=broker_event_id("shioaji", "FORDER", broker_order_id, payload),
+        event_id=broker_event_id(
+            "shioaji", "sim-1", "FORDER", broker_order_id, payload
+        ),
         broker_name="shioaji",
+        account_id="sim-1",
         event_type="FORDER",
         broker_order_id=broker_order_id,
         received_at=NOW,
@@ -52,7 +70,7 @@ def event(broker_order_id: str | None = "broker-1") -> BrokerEvent:
 
 
 class FakeBroker:
-    broker_name = "fake"
+    broker_name = "shioaji"
 
     def __init__(self):
         self.refreshes = 0
@@ -82,11 +100,13 @@ class BrokerEventTests(unittest.TestCase):
         first = normalize_callback(
             "FORDER",
             {"order_id": "broker-1", "nested": {"at": NOW}},
+            account_ref=TARGET,
             now=lambda: NOW,
         )
         repeated = normalize_callback(
             "FORDER",
             {"nested": {"at": NOW}, "order_id": "broker-1"},
+            account_ref=TARGET,
             now=lambda: NOW + timedelta(seconds=1),
         )
         self.assertEqual(first.event_id, repeated.event_id)
@@ -98,6 +118,7 @@ class BrokerEventTests(unittest.TestCase):
             BrokerEvent(
                 event_id="invented",
                 broker_name="shioaji",
+                account_id="sim-1",
                 event_type="FORDER",
                 broker_order_id="broker-1",
                 received_at=NOW,
@@ -128,7 +149,12 @@ class BrokerCallbackConsumerTests(unittest.IsolatedAsyncioTestCase):
         self.orders = SQLiteLiveOrderRepository(path)
         self.audit = SQLiteBrokerEventAuditRepository(path)
         self.broker = FakeBroker()
-        self.manager = LiveOrderManager(self.orders, self.broker)
+        self.registry = BrokerRegistry()
+        self.registry.register(BrokerRegistration(
+            TARGET, self.broker, BrokerCapabilities(), FakeMapper()
+        ))
+        self.registry.freeze()
+        self.manager = LiveOrderManager(self.orders, self.registry)
         self.consumer = BrokerCallbackConsumer(
             self.audit, self.manager, now=lambda: NOW
         )
@@ -139,8 +165,10 @@ class BrokerCallbackConsumerTests(unittest.IsolatedAsyncioTestCase):
         self.temp.cleanup()
 
     def save_accepted_order(self) -> BrokerOrder:
-        reserved, _created = self.orders.reserve(request(), occurred_at=NOW)
-        claimed = self.orders.claim_next()
+        reserved, _created = self.orders.reserve(
+            RoutedBrokerOrderRequest(TARGET, request()), occurred_at=NOW
+        )
+        claimed = self.orders.claim_next(TARGET)
         self.assertIsNotNone(claimed)
         accepted = BrokerOrder(
             request=reserved.request,

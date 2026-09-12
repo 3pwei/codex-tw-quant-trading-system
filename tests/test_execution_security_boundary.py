@@ -19,6 +19,7 @@ from tw_quant.broker import (
     ExecutionMode,
     LockedOrderAdmissionGate,
     RecoveryStatus,
+    RoutedBrokerOrderRequest,
     SQLiteRecoveryLockRepository,
 )
 from tw_quant.execution_service import build_execution_service
@@ -160,7 +161,10 @@ class ExecutionSecurityBoundaryTests(unittest.IsolatedAsyncioTestCase):
         try:
             self.assertIsNotNone(runtime.manager)
             self.assertIsNotNone(runtime.recovery_repository)
-            self.assertEqual(runtime.manager.broker.broker_name, "disabled")
+            account = BrokerAccountRef("shioaji", "account-1234")
+            registration = runtime.manager.registry.registration(account)
+            self.assertEqual(registration.port.broker_name, "shioaji")
+            self.assertEqual(registration.state.value, "locked")
             attempt = runtime.recovery_repository.begin(
                 "shioaji", "account-1234", updated_at=datetime.now(timezone.utc)
             )
@@ -182,8 +186,8 @@ class ExecutionSecurityBoundaryTests(unittest.IsolatedAsyncioTestCase):
                 quantity=1,
                 mode=ExecutionMode.LIVE,
             )
-            with self.assertRaisesRegex(RuntimeError, "not implemented"):
-                runtime.manager.create(request)
+            with self.assertRaisesRegex(RuntimeError, "locked"):
+                runtime.manager.create(RoutedBrokerOrderRequest(account, request))
             self.assertEqual(runtime.order_repository.orders(), [])
             self.assertEqual(runtime.worker.snapshot()["dispatches"], 0)
         finally:
@@ -295,7 +299,7 @@ class ExecutionSecurityBoundaryTests(unittest.IsolatedAsyncioTestCase):
                 "locked", True, True, "locked",
             ),
         )).to_public_dict()
-        connections = health["connections"]
+        connections = health["broker_accounts"]
         self.assertEqual(len(connections), 2)
         self.assertEqual(connections[0]["broker_name"], "broker-a")
         self.assertEqual(connections[1]["broker_name"], "broker-b")

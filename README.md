@@ -37,9 +37,11 @@ flowchart TD
     F --> G["FastAPI REST 與 WebSocket"]
     G --> H["Next.js 交易工作台"]
     E --> I["Durable Live Persistence Boundary"]
-    I --> J["Isolated Execution Service"]
-    J --> K["BrokerPort · Locked"]
-    K -.-> L["Shioaji 或 Future Adapter<br/>No Production Submit"]
+    I --> J["Execution Target<br/>BrokerAccountRef"]
+    J --> K["Broker Registry"]
+    K --> L["Broker Account Runtime"]
+    L --> M["BrokerPort · Locked"]
+    M -.-> N["Shioaji 或 Future Adapter<br/>No Production Submit"]
 ```
 
 - 行情 Provider 與 Broker／Order Executor 是獨立邊界；production 行情只讀取
@@ -51,6 +53,11 @@ flowchart TD
 - Live 下單基礎先持久化 order／outbox，再由 Recovery Lock 控制 dispatch；callback 只觸發 audit 與券商狀態 refresh。
 - execution connection、Recovery、health 與 secret resolution 均使用
   `broker_name + account_id`；相同帳號字串在不同券商不會形成同一個執行身分。
+- 每筆 Live order 與 outbox 都持久化 `BrokerAccountRef` target；restart 後依原 target
+  精確解析，未知、locked 或 unavailable target 一律拒絕，不會 fallback 至其他券商。
+- `BrokerRegistry` 以 O(1) lookup 解析長生命週期 account runtime；每個 registration
+  分別宣告 `BrokerCapabilities` 與 `BrokerInstrumentMapper`，Strategy 與 Risk
+  不依賴 adapter 類別或券商能力。
 - 券商 orders、fills、positions 全部一致才允許 worker 進入 ready；production 目前保持 disabled／locked。
 
 ## Systematic Paper Trading
@@ -242,6 +249,7 @@ API_MAX_REQUEST_BODY_BYTES=262144
 - [程式架構與依賴規則](docs/architecture.md)
 - [訂單生命週期與 Live 安全規則](docs/order-lifecycle.md)
 - [Live Execution Security Boundary](docs/live-execution-security-boundary.md)
+- [Multi-Broker Execution Architecture](docs/architecture.md#multi-broker-execution-architecture)
 
 ## API 概覽
 
@@ -282,7 +290,7 @@ TMF 研究預設成本：契約乘數每點 NT$10、每邊手續費 NT$10、交�
 
 ## 已知限制與 Roadmap
 
-目前限制：單一 TMF 商品、單機 SQLite、不含完整委託簿與實盤部分成交流程，也不處理漲跌停／暫緩撮合。外部 Broker execution foundation 已完成，但正式環境仍停用；尚未具備 production Shioaji client、CA／金鑰生命週期、原生保護委託／OCO、人工 mismatch／UNKNOWN 處理介面及完整營運解鎖流程。
+目前限制：單一 TMF 商品、單機 SQLite、不含完整委託簿與實盤部分成交流程，也不處理漲跌停／暫緩撮合。Multi-Broker routing foundation 已完成，但沒有第二家 production adapter，正式環境仍停用；尚未具備 production Shioaji client、CA／金鑰生命週期、原生保護委託／OCO、人工 mismatch／UNKNOWN 處理介面及完整營運解鎖流程。
 
 下一階段優先順序：
 

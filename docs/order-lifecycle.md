@@ -85,13 +85,18 @@ order/outbox、`LiveOrderManager`、`ShioajiBrokerAdapter` 與 simulation-only S
 SDK client 只會以 `Shioaji(simulation=True)` 登入，支援期貨市價／限價送單、撤單、
 委託查詢與部位快照；不載入 CA，也沒有 production 建構路徑。
 
-這些元件尚未接入 API 或背景 Worker，因此正式站仍由 `DisabledBroker` 拒絕所有外部
+這些元件尚未接入 API 或啟用中的背景 Worker，因此正式站仍由 target-scoped
+`LockedBroker` 拒絕所有外部
 送單。Simulation client 是整合測試邊界，不代表正式站已啟用 Paper 或 Live 自動下單。
 
-送單前，`LiveOrderManager.create()` 會在同一個 transaction 保存 order 與 outbox；
+送單前，Live 使用
+`RoutedBrokerOrderRequest(BrokerAccountRef, BrokerOrderRequest)`，避免修改 Paper
+共用 request。`LiveOrderManager.create()` 會在同一個 transaction 保存 order、
+outbox 與 immutable broker/account target；
 Worker 只能領取 `pending` 工作一次。送單逾時、程序中斷或結果不明會轉成 `UNKNOWN`
 並將 outbox 設為 `blocked`，必須先透過券商查詢完成 reconciliation，不得自動重送。
-`LiveOrderManager.reconcile_broker_orders()` 只查詢可能已到達券商的委託；尚在 outbox
+`LiveOrderManager.reconcile_broker_orders(target)` 只查詢該 broker/account 下可能
+已到達券商的委託；尚在 outbox
 等待、狀態為 `risk_approved` 的訂單不會被誤判為券商遺失。callback bridge
 只把 `FORDER`／`FDEAL` 正規化並放進記憶體 queue，不直接寫資料庫。callback consumer
 先以內容雜湊的 `event_id` 將事件寫入 `live_broker_events`，再以 `broker_order_id` 查找
@@ -117,6 +122,11 @@ orders、deals 與 positions，依序檢查：
 全部一致才把狀態改為 `ready`。任何 mismatch、snapshot 失敗或 `UNKNOWN` 無券商 ID
 都維持 `locked`，並保存穩定 issue code。程序若在對帳途中停止，資料庫會保留
 `reconciling`，下次啟動仍視為未解鎖。
+
+Recovery Lock、callback audit、broker-order lookup 與對帳 service 都以
+`BrokerAccountRef` 隔離。同一個 `account_id` 或 `broker_order_id` 出現在不同
+broker 時仍是不同 identity。Callback 沒有 account identity 時只會進 audit 並標為
+unmatched，不能觸發任何 order refresh。
 
 目前 Recovery Lock、對帳 service 與 Shioaji simulation snapshot 已具備可測試的組裝
 邊界，但正式站尚未啟動 execution worker，因此不會進行外部送單。
@@ -184,6 +194,6 @@ Paper API 保留舊的 `status` 以維持相容，並額外回傳 `lifecycle_sta
 - 原生保護委託／OCO、部分成交後保護數量調整，以及撤單競態處理。
 - Shioaji production client、CA 憑證生命週期、金鑰輪替與真實帳號 allowlist。
 - BrokerRegistry、ExecutionRouter、capability negotiation、order routing identity、
-  multi-account scheduling 與第二家 broker adapter。
+  multi-account concurrent scheduling 與第二家 production broker adapter。
 - 每日額度、單筆額度、最大曝險、行情新鮮度、交易時段與全域 Kill Switch。
 - UNKNOWN 無 broker order ID 的營運對帳介面；完成前不得自動重送。
