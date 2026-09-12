@@ -11,9 +11,10 @@ from .models import (
     BrokerOrderStatus,
     ExecutionMode,
 )
+from .safety import LIVE_TRADING_CONFIRMATION
 
 
-LIVE_CONFIRMATION = "I_UNDERSTAND_LIVE_ORDERS"
+LIVE_CONFIRMATION = LIVE_TRADING_CONFIRMATION
 ExternalReportStatus = Literal[
     "accepted",
     "partially_filled",

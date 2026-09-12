@@ -1,4 +1,4 @@
-FROM python:3.12-slim
+FROM python:3.12-slim AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
@@ -13,5 +13,9 @@ RUN uv sync --locked --no-dev --extra server --extra shioaji --no-editable \
 
 ENV PATH="/app/.venv/bin:$PATH"
 
+FROM runtime AS market-api
 EXPOSE 8000
 CMD ["uvicorn", "tw_quant.live.api:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
+
+FROM runtime AS execution-worker
+CMD ["python", "-m", "tw_quant.execution_service", "run"]

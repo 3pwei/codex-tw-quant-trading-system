@@ -10,6 +10,7 @@ from .callback_consumer import BrokerCallbackConsumer
 from .disabled import DisabledBroker
 from .events import BrokerEvent, broker_event_id
 from .factory import build_broker
+from .identity import BrokerAccountRef
 from .lifecycle import InvalidOrderTransition, transition_order
 from .manager import LiveOrderManager
 from .models import (
@@ -24,7 +25,9 @@ from .models import (
 from .ports import (
     BrokerAccount,
     BrokerPort,
+    CompositeOrderAdmissionGate,
     LiveOrderStore,
+    LockedOrderAdmissionGate,
     OrderAdmissionGate,
     OrderExecutor,
 )
@@ -46,7 +49,13 @@ from .recovery import (
     SQLiteRecoveryLockRepository,
 )
 from .repository import SQLiteLiveOrderRepository
-from .settings import BrokerSettings
+from .secrets import (
+    BrokerSecretMaterial,
+    BrokerSecretProvider,
+    SecretConfigurationError,
+)
+from .settings import BrokerConnectionSettings, BrokerSettings
+from .safety import BrokerAccountSafety, LIVE_TRADING_CONFIRMATION
 from .shioaji import (
     ExternalOrderReport,
     LiveTradingSafety,
@@ -71,6 +80,8 @@ from .worker import (
 
 __all__ = [
     "BrokerAccount",
+    "BrokerAccountRef",
+    "BrokerAccountSafety",
     "BrokerAccountSnapshot",
     "BrokerCallbackConsumer",
     "BrokerEvent",
@@ -84,9 +95,13 @@ __all__ = [
     "BrokerOrderSnapshot",
     "BrokerPositionSnapshot",
     "BrokerPort",
+    "CompositeOrderAdmissionGate",
     "BrokerReconciliationSnapshot",
     "BrokerReconciliationSource",
+    "BrokerConnectionSettings",
     "BrokerSettings",
+    "BrokerSecretMaterial",
+    "BrokerSecretProvider",
     "DisabledBroker",
     "DisabledExecutionWorker",
     "ExecutionMode",
@@ -97,8 +112,10 @@ __all__ = [
     "ExternalOrderReport",
     "InvalidOrderTransition",
     "LiveTradingSafety",
+    "LIVE_TRADING_CONFIRMATION",
     "LiveOrderManager",
     "LiveOrderStore",
+    "LockedOrderAdmissionGate",
     "LiveReconciliationService",
     "OrderAdmissionGate",
     "OrderExecutor",
@@ -114,6 +131,7 @@ __all__ = [
     "ShioajiCallbackEvent",
     "ShioajiExecutionClient",
     "ShioajiSimulationExecutionClient",
+    "SecretConfigurationError",
     "SQLiteBrokerEventAuditRepository",
     "SQLiteLiveOrderRepository",
     "SQLiteRecoveryLockRepository",

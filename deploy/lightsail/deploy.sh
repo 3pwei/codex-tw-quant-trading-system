@@ -6,6 +6,7 @@ INSTALL_ROOT="/opt/tw-quant"
 REPOSITORY="${INSTALL_ROOT}/repo"
 COMPOSE_FILE="${REPOSITORY}/deploy/lightsail/docker-compose.yml"
 COMPOSE_ENV="${INSTALL_ROOT}/config/compose.env"
+EXECUTION_ENV="${INSTALL_ROOT}/config/execution.env"
 
 if [[ ! "${COMMIT_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
   echo "Invalid commit SHA" >&2
@@ -48,6 +49,16 @@ fi
 
 "${REPOSITORY}/deploy/lightsail/prepare-host.sh"
 
+if [[ ! -f "${EXECUTION_ENV}" || "$(stat -c '%a' "${EXECUTION_ENV}")" != "600" ]]; then
+  echo "execution.env must exist as a regular file with mode 600" >&2
+  exit 4
+fi
+if find "${INSTALL_ROOT}/secrets" -maxdepth 1 -type f -perm /077 \
+  -print -quit | grep -q .; then
+  echo "execution secret files must not grant group or other permissions" >&2
+  exit 4
+fi
+
 docker compose \
   --env-file "${COMPOSE_ENV}" \
   -f "${COMPOSE_FILE}" \
@@ -62,12 +73,20 @@ docker compose \
   run --rm --no-deps -T market-api python -c \
   'from tw_quant.live.settings import LiveSettings; LiveSettings.from_env().validate()'
 
+# Validate the isolated execution configuration. Locked/disabled is a valid
+# service state; this command never logs in, activates a CA, or submits orders.
+docker compose \
+  --env-file "${COMPOSE_ENV}" \
+  -f "${COMPOSE_FILE}" \
+  run --rm --no-deps -T execution-worker \
+  python -m tw_quant.execution_service validate
+
 docker compose \
   --env-file "${COMPOSE_ENV}" \
   -f "${COMPOSE_FILE}" \
   up --no-build --detach --remove-orphans --force-recreate
 
-for service in market-api gateway; do
+for service in market-api execution-worker gateway; do
   built_image="$(docker compose \
     --env-file "${COMPOSE_ENV}" \
     -f "${COMPOSE_FILE}" images -q "${service}")"
@@ -85,6 +104,16 @@ for service in market-api gateway; do
     exit 1
   fi
 done
+
+execution_container="$(docker compose \
+  --env-file "${COMPOSE_ENV}" \
+  -f "${COMPOSE_FILE}" ps -q execution-worker)"
+published_ports="$(docker inspect --format '{{json .NetworkSettings.Ports}}' \
+  "${execution_container}")"
+if [[ "${published_ports}" != "{}" ]]; then
+  echo "execution-worker unexpectedly exposes a network port" >&2
+  exit 1
+fi
 
 docker compose \
   --env-file "${COMPOSE_ENV}" \

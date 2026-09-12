@@ -5,6 +5,8 @@
 以微型臺指期貨（TMF）為核心的研究與 Paper Trading 平台，整合 Shioaji 即時行情、歷史回測、動態回放、多週期策略、事件驅動模擬成交、帳戶風控及監控。正式環境部署於 AWS Lightsail，使用 Cloudflare Access 保護入口。
 
 > 本專案僅供研究與工程驗證，不構成投資建議。目前不會向外部券商送出真實委託。
+> Production 已建立獨立的 Live Execution Security Boundary，但 execution service
+> 固定 locked，沒有 production client 或 broker submit path。
 
 ## 核心能力
 
@@ -34,15 +36,21 @@ flowchart TD
     E --> F["Backtest、Replay、Paper"]
     F --> G["FastAPI REST 與 WebSocket"]
     G --> H["Next.js 交易工作台"]
-    E --> I["Live Execution Foundation"]
-    I --> J["Disabled in Production"]
+    E --> I["Durable Live Persistence Boundary"]
+    I --> J["Isolated Execution Service"]
+    J --> K["BrokerPort · Locked"]
+    K -.-> L["Shioaji 或 Future Adapter<br/>No Production Submit"]
 ```
 
-- 行情 Provider 與 Broker／Order Executor 是獨立邊界；production 目前只為行情載入 Shioaji 憑證，simulation execution client 由隔離的測試組裝路徑注入。
+- 行情 Provider 與 Broker／Order Executor 是獨立邊界；production 行情只讀取
+  `MARKET_SJ_*` quote credentials，`SJ_API_KEY`、`SJ_SECRET_KEY` 與 CA 只能屬於
+  無 public port 的 execution container。
 - Tick callback 只做正規化與非阻塞入 Queue，不寫 DB、不算指標、不推送前端。
 - Live、Replay、Backtest 共用 `KBar` 與策略；Backtest、Replay、Paper 共用事件、風控及成本模型。
 - 行情資料全平台共用；策略、版本、回測與 Paper 資料依 `owner_user_id` 隔離。
 - Live 下單基礎先持久化 order／outbox，再由 Recovery Lock 控制 dispatch；callback 只觸發 audit 與券商狀態 refresh。
+- execution connection、Recovery、health 與 secret resolution 均使用
+  `broker_name + account_id`；相同帳號字串在不同券商不會形成同一個執行身分。
 - 券商 orders、fills、positions 全部一致才允許 worker 進入 ready；production 目前保持 disabled／locked。
 
 ## Systematic Paper Trading
@@ -163,9 +171,9 @@ MARKET_DATA_PROVIDER=shioaji
 MARKET_CONTRACT=TMFR1
 MARKET_HISTORY_DAYS=30
 MARKET_HISTORY_LIMIT=50000
-SJ_API_KEY=your-market-data-key
-SJ_SEC_KEY=your-market-data-secret
-SJ_PRODUCTION=true
+MARKET_SJ_API_KEY=your-market-data-key
+MARKET_SJ_SECRET_KEY=your-market-data-secret
+MARKET_SJ_PRODUCTION=true
 ```
 
 服務只載入歷史與即時行情，不載入 CA、不啟用外部下單。個人 Shioaji 行情不代表具有多人展示或轉發授權。
@@ -233,6 +241,7 @@ API_MAX_REQUEST_BODY_BYTES=262144
 - [事件引擎](docs/event-engine.md)
 - [程式架構與依賴規則](docs/architecture.md)
 - [訂單生命週期與 Live 安全規則](docs/order-lifecycle.md)
+- [Live Execution Security Boundary](docs/live-execution-security-boundary.md)
 
 ## API 概覽
 

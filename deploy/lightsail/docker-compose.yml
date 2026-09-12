@@ -6,6 +6,7 @@ services:
     build:
       context: ../..
       dockerfile: Dockerfile
+      target: market-api
     env_file:
       - ${MARKET_ENV_FILE:-market.env}
     expose:
@@ -24,6 +25,28 @@ services:
       timeout: 5s
       retries: 4
       start_period: 30s
+
+  execution-worker:
+    platform: linux/amd64
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      target: execution-worker
+    env_file:
+      - ${EXECUTION_ENV_FILE:-/opt/tw-quant/config/execution.env}
+    volumes:
+      - market-data:/data
+      - ${EXECUTION_SECRETS_DIR:-/opt/tw-quant/secrets}:/run/live-secrets:ro
+      - execution-health:/run/tw-quant-execution
+    networks:
+      - execution-internal
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-m", "tw_quant.execution_service", "healthcheck"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 10s
 
   gateway:
     platform: linux/amd64
@@ -48,3 +71,8 @@ volumes:
   market-data:
   caddy-data:
   caddy-config:
+  execution-health:
+
+networks:
+  execution-internal:
+    internal: true

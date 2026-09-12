@@ -43,6 +43,36 @@ Fill 前會再以 executable open（含滑價）與 preliminary stop 執行 gap-
 | `paper` | Paper use case、BrokerPort adapter、持久化與復原 | 真實券商送單 |
 | `broker` | 訂單契約、生命週期、durable outbox、Broker port 與 adapter | 行情供應、策略規則 |
 | `live` | API、WebSocket、組裝服務與監控 | 交易領域規則 |
+| `execution_service` | 隔離 process composition、secret loading、locked health | HTTP、策略、production SDK submit |
+
+## Live Execution Security Boundary
+
+Public Application 與 Execution Service 是不同 process/container。前者不取得 live
+broker credentials 或 CA，也不建構任何 production broker client。後者無 HTTP
+port、Caddy route 或 browser endpoint，並透過既有 SQLite live outbox/recovery 邊界與
+application 解耦。本階段 execution service 只組裝 `DisabledBroker`、
+`DisabledExecutionWorker` 與永久拒絕的 admission gate，因此真實委託仍為零。
+
+### Broker-neutral Execution Boundary
+
+```mermaid
+flowchart TD
+    A["Public Application"] --> B["Execution Service"]
+    B --> C["BrokerPort"]
+    C --> D["Shioaji Adapter<br/>first implementation"]
+    C -.-> E["Future Broker Adapter<br/>architecture only"]
+```
+
+Execution connection 以 `BrokerConnectionSettings` 表達
+`connection_id / broker_name / account_id / enabled / secret_ref`，其中 secret ref
+是不透明參照。安全、Recovery、log 與 health 的 canonical identity 都是
+`BrokerAccountRef(broker_name, account_id)`；不能只以 account ID 辨識。券商專屬 env
+名稱與憑證驗證位於 adapter-side `BrokerSecretProvider`，不進入 execution application
+core。現階段只在 composition/factory layer 驗證 `disabled` 與 `shioaji`，沒有宣稱已
+支援第二家券商；Registry、Router、Capabilities 與跨券商風控留待後續 PR。
+
+詳細 secret ownership、network isolation、fail-closed 狀態與部署遷移見
+[Live Execution Security Boundary](live-execution-security-boundary.md)。
 
 ## 依賴方向
 
@@ -97,7 +127,9 @@ watchdog、Paper 帳戶載入、Replay 游標與圖表事件可見性必須通�
 
 1. Strategy Runner 只消費已收盤 K 棒；Observe Mode 僅保存具冪等 ID 的
    `TradingDecision`，未來 execution mode 才可經明確風控產生 `SignalEvent`。
-2. `LiveOrderManager` 先將核准委託與 outbox 原子寫入，再交給 `BrokerPort`。
+2. `LiveOrderManager.create()` 先經 `CompositeOrderAdmissionGate`（Recovery Lock、
+   Live Trading Safety、future Risk／ARM／Kill Switch）後，才將核准委託與 outbox
+   原子寫入，再交給 `BrokerPort`。
 3. Risk Gate 只能核准、縮減或拒絕，不得自行建立成交。
 4. Broker Adapter 只轉換請求與回報，不包含策略規則。
 5. Position Ledger 只根據 `FillEvent` 改變持倉。
@@ -109,7 +141,8 @@ watchdog、Paper 帳戶載入、Replay 游標與圖表事件可見性必須通�
 BrokerOrderRequest / BrokerOrderStatus
   → lifecycle policy
   → LiveOrderManager → SQLiteLiveOrderRepository
-                     → BrokerPort → ShioajiBrokerAdapter → normalized SDK client
+                     → BrokerPort → broker adapter
+                                  → ShioajiBrokerAdapter → normalized SDK client
   → LiveReconciliationService → RecoveryLockStore
                               → BrokerReconciliationSource
 ```

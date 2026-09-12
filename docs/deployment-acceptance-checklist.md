@@ -14,7 +14,14 @@
 
 - [ ] Deploy verify 的完整 Python 測試通過。
 - [ ] Dashboard `npm ci`、lint、build 通過。
-- [ ] `market-api` 為 healthy，gateway 為 running。
+- [ ] `market-api` 與 `execution-worker` 為 healthy，gateway 為 running；execution
+      狀態仍為 disabled/locked。
+- [ ] `execution-worker` 沒有 published port、Caddy route、production Shioaji
+      client 或 external broker call。
+- [ ] execution health 只顯示 broker name、masked account、locked/recovery state，
+      未輸出 secret ref、credential 或完整 account ID。
+- [ ] `market-api`、gateway 均未取得 live broker env 或掛載 CA；execution env 與
+      secrets 目錄權限已核對。
 - [ ] 公開 `/healthz` 跟隨轉址後仍是 HTTP 200，本文完全等於 `ok`。
 - [ ] Cloudflare Access 登入頁未被誤判為健康回應。
 
@@ -31,6 +38,8 @@
 - [ ] Provider 中斷時禁止新倉，恢復後沒有補送委託。
 - [ ] Paper Recovery 為 healthy，重啟前後持倉與風控狀態一致。
 - [ ] `/trade/` 只顯示 Observe／Manual Paper／Paper Auto，沒有可操作的 Live 按鈕。
+- [ ] Shioaji 行情使用 `MARKET_SJ_API_KEY`／`MARKET_SJ_SECRET_KEY`，未將 live
+      `SJ_API_KEY`／`SJ_SECRET_KEY` 放入 `market.env`。
 - [ ] Paper Auto ARM 需再次確認；Pause 阻止 Entry 但 managed exit 可用。
 - [ ] 已依 [四小時 Paper Auto 驗收](automated-paper-trading-acceptance.md) 留存 metrics evidence。
 

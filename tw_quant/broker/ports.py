@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Mapping, Protocol, runtime_checkable
+from dataclasses import dataclass
+from typing import Mapping, Protocol, Sequence, runtime_checkable
 
 from .models import BrokerOrder, BrokerOrderRequest
 
@@ -35,6 +36,32 @@ class OrderAdmissionGate(Protocol):
     """Application gate checked before a request is durably reserved."""
 
     def assert_ordering_allowed(self) -> None: ...
+
+
+@dataclass(frozen=True)
+class CompositeOrderAdmissionGate:
+    """A single fail-closed admission point for every live order reservation."""
+
+    gates: tuple[OrderAdmissionGate, ...]
+
+    def __init__(self, gates: Sequence[OrderAdmissionGate]):
+        if not gates:
+            raise ValueError("at least one live order admission gate is required")
+        object.__setattr__(self, "gates", tuple(gates))
+
+    def assert_ordering_allowed(self) -> None:
+        for gate in self.gates:
+            gate.assert_ordering_allowed()
+
+
+@dataclass(frozen=True)
+class LockedOrderAdmissionGate:
+    """Terminal gate used while production broker submission is unavailable."""
+
+    reason: str = "production broker submission is not implemented"
+
+    def assert_ordering_allowed(self) -> None:
+        raise RuntimeError(self.reason)
 
 
 class LiveOrderStore(Protocol):
