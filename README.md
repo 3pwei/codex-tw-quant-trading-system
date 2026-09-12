@@ -38,7 +38,8 @@ flowchart TD
     G --> H["Next.js 交易工作台"]
     E --> I["Durable Live Persistence Boundary"]
     I --> J["Isolated Execution Service"]
-    J --> K["Locked · No Broker Submit"]
+    J --> K["BrokerPort · Locked"]
+    K -.-> L["Shioaji 或 Future Adapter<br/>No Production Submit"]
 ```
 
 - 行情 Provider 與 Broker／Order Executor 是獨立邊界；production 行情只讀取
@@ -48,6 +49,8 @@ flowchart TD
 - Live、Replay、Backtest 共用 `KBar` 與策略；Backtest、Replay、Paper 共用事件、風控及成本模型。
 - 行情資料全平台共用；策略、版本、回測與 Paper 資料依 `owner_user_id` 隔離。
 - Live 下單基礎先持久化 order／outbox，再由 Recovery Lock 控制 dispatch；callback 只觸發 audit 與券商狀態 refresh。
+- execution connection、Recovery、health 與 secret resolution 均使用
+  `broker_name + account_id`；相同帳號字串在不同券商不會形成同一個執行身分。
 - 券商 orders、fills、positions 全部一致才允許 worker 進入 ready；production 目前保持 disabled／locked。
 
 ## Systematic Paper Trading

@@ -18,6 +18,8 @@
       狀態仍為 disabled/locked。
 - [ ] `execution-worker` 沒有 published port、Caddy route、production Shioaji
       client 或 external broker call。
+- [ ] execution health 只顯示 broker name、masked account、locked/recovery state，
+      未輸出 secret ref、credential 或完整 account ID。
 - [ ] `market-api`、gateway 均未取得 live broker env 或掛載 CA；execution env 與
       secrets 目錄權限已核對。
 - [ ] 公開 `/healthz` 跟隨轉址後仍是 HTTP 200，本文完全等於 `ok`。

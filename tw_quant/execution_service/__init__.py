@@ -1,20 +1,21 @@
 """Dedicated, non-HTTP live execution process boundary."""
 
 from .config import ExecutionServiceSettings
+from .health import BrokerConnectionHealth, ExecutionServiceHealth
 from .runtime import ExecutionServiceRuntime, build_execution_service
 from .secrets import (
-    EnvironmentLiveBrokerSecretLoader,
-    LiveBrokerSecretLoader,
-    LiveBrokerSecrets,
+    BrokerSecretMaterial,
+    BrokerSecretProvider,
     SecretConfigurationError,
 )
 
 __all__ = [
-    "EnvironmentLiveBrokerSecretLoader",
+    "BrokerSecretMaterial",
+    "BrokerSecretProvider",
+    "BrokerConnectionHealth",
     "ExecutionServiceRuntime",
+    "ExecutionServiceHealth",
     "ExecutionServiceSettings",
-    "LiveBrokerSecretLoader",
-    "LiveBrokerSecrets",
     "SecretConfigurationError",
     "build_execution_service",
 ]

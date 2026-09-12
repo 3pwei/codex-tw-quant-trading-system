@@ -168,7 +168,8 @@ Paper API 保留舊的 `status` 以維持相容，並額外回傳 `lifecycle_sta
 8. Paper Auto 必須由 `source_bar_id → decision_id → order → risk decision → fill → position`
    的 correlation／causation metadata 完整追溯。
 8. 本地與券商持倉不一致時 fail closed，留下稽核紀錄並要求人工處理。
-9. 啟用 Shioaji adapter 必須同時滿足 provider、enable flag、確認字串與帳號 allowlist；
+9. 啟用任何 live adapter 必須同時滿足 provider implementation、enable flag、確認字串與
+   `(broker_name, account_id)` allowlist；Shioaji 是目前唯一 adapter implementation，
    任一缺失都維持 fail closed。
 10. Simulation 與 Production 使用不同 client 組裝路徑；未來 production client 必須
     另外完成 CA、交易帳號、權限、Kill Switch 與操作人員解鎖，不得替換 simulation
@@ -182,5 +183,7 @@ Paper API 保留舊的 `status` 以維持相容，並額外回傳 `lifecycle_sta
 - 本地 Position Ledger 與券商部位差異的自動停機及人工解除流程。
 - 原生保護委託／OCO、部分成交後保護數量調整，以及撤單競態處理。
 - Shioaji production client、CA 憑證生命週期、金鑰輪替與真實帳號 allowlist。
+- BrokerRegistry、ExecutionRouter、capability negotiation、order routing identity、
+  multi-account scheduling 與第二家 broker adapter。
 - 每日額度、單筆額度、最大曝險、行情新鮮度、交易時段與全域 Kill Switch。
 - UNKNOWN 無 broker order ID 的營運對帳介面；完成前不得自動重送。

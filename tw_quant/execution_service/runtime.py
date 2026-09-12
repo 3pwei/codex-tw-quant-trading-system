@@ -5,30 +5,29 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import json
 import logging
-import os
 from pathlib import Path
 from typing import Mapping
 
 from ..broker import (
+    BrokerAccountSafety,
+    BrokerConnectionSettings,
+    BrokerSecretMaterial,
+    BrokerSecretProvider,
     CompositeOrderAdmissionGate,
     DisabledBroker,
     DisabledExecutionWorker,
     LiveOrderManager,
-    LiveTradingSafety,
+    LIVE_TRADING_CONFIRMATION,
     LockedOrderAdmissionGate,
     SQLiteLiveOrderRepository,
     SQLiteRecoveryLockRepository,
 )
 from ..broker.recovery import RecoveryOrderGate
-from ..broker.shioaji import LIVE_CONFIRMATION
+from ..broker.secret_factory import build_broker_secret_provider
 from .config import ExecutionServiceSettings
+from .health import BrokerConnectionHealth
 from .redaction import SecretRedactionFilter, mask_account
-from .secrets import (
-    EnvironmentLiveBrokerSecretLoader,
-    LiveBrokerSecretLoader,
-    LiveBrokerSecrets,
-    SecretConfigurationError,
-)
+from .secrets import SecretConfigurationError
 
 
 LOGGER = logging.getLogger("tw_quant.execution_service")
@@ -39,9 +38,9 @@ class ExecutionServiceRuntime:
     """Locked composition root. It intentionally has no broker submit client."""
 
     settings: ExecutionServiceSettings
+    connection: BrokerConnectionSettings | None
     worker: DisabledExecutionWorker
     issues: tuple[str, ...]
-    masked_account: str | None
     manager: LiveOrderManager | None = None
     order_repository: SQLiteLiveOrderRepository | None = field(default=None, repr=False)
     recovery_repository: SQLiteRecoveryLockRepository | None = field(
@@ -55,18 +54,30 @@ class ExecutionServiceRuntime:
         return True
 
     def public_health(self) -> dict[str, object]:
-        return {
-            "enabled": self.settings.live_trading_enabled,
-            "locked": True,
-            "broker": self.settings.provider,
-            "masked_account": self.masked_account,
-            "recovery_status": "locked",
-        }
+        account = self.connection.account_ref if self.connection is not None else None
+        return BrokerConnectionHealth(
+            connection_id=(
+                self.connection.connection_id
+                if self.connection is not None
+                else self.settings.connection_id
+            ),
+            broker_name=(
+                self.connection.broker_name
+                if self.connection is not None
+                else self.settings.broker_name
+            ),
+            account=account,
+            execution_state=(
+                "locked" if self.settings.live_trading_enabled else "disabled"
+            ),
+            enabled=self.settings.live_trading_enabled,
+            locked=True,
+            recovery_status="locked",
+        ).to_public_dict()
 
     def state_document(self) -> dict[str, object]:
         return {
             **self.public_health(),
-            "state": "locked" if self.settings.live_trading_enabled else "disabled",
             "heartbeat_at": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
             "issue_codes": list(self.issues),
             "external_order_calls": 0,
@@ -88,7 +99,11 @@ class ExecutionServiceRuntime:
 
     async def serve(self) -> None:
         await self.start()
-        LOGGER.info("live execution service started in fail-closed mode")
+        LOGGER.info(
+            "live execution service started broker=%s account=%s recovery=locked",
+            self.settings.broker_name,
+            mask_account(self.settings.account_id),
+        )
         while not self._stop_event.is_set():
             try:
                 await asyncio.wait_for(
@@ -112,54 +127,56 @@ def build_execution_service(
     settings: ExecutionServiceSettings | None = None,
     *,
     env: Mapping[str, str] | None = None,
-    secret_loader: LiveBrokerSecretLoader | None = None,
+    secret_provider: BrokerSecretProvider | None = None,
 ) -> ExecutionServiceRuntime:
-    """Compose a dedicated service without importing or constructing Shioaji SDK."""
+    """Compose a broker-neutral service without constructing a production SDK."""
 
     config = settings or ExecutionServiceSettings.from_env(env)
     issues = list(config.validation_issues())
-    secrets: LiveBrokerSecrets | None = None
-    values = os.environ if env is None else env
-    account_id = values.get("LIVE_BROKER_ACCOUNT_ID")
+    material: BrokerSecretMaterial | None = None
+    try:
+        connection = config.connection
+    except ValueError:
+        connection = None
 
-    if config.provider == "disabled":
+    provider = secret_provider
+    if config.broker_name == "disabled":
         issues.append("execution_disabled")
-    elif config.provider == "shioaji":
-        if not config.live_trading_enabled:
-            issues.append("live_trading_disabled")
-        else:
+    elif connection is not None:
+        if provider is None:
             try:
-                secrets = (
-                    secret_loader or EnvironmentLiveBrokerSecretLoader(env)
-                ).load()
-                account_id = secrets.account_id
+                provider = build_broker_secret_provider(connection, env=env)
             except SecretConfigurationError as exc:
                 issues.extend(exc.issue_codes)
-            if config.confirmation != LIVE_CONFIRMATION:
-                issues.append("invalid_live_trading_confirmation")
+        if not config.live_trading_enabled:
+            issues.append("live_trading_disabled")
+        elif provider is not None:
+            try:
+                material = provider.load(connection)
+            except SecretConfigurationError as exc:
+                issues.extend(exc.issue_codes)
+        if config.confirmation != LIVE_TRADING_CONFIRMATION:
+            issues.append("invalid_live_trading_confirmation")
 
     manager = None
     orders = None
     recovery = None
     redactor = None
-    if secrets is not None and not config.validation_issues():
-        redactor = SecretRedactionFilter((
-            secrets.api_key,
-            secrets.secret_key,
-            secrets.ca_password,
-            secrets.ca_cert_path,
-            secrets.account_id,
-        ))
+    account = connection.account_ref if connection is not None else None
+    if material is not None and account is not None and not config.validation_issues():
+        redactor = SecretRedactionFilter(
+            material.redaction_values + (account.account_id,)
+        )
         LOGGER.addFilter(redactor)
         orders = SQLiteLiveOrderRepository(config.database_path)
         recovery = SQLiteRecoveryLockRepository(config.database_path)
         admission = CompositeOrderAdmissionGate((
-            RecoveryOrderGate(recovery, config.provider, secrets.account_id),
-            LiveTradingSafety(
-                account_id=secrets.account_id,
+            RecoveryOrderGate(recovery, account.broker_name, account.account_id),
+            BrokerAccountSafety(
+                account=account,
                 enabled=config.live_trading_enabled,
                 confirmation=config.confirmation,
-                allowed_account_ids=secrets.allowed_account_ids,
+                allowed_accounts=config.allowed_accounts,
             ),
             LockedOrderAdmissionGate(),
         ))
@@ -168,9 +185,9 @@ def build_execution_service(
     issues.append("production_submit_not_implemented")
     return ExecutionServiceRuntime(
         settings=config,
+        connection=connection,
         worker=DisabledExecutionWorker(),
         issues=tuple(dict.fromkeys(issues)),
-        masked_account=mask_account(account_id),
         manager=manager,
         order_repository=orders,
         recovery_repository=recovery,

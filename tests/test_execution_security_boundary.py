@@ -11,12 +11,21 @@ import unittest
 from unittest import mock
 
 from tw_quant.broker import (
+    BrokerAccountRef,
+    BrokerConnectionSettings,
     BrokerOrderRequest,
+    BrokerSecretMaterial,
     CompositeOrderAdmissionGate,
     ExecutionMode,
     LockedOrderAdmissionGate,
+    RecoveryStatus,
+    SQLiteRecoveryLockRepository,
 )
 from tw_quant.execution_service import build_execution_service
+from tw_quant.execution_service.health import (
+    BrokerConnectionHealth,
+    ExecutionServiceHealth,
+)
 from tw_quant.execution_service.redaction import SecretRedactionFilter
 from tw_quant.market_data.settings import MarketDataSettings
 from tw_quant.paper import SQLitePaperRepository
@@ -59,8 +68,8 @@ class ExecutionSecurityBoundaryTests(unittest.IsolatedAsyncioTestCase):
             "LIVE_EXECUTION_HEALTH_PATH": str(self.root / "health.json"),
             "SJ_API_KEY": "api-test-value",
             "SJ_SECRET_KEY": "secret-test-value",
-            "CA_CERT_PATH": str(self.ca),
-            "CA_PASSWORD": "ca-test-value",
+            "SJ_CA_CERT_PATH": str(self.ca),
+            "SJ_CA_PASSWORD": "ca-test-value",
         }
         values.update(changes)
         return values
@@ -73,6 +82,27 @@ class ExecutionSecurityBoundaryTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(health["enabled"])
             self.assertTrue(health["locked"])
             self.assertEqual(health["recovery_status"], "locked")
+            self.assertEqual(health["broker_name"], "shioaji")
+            self.assertEqual(health["execution_state"], "locked")
+            self.assertEqual(runtime.worker.snapshot()["dispatches"], 0)
+        finally:
+            await runtime.close()
+
+    async def test_default_configuration_remains_disabled(self):
+        runtime = build_execution_service(
+            env={
+                "LIVE_EXECUTION_DB_PATH": str(self.root / "disabled.sqlite3"),
+                "LIVE_EXECUTION_HEALTH_PATH": str(
+                    self.root / "disabled-health.json"
+                ),
+            }
+        )
+        try:
+            health = runtime.public_health()
+            self.assertEqual(health["broker_name"], "disabled")
+            self.assertEqual(health["execution_state"], "disabled")
+            self.assertTrue(health["locked"])
+            self.assertIn("execution_disabled", runtime.issues)
             self.assertEqual(runtime.worker.snapshot()["dispatches"], 0)
         finally:
             await runtime.close()
@@ -83,7 +113,7 @@ class ExecutionSecurityBoundaryTests(unittest.IsolatedAsyncioTestCase):
             "missing_secret_key": {"SJ_SECRET_KEY": ""},
             "missing_account_id": {"LIVE_BROKER_ACCOUNT_ID": ""},
             "ca_certificate_unavailable": {
-                "CA_CERT_PATH": str(self.root / "missing.pfx")
+                "SJ_CA_CERT_PATH": str(self.root / "missing.pfx")
             },
             "invalid_live_trading_confirmation": {
                 "LIVE_TRADING_CONFIRMATION": "wrong"
@@ -109,6 +139,19 @@ class ExecutionSecurityBoundaryTests(unittest.IsolatedAsyncioTestCase):
         try:
             self.assertIn("ca_certificate_permissions_too_open", runtime.issues)
             self.assertIsNone(runtime.manager)
+        finally:
+            await runtime.close()
+
+    async def test_first_revision_ca_environment_names_remain_compatible(self):
+        env = self.environment()
+        env["CA_CERT_PATH"] = env.pop("SJ_CA_CERT_PATH")
+        env["CA_PASSWORD"] = env.pop("SJ_CA_PASSWORD")
+        runtime = build_execution_service(env=env)
+        try:
+            self.assertIsNotNone(runtime.manager)
+            self.assertNotIn("missing_ca_certificate", runtime.issues)
+            self.assertNotIn("missing_ca_password", runtime.issues)
+            self.assertEqual(runtime.worker.snapshot()["dispatches"], 0)
         finally:
             await runtime.close()
 
@@ -172,19 +215,105 @@ class ExecutionSecurityBoundaryTests(unittest.IsolatedAsyncioTestCase):
         runtime = build_execution_service(env=env)
         try:
             health = runtime.public_health()
-            self.assertEqual(health["masked_account"], "****1234")
+            self.assertEqual(health["masked_account_id"], "****1234")
             self.assertEqual(
                 set(health),
-                {"enabled", "locked", "broker", "masked_account", "recovery_status"},
+                {
+                    "broker_name",
+                    "masked_account_id",
+                    "execution_state",
+                    "enabled",
+                    "locked",
+                    "recovery_status",
+                },
             )
             payload = json.dumps(health)
             for key in ("SJ_API_KEY", "SJ_SECRET_KEY", "CA_PASSWORD"):
                 self.assertNotIn(key, payload)
             for value in (
-                env["SJ_API_KEY"], env["SJ_SECRET_KEY"], env["CA_PASSWORD"],
-                env["LIVE_BROKER_ACCOUNT_ID"], env["CA_CERT_PATH"],
+                env["SJ_API_KEY"], env["SJ_SECRET_KEY"], env["SJ_CA_PASSWORD"],
+                env["LIVE_BROKER_ACCOUNT_ID"], env["SJ_CA_CERT_PATH"],
             ):
                 self.assertNotIn(value, payload)
+        finally:
+            await runtime.close()
+
+    async def test_fake_broker_secret_lookup_is_isolated_by_full_identity(self):
+        first = BrokerAccountRef("broker-a", "account-1")
+        second = BrokerAccountRef("broker-b", "account-1")
+        materials = {
+            first: BrokerSecretMaterial((("token", "credential-a"),)),
+            second: BrokerSecretMaterial((("token", "credential-b"),)),
+        }
+
+        class FakeSecretProvider:
+            def load(self, connection: BrokerConnectionSettings) -> BrokerSecretMaterial:
+                account = connection.account_ref
+                if account is None or account not in materials:
+                    raise AssertionError("credential lookup crossed connection identity")
+                return materials[account]
+
+        provider = FakeSecretProvider()
+        first_material = provider.load(BrokerConnectionSettings(
+            "connection-a", "broker-a", "account-1", True, "fake:a"
+        ))
+        second_material = provider.load(BrokerConnectionSettings(
+            "connection-b", "broker-b", "account-1", True, "fake:b"
+        ))
+        self.assertNotEqual(first, second)
+        self.assertEqual(first_material.values[0][1], "credential-a")
+        self.assertEqual(second_material.values[0][1], "credential-b")
+
+    async def test_recovery_is_isolated_by_broker_and_account(self):
+        repository = SQLiteRecoveryLockRepository(self.root / "recovery.sqlite3")
+        now = datetime.now(timezone.utc)
+        try:
+            attempt = repository.begin("broker-a", "account-1", updated_at=now)
+            repository.complete(
+                "broker-a", "account-1", (),
+                expected_generation=attempt.generation, updated_at=now,
+            )
+            first = repository.state("broker-a", "account-1")
+            second = repository.state("broker-b", "account-1")
+            self.assertEqual(first.status, RecoveryStatus.READY)
+            self.assertEqual(second.status, RecoveryStatus.LOCKED)
+            self.assertEqual(first.account_id, second.account_id)
+            self.assertNotEqual(first.broker_name, second.broker_name)
+        finally:
+            repository.close()
+
+    async def test_health_collection_represents_same_account_at_two_brokers(self):
+        health = ExecutionServiceHealth((
+            BrokerConnectionHealth(
+                "connection-a", "broker-a",
+                BrokerAccountRef("broker-a", "account-0001"),
+                "ready", True, False, "ready",
+            ),
+            BrokerConnectionHealth(
+                "connection-b", "broker-b",
+                BrokerAccountRef("broker-b", "account-0001"),
+                "locked", True, True, "locked",
+            ),
+        )).to_public_dict()
+        connections = health["connections"]
+        self.assertEqual(len(connections), 2)
+        self.assertEqual(connections[0]["broker_name"], "broker-a")
+        self.assertEqual(connections[1]["broker_name"], "broker-b")
+        self.assertEqual(connections[0]["masked_account_id"], "****0001")
+        self.assertEqual(connections[1]["masked_account_id"], "****0001")
+
+    async def test_operational_log_has_masked_broker_account_context(self):
+        runtime = build_execution_service(env=self.environment())
+        try:
+            with self.assertLogs("tw_quant.execution_service", logging.INFO) as logs:
+                task = asyncio.create_task(runtime.serve())
+                await asyncio.sleep(0)
+                await runtime.close()
+                await task
+            payload = " ".join(logs.output)
+            self.assertIn("broker=shioaji", payload)
+            self.assertIn("account=****1234", payload)
+            self.assertNotIn("account-1234", payload)
         finally:
             await runtime.close()
 
@@ -228,10 +357,21 @@ class BoundaryArchitectureTests(unittest.TestCase):
         self.assertNotIn("expose:", execution)
         market_env = (ROOT / "deploy/lightsail/market.env.example").read_text()
         for key in (
-            "SJ_API_KEY", "SJ_SECRET_KEY", "CA_CERT_PATH", "CA_PASSWORD",
+            "SJ_API_KEY", "SJ_SECRET_KEY", "SJ_CA_CERT_PATH", "SJ_CA_PASSWORD",
             "LIVE_BROKER_ACCOUNT_ID", "LIVE_ALLOWED_ACCOUNT_IDS",
         ):
             self.assertNotRegex(market_env, rf"(?m)^{key}=")
+
+    def test_execution_process_name_is_broker_neutral(self):
+        compose = (ROOT / "deploy/lightsail/docker-compose.yml").read_text()
+        dockerfile = (ROOT / "Dockerfile").read_text()
+        self.assertIn("execution-worker:", compose)
+        self.assertIn("AS execution-worker", dockerfile)
+        for broker_specific_name in (
+            "shioaji-worker", "shioaji-execution-worker", "shioaji-live-worker"
+        ):
+            self.assertNotIn(broker_specific_name, compose)
+            self.assertNotIn(broker_specific_name, dockerfile)
 
     def test_market_production_does_not_read_live_secret_names(self):
         with mock.patch.dict(
@@ -268,6 +408,9 @@ class BoundaryArchitectureTests(unittest.TestCase):
             source = path.read_text(encoding="utf-8")
             self.assertNotIn("import shioaji", source, path.name)
             self.assertNotIn("from shioaji", source, path.name)
+            self.assertNotIn("broker.shioaji", source, path.name)
+            self.assertNotIn("SJ_API_KEY", source, path.name)
+            self.assertNotIn("SJ_SECRET_KEY", source, path.name)
 
 
 if __name__ == "__main__":
