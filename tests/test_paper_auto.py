@@ -117,6 +117,7 @@ class PaperAutoEntryTests(unittest.TestCase):
             "trigger_time": trigger, "direction": "long", "action": "entry",
             "reason": "z_score_entry", "context": {"z_score": -4.0},
             "source_bar_time": trigger, "execution_status": "pending",
+            "source_bar_id": f"bar-{minute}",
             "reference_price": bar.close,
         }
         inserted = self.repo.record_runtime_evaluation(
@@ -139,6 +140,7 @@ class PaperAutoEntryTests(unittest.TestCase):
             "trigger_time": trigger, "direction": "long", "action": "exit",
             "reason": reason, "context": {"z_score": 0.0},
             "source_bar_time": trigger, "execution_status": "pending",
+            "source_bar_id": f"bar-{minute}",
             "reference_price": bar.close,
         }
         inserted = self.repo.record_runtime_evaluation(
@@ -206,6 +208,137 @@ class PaperAutoEntryTests(unittest.TestCase):
         self.controller.on_decision(self.runtime, decision, signal)
         self.controller.on_decision(self.runtime, decision, signal)
         self.assertEqual(len(self.paper.orders(self.user.user_id)), 1)
+        duplicate = self.repo.record_runtime_evaluation(
+            str(self.runtime["runtime_id"]), str(decision["trigger_time"]),
+            [decision],
+        )
+        self.assertEqual(duplicate, [])
+        metrics = self.runtime_service.health()
+        self.assertEqual(metrics["duplicate_decisions_blocked"], 1)
+        self.assertEqual(metrics["armed_runtimes"], 1)
+        self.assertEqual(metrics["decisions"], 1)
+
+    def test_gap_risk_is_rejected_before_fill_and_counted(self):
+        decision, signal = self._decision()
+        self.controller.on_decision(self.runtime, decision, signal)
+        planned_stop = float(self.paper.orders(self.user.user_id)[0][
+            "stop_loss_price"
+        ])
+        gap = market_bar(
+            21, planned_stop - 10, open_price=planned_stop - 5,
+            high=planned_stop + 1, low=planned_stop - 20,
+        )
+        self.paper.on_bar(gap)
+        self.controller.after_bar(gap)
+
+        order = self.paper.orders(self.user.user_id)[0]
+        self.assertEqual(order["status"], "rejected")
+        self.assertEqual(order["status_reason"], "gap_risk_exceeded")
+        self.assertEqual(self.paper.fills(self.user.user_id), [])
+        self.assertEqual(self.paper.positions(self.user.user_id), [])
+        self.assertEqual(self.paper.health()["gap_risk_rejected"], 1)
+        stored = self.repo.trading_decision(
+            str(decision["decision_id"]), self.user.user_id
+        )
+        self.assertEqual(stored["execution_status"], "rejected")
+        self.assertEqual(stored["execution_reason"], "gap_risk_exceeded")
+
+    def test_restart_locks_runtime_and_rejects_recovered_pending_entry(self):
+        decision, signal = self._decision()
+        self.controller.on_decision(self.runtime, decision, signal)
+        self.paper.close()
+        self.paper = PaperTradingService(SQLitePaperRepository(self.path))
+        self.controller = PaperAutoEntryController(
+            self.repo, self.users, self.market, self.paper
+        )
+        report = self.controller.recover()
+
+        restored = self.repo.trading_runtime(
+            str(self.runtime["runtime_id"]), self.user.user_id
+        )
+        self.assertEqual(restored["status"], "recovery_locked")
+        self.assertIsNone(restored["recovery_issue"])
+        self.assertEqual(report["locked_runtimes"], 1)
+        order = self.paper.orders(self.user.user_id)[0]
+        self.assertEqual(order["status"], "rejected")
+        self.assertEqual(order["status_reason"], "stale_or_recovered_signal")
+        stored = self.repo.trading_decision(
+            str(decision["decision_id"]), self.user.user_id
+        )
+        self.assertEqual(stored["execution_status"], "skipped")
+        self.assertEqual(
+            stored["execution_reason"], "stale_or_recovered_signal"
+        )
+        rearmed = self.runtime_service.arm(
+            str(self.runtime["runtime_id"]), self.user.user_id
+        )
+        self.assertEqual(rearmed["status"], "armed")
+
+    def test_recovery_mismatch_stays_locked_but_reduce_only_still_works(self):
+        self._open_auto_long()
+        self.repo.connection.execute(
+            "UPDATE strategy_runtimes SET strategy_id='ma_crossover' "
+            "WHERE runtime_id=?", (self.runtime["runtime_id"],)
+        )
+        self.repo.connection.commit()
+        self.paper.close()
+        self.paper = PaperTradingService(SQLitePaperRepository(self.path))
+        self.controller = PaperAutoEntryController(
+            self.repo, self.users, self.market, self.paper
+        )
+        self.controller.recover()
+
+        restored = self.repo.trading_runtime(
+            str(self.runtime["runtime_id"]), self.user.user_id
+        )
+        self.assertEqual(restored["status"], "recovery_locked")
+        self.assertIn("paper_runtime_attribution_mismatch", str(
+            restored["recovery_issue"]
+        ))
+        with self.assertRaises(InvalidInputError):
+            self.runtime_service.arm(
+                str(self.runtime["runtime_id"]), self.user.user_id
+            )
+
+        position = self.paper.positions(self.user.user_id)[0]
+        stop = float(position["stop_loss_price"])
+        trigger = market_bar(
+            22, stop - 2, open_price=stop + 1,
+            high=stop + 3, low=stop - 5,
+        )
+        self.controller.before_bar(trigger)
+        self.paper.on_bar(trigger)
+        self.controller.after_bar(trigger)
+        self.assertEqual(self.paper.positions(self.user.user_id), [])
+        self.assertEqual(
+            self.paper.pipeline.ledger.trades[-1].exit_reason, "stop_loss"
+        )
+
+    def test_auto_audit_chain_links_decision_order_risk_fill_and_position(self):
+        decision, signal = self._decision()
+        self.controller.on_decision(self.runtime, decision, signal)
+        fill_bar = market_bar(21, 9_006.0, open_price=9_005.0)
+        self.paper.on_bar(fill_bar)
+        self.controller.after_bar(fill_bar)
+        events = list(reversed(self.paper.events(self.user.user_id, 50)))
+        order = next(item for item in events if item["kind"] == "order_intent")
+        prefill = next(
+            item for item in events
+            if item["kind"] == "risk_decision" and item.get("phase") == "prefill"
+        )
+        fill = next(item for item in events if item["kind"] == "fill")
+        position = next(
+            item for item in events
+            if item["kind"] == "position" and int(item["quantity"]) != 0
+        )
+        self.assertEqual(order["meta"]["causation_id"], decision["decision_id"])
+        self.assertEqual(order["meta"]["correlation_id"], decision["decision_id"])
+        self.assertEqual(prefill["meta"]["causation_id"], order["meta"]["event_id"])
+        self.assertEqual(fill["meta"]["causation_id"], prefill["meta"]["event_id"])
+        self.assertEqual(position["meta"]["causation_id"], fill["meta"]["event_id"])
+        self.assertTrue(self.repo.trading_decision(
+            str(decision["decision_id"]), self.user.user_id
+        )["source_bar_id"])
 
     def test_existing_runtime_position_skips_new_entry_without_pyramiding(self):
         first, signal = self._decision()

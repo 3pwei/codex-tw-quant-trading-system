@@ -4,6 +4,7 @@ import hashlib
 from typing import Mapping, Protocol
 
 from ...auth import AccountStatus, AuthUser, TradingMode
+from ...events import OrderIntent
 from ...market import KBar
 from ...paper import PaperOrderCommand, PaperTradingService
 from ...risk import RiskLevels, triggered_exit
@@ -65,6 +66,128 @@ class PaperAutoExecutionController:
         self.users = users
         self.market = market
         self.paper = paper
+        self.paper.set_auto_entry_guard(self._prefill_block_reason)
+
+    def recover(self) -> dict[str, object]:
+        """Lock previously armed runtimes and reconcile durable attribution."""
+        symbol = str(self.market.status_message().get("symbol") or "TMF")
+        runtimes = self.runtimes.lock_paper_auto_runtimes_for_recovery(symbol)
+        by_id = {str(item["runtime_id"]): item for item in runtimes}
+        issues: dict[str, set[str]] = {
+            runtime_id: set() for runtime_id in by_id
+        }
+        state = self.paper.strategy_auto_recovery_state()
+        records = [*state["orders"], *state["positions"]]
+        pending_entries: set[str] = set()
+        positioned: set[str] = set()
+        for record in records:
+            runtime_id = str(record.get("runtime_id") or "")
+            owner_id = str(record.get("owner_user_id") or "")
+            runtime = by_id.get(runtime_id)
+            if runtime is None:
+                for candidate_id, candidate in by_id.items():
+                    if candidate.get("owner_user_id") == owner_id:
+                        issues[candidate_id].add("paper_runtime_missing")
+                continue
+            mismatch = (
+                runtime.get("owner_user_id") != owner_id
+                or runtime.get("mode") != "paper_auto"
+                or runtime.get("strategy_id") != record.get("strategy_id")
+                or runtime.get("symbol") != record.get("symbol")
+                or (
+                    runtime.get("strategy_version") is not None
+                    and runtime.get("strategy_version")
+                    != record.get("strategy_version")
+                )
+            )
+            if mismatch:
+                issues[runtime_id].add("paper_runtime_attribution_mismatch")
+            snapshot = record.get("strategy_snapshot")
+            if not isinstance(snapshot, Mapping) or dict(snapshot) != dict(
+                runtime["strategy_snapshot"]  # type: ignore[arg-type]
+            ):
+                issues[runtime_id].add("paper_strategy_snapshot_mismatch")
+            decision_id = str(record.get("decision_id") or "")
+            if decision_id and not decision_id.startswith("protective:"):
+                if self.runtimes.trading_decision(decision_id, owner_id) is None:
+                    issues[runtime_id].add("paper_decision_missing")
+            if record in state["orders"] and (
+                record.get("status") in {"pending_risk", "approved"}
+                and not record.get("reduce_only")
+            ):
+                pending_entries.add(runtime_id)
+                if int(record.get("quantity") or 0) != int(runtime["quantity"]):
+                    issues[runtime_id].add("paper_runtime_quantity_mismatch")
+            if record in state["positions"]:
+                positioned.add(runtime_id)
+
+        for runtime_id in pending_entries & positioned:
+            issues[runtime_id].add("pending_entry_with_open_position")
+        for runtime_id, runtime in by_id.items():
+            owner_id = str(runtime["owner_user_id"])
+            user = self.users.user_by_id(owner_id)
+            if user is not None:
+                self.paper.access.set_user(user)
+            if self.paper.recovery.issues_by_owner.get(owner_id):
+                issues[runtime_id].add("paper_recovery_inconsistent")
+            issue = ",".join(sorted(issues[runtime_id])) or None
+            self.runtimes.set_trading_runtime_recovery(
+                runtime_id, owner_id, issue
+            )
+        locked_ids = {
+            runtime_id for runtime_id, runtime in by_id.items()
+            if runtime.get("status") == "recovery_locked"
+        }
+        rejected = self.paper.reject_pending_auto_entries(
+            locked_ids, "stale_or_recovered_signal"
+        )
+        for order in rejected:
+            decision_id = str(order.get("decision_id") or "")
+            owner_id = str(order.get("owner_id") or order.get("owner_user_id") or "")
+            runtime = by_id.get(str(order.get("runtime_id") or ""))
+            if not owner_id and runtime is not None:
+                owner_id = str(runtime["owner_user_id"])
+            if decision_id and owner_id:
+                self.runtimes.update_decision_execution(
+                    decision_id,
+                    owner_id,
+                    {
+                        "execution_status": "skipped",
+                        "execution_reason": "stale_or_recovered_signal",
+                    },
+                )
+        return {
+            "checked_runtimes": len(runtimes),
+            "locked_runtimes": sum(
+                item.get("status") == "recovery_locked" for item in runtimes
+            ),
+            "issues": sum(bool(item) for item in issues.values()),
+        }
+
+    def _prefill_block_reason(self, order: OrderIntent) -> str | None:
+        owner_id = str(order.meta.owner_id or "")
+        runtime = self.runtimes.trading_runtime(
+            str(order.runtime_id or ""), owner_id
+        )
+        if runtime is None:
+            return "runtime_unavailable"
+        if runtime.get("status") != "armed":
+            return f"runtime_{runtime.get('status', 'unavailable')}"
+        if runtime.get("recovery_issue"):
+            return "runtime_recovery_locked"
+        user = self.users.user_by_id(owner_id)
+        if user is None:
+            return "account_unavailable"
+        self.paper.access.set_user(user)
+        market = self.market.status_message()
+        if market.get("service_status") != "healthy":
+            return str(market.get("service_status") or "market_unhealthy")
+        if market.get("trading_block_reason"):
+            return str(market["trading_block_reason"])
+        account = self.paper.account(owner_id)
+        if account.get("recovery_status") != "healthy":
+            return "recovery_degraded"
+        return None
 
     @staticmethod
     def _risk_percentages(
@@ -192,6 +315,8 @@ class PaperAutoExecutionController:
                     stop_loss_pct=stop_pct,
                     take_profit_pct=take_pct,
                     strategy_snapshot=dict(current["strategy_snapshot"]),
+                    correlation_id=str(decision["decision_id"]),
+                    causation_id=str(decision["decision_id"]),
                 ),
                 idempotency_key=key,
                 market_bar=signal_bar,
@@ -271,6 +396,8 @@ class PaperAutoExecutionController:
                         decision.get("reference_price") or signal_bar.close
                     ),
                     strategy_snapshot=dict(current["strategy_snapshot"]),
+                    correlation_id=str(decision["decision_id"]),
+                    causation_id=str(decision["decision_id"]),
                 ),
                 idempotency_key=key,
                 market_bar=signal_bar,
@@ -346,6 +473,10 @@ class PaperAutoExecutionController:
                             if isinstance(position.get("strategy_snapshot"), dict)
                             else dict(runtime["strategy_snapshot"])
                         ),
+                        correlation_id=str(
+                            position.get("decision_id") or protective_id
+                        ),
+                        causation_id=protective_id,
                     ),
                     idempotency_key=key,
                     market_bar=bar,

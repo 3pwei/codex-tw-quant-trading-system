@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import sqlite3
 import tempfile
 import unittest
 from datetime import date, datetime, timedelta
@@ -188,6 +190,45 @@ class TradingRuntimeTests(unittest.TestCase):
             stored["last_evaluated_bar"],
             fill.time.isoformat(timespec="milliseconds"),
         )
+        self.assertTrue(entries[0]["source_bar_id"].startswith("bar:"))
+
+    def test_reconnect_records_historical_signal_without_executing_it(self):
+        self._seed_warmup()
+        runtime = self.service.create({
+            "strategy_kind": "atomic",
+            "strategy_id": "bnf",
+            "symbol": "TMF",
+            "interval": "1m",
+            "quantity": 1,
+            "mode": "paper_auto",
+        }, "owner-a")
+        runtime = self.service.arm(str(runtime["runtime_id"]), "owner-a")
+        recovered_signal = bar(20, 90.0)
+        reconnect_bar = bar(21, 91.0)
+        self.repo.save(recovered_signal)
+        self.repo.save(reconnect_bar)
+        emitted: list[dict[str, object]] = []
+        self.service.add_decision_listener(
+            lambda _runtime, decision, _bar: emitted.append(dict(decision))
+        )
+
+        self.service.on_bar(reconnect_bar)
+
+        decisions = self.repo.trading_decisions(
+            str(runtime["runtime_id"]), "owner-a", 100
+        )
+        entry = next(item for item in decisions if item["action"] == "entry")
+        self.assertEqual(entry["execution_status"], "skipped")
+        self.assertEqual(
+            entry["execution_reason"], "stale_or_recovered_signal"
+        )
+        self.assertFalse(any(
+            item["action"] == "entry"
+            and item["trigger_time"] == recovered_signal.time.isoformat(
+                timespec="milliseconds"
+            )
+            for item in emitted
+        ))
 
     def test_forming_bar_is_ignored_until_it_closes(self):
         self._seed_warmup()
@@ -265,6 +306,89 @@ class TradingRuntimeTests(unittest.TestCase):
             ).fetchone()[0]
             self.assertEqual(count, 0, table)
         paper.close()
+
+
+class TradingRuntimeRecoverySchemaTests(unittest.TestCase):
+    def test_pr100_runtime_rows_survive_automatic_recovery_schema_upgrade(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "pr100-runtime.sqlite3"
+            connection = sqlite3.connect(path)
+            connection.executescript(
+                """
+                CREATE TABLE strategy_runtimes (
+                    runtime_id TEXT PRIMARY KEY, owner_user_id TEXT NOT NULL,
+                    strategy_kind TEXT NOT NULL, strategy_id TEXT NOT NULL,
+                    strategy_version INTEGER, strategy_snapshot_json TEXT NOT NULL,
+                    symbol TEXT NOT NULL, interval TEXT NOT NULL,
+                    quantity INTEGER NOT NULL, mode TEXT NOT NULL,
+                    status TEXT NOT NULL, last_evaluated_bar TEXT,
+                    last_decision TEXT, created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    CHECK(strategy_kind IN ('atomic', 'composite')),
+                    CHECK(mode IN ('observe', 'paper_auto')),
+                    CHECK(status IN ('active', 'paused', 'armed', 'stopped'))
+                );
+                CREATE TABLE trading_decisions (
+                    decision_id TEXT PRIMARY KEY, runtime_id TEXT NOT NULL,
+                    owner_user_id TEXT NOT NULL, strategy_id TEXT NOT NULL,
+                    strategy_version INTEGER, symbol TEXT NOT NULL,
+                    contract TEXT NOT NULL, interval TEXT NOT NULL,
+                    trigger_time TEXT NOT NULL, direction TEXT NOT NULL,
+                    action TEXT NOT NULL, reason TEXT NOT NULL,
+                    context_json TEXT NOT NULL, source_bar_time TEXT NOT NULL,
+                    execution_status TEXT NOT NULL DEFAULT 'not_applicable',
+                    execution_reason TEXT, order_id TEXT, reference_price REAL,
+                    planned_stop_price REAL, actual_fill_price REAL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(runtime_id) REFERENCES strategy_runtimes(runtime_id)
+                        ON DELETE CASCADE,
+                    CHECK(direction IN ('long', 'short')),
+                    CHECK(action IN ('entry', 'exit', 'none'))
+                );
+                """
+            )
+            snapshot = {
+                "strategy": "bnf",
+                "parameters": {"stop_loss_pct": 0.006},
+                "interval": "1m",
+            }
+            connection.execute(
+                "INSERT INTO strategy_runtimes VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    "runtime-1", "owner-a", "atomic", "bnf", None,
+                    json.dumps(snapshot), "TMF", "1m", 2, "paper_auto",
+                    "armed", "2026-09-10T15:20:00+08:00", "decision-1",
+                    "2026-09-10T15:00:00+08:00",
+                    "2026-09-10T15:20:00+08:00",
+                ),
+            )
+            connection.execute(
+                "INSERT INTO trading_decisions VALUES ("
+                + ",".join("?" for _ in range(21))
+                + ")",
+                (
+                    "decision-1", "runtime-1", "owner-a", "bnf", None,
+                    "TMF", "TMFU6", "1m", "2026-09-10T15:20:00+08:00",
+                    "long", "entry", "z_score_entry", '{"z_score": -4.0}',
+                    "2026-09-10T15:20:00+08:00", "submitted", "risk_approved",
+                    "order-1", 9000.0, 8946.0, None,
+                    "2026-09-10T15:20:01+08:00",
+                ),
+            )
+            connection.commit()
+            connection.close()
+
+            repository = SQLiteBarRepository(path)
+            runtime = repository.trading_runtime("runtime-1", "owner-a")
+            decision = repository.trading_decision("decision-1", "owner-a")
+            self.assertEqual(runtime["status"], "armed")
+            self.assertEqual(runtime["strategy_snapshot"], snapshot)
+            self.assertIsNone(runtime["recovery_issue"])
+            self.assertEqual(decision["execution_status"], "submitted")
+            self.assertEqual(decision["order_id"], "order-1")
+            self.assertEqual(decision["planned_stop_price"], 8946.0)
+            self.assertIsNone(decision["source_bar_id"])
+            repository.close()
 
 
 class RuntimeFeed:

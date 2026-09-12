@@ -10,6 +10,7 @@ from ..api_models import AdminUserCreate, AdminUserUpdate
 def system_status(
     market: dict[str, object], paper: dict[str, object],
     host: dict[str, object] | None = None,
+    automation: dict[str, object] | None = None,
 ) -> str:
     market_status = str(market["service_status"])
     if market_status in {"provider_disconnected", "market_stale"}:
@@ -17,6 +18,8 @@ def system_status(
     if int(paper.get("active_kill_switches", 0)) > 0 or int(paper.get("inconsistent_owners", 0)) > 0:
         return "trading_halted"
     if market_status != "healthy" or paper.get("status") != "healthy":
+        return "degraded"
+    if automation and int(automation.get("recovery_locked_runtimes", 0)) > 0:
         return "degraded"
     if host and any(
         isinstance(host.get(key), (int, float)) and float(host[key]) >= 90
@@ -33,11 +36,19 @@ def build_admin_router(deps: ApiDependencies) -> APIRouter:
     async def admin_health():
         market = deps.service.status_message()
         paper_health = deps.paper.health()
+        automation = {
+            **deps.runtime_app.health(),
+            "gap_risk_rejected": paper_health.get("gap_risk_rejected", 0),
+            "last_auto_order_time": paper_health.get("last_auto_order_time"),
+        }
         host = deps.host_monitor.snapshot()
         return {
             **market,
-            "system_status": system_status(market, paper_health, host),
+            "system_status": system_status(
+                market, paper_health, host, automation
+            ),
             "paper_trading": paper_health,
+            "automated_trading": automation,
             "host": host,
             "rate_limiting": deps.limiter.stats(),
             "request_limits": {"max_body_bytes": deps.config.max_request_body_bytes},

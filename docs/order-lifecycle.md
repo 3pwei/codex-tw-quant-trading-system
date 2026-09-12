@@ -64,6 +64,12 @@ snapshot，reference price 取訊號確認 K 的 close。Order、Fill、Position
 immutable strategy snapshot 重算並保存真正的 stop loss／take profit；reference close
 與 next open 的跳空仍保留在 reference、planned stop 與 actual fill audit 欄位。
 
+next-open entry 在 Fill 前會再經一次 AccountRiskGate。若 executable open 已越過
+planned stop，或重新估算的單筆風險超限，Order 會在 Fill 前以
+`gap_risk_exceeded` 終止。重啟時先前 armed 的 Runtime 進入
+`recovery_locked`；已核准但未成交的舊 entry 會標記
+`stale_or_recovered_signal`，不會在重新連線後補送。
+
 手動 Paper 仍僅支援市價、立即、全數成交，手動輸入的 `stop_loss_price` 只供進場
 風險核准及圖表顯示。Paper Auto managed exit 是平台內的 closed-bar simulated policy，
 不是外部券商原生 Protective Order／OCO；服務中斷期間不會在券商端獨立保護部位。
@@ -155,6 +161,8 @@ Paper API 保留舊的 `status` 以維持相容，並額外回傳 `lifecycle_sta
 5. 行情過期禁止新增曝險，但不得阻止透過券商通道執行緊急減倉。
 6. Kill Switch 分為禁止進場、全部撤單、全部平倉，不得共用模糊布林值。
 7. 重啟後先和券商核對 orders、fills、positions，完成前禁止自動進場。
+8. Paper Auto 必須由 `source_bar_id → decision_id → order → risk decision → fill → position`
+   的 correlation／causation metadata 完整追溯。
 8. 本地與券商持倉不一致時 fail closed，留下稽核紀錄並要求人工處理。
 9. 啟用 Shioaji adapter 必須同時滿足 provider、enable flag、確認字串與帳號 allowlist；
    任一缺失都維持 fail closed。

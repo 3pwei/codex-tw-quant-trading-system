@@ -42,6 +42,10 @@ Trading，不支援也不應用於真實券商下單。
 - Kill Switch 只阻止新增曝險；合法的 `reduce_only` 與強制平倉仍可核准。
 - Paper Auto 的 strategy exit、SL 與 TP 全部為 `reduce_only`；模擬券商會把成交量
   截斷至現有部位，防止平倉競態造成反向開倉。
+- Paper Auto next-open entry 在 Fill 前以 executable open 與 planned stop 重算風險；
+  越過 stop 或超過 `max_risk_per_trade` 時以 `gap_risk_exceeded` fail closed。
+  Recovery Lock、行情非 healthy 與 Kill Switch 只阻擋新 exposure，不阻擋可驗證的
+  reduce-only close。
 
 ## 交易日與未成交單
 

@@ -369,6 +369,15 @@ class AuthorizationApiTests(unittest.TestCase):
         self.assertIn(
             "active_kill_switches", admin_health.json()["paper_trading"]
         )
+        automation = admin_health.json()["automated_trading"]
+        for key in (
+            "active_runtimes", "armed_runtimes", "decisions",
+            "executed_decisions", "skipped_decisions",
+            "duplicate_decisions_blocked", "gap_risk_rejected",
+            "recovery_locked_runtimes", "last_runtime_decision_time",
+            "last_auto_order_time",
+        ):
+            self.assertIn(key, automation)
         self.assertEqual(
             admin_health.json()["live_execution"]["state"], "disabled"
         )

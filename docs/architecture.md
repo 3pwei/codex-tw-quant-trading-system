@@ -24,6 +24,12 @@ canonical strategy exit 於 next open 成交，SL／TP 則以保守的 bar-trigg
 處理，同棒歧義固定由 stop loss 優先。所有 exit 都是 reduce-only，且只經既有
 simulated broker，不依賴或建構真實券商 client。
 
+服務重啟會把先前 armed 的 Paper Auto Runtime 持久化切換為
+`recovery_locked`。核對 runtime snapshot、decision、order、fill、position 與
+protective levels 後仍需使用者重新 arm；恢復中的舊 entry 會以
+`stale_or_recovered_signal` 終止，但 reduce-only protection 保持可用。下一根開盤
+Fill 前會再以 executable open（含滑價）與 preliminary stop 執行 gap-risk recheck。
+
 ## 現有模組責任
 
 | 模組 | 責任 | 不應負責 |

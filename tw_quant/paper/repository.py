@@ -488,7 +488,19 @@ class SQLitePaperRepository:
                 "WHERE quantity != 0) "
                 "AS open_positions"
             ).fetchone()
-        assert row is not None and controls is not None and projections is not None
+            auto = self.connection.execute(
+                "SELECT "
+                "SUM(json_extract(snapshot_json, '$.status_reason')="
+                "'gap_risk_exceeded') AS gap_rejected, "
+                "MAX(json_extract(snapshot_json, '$.submitted_at')) "
+                "AS last_auto_order_time "
+                "FROM paper_order_read_model WHERE "
+                "json_extract(snapshot_json, '$.order_source')='strategy_auto'"
+            ).fetchone()
+        assert (
+            row is not None and controls is not None
+            and projections is not None and auto is not None
+        )
         return {
             "events": int(row["events"]),
             "owners": int(row["owners"]),
@@ -496,6 +508,8 @@ class SQLitePaperRepository:
             "read_model_orders": int(projections["orders"]),
             "read_model_fills": int(projections["fills"]),
             "read_model_open_positions": int(projections["open_positions"]),
+            "gap_risk_rejected": int(auto["gap_rejected"] or 0),
+            "last_auto_order_time": auto["last_auto_order_time"],
             "write_count": self.write_count,
             "average_write_ms": round(
                 self.total_write_ms / self.write_count, 3
@@ -530,6 +544,20 @@ class SQLitePaperRepository:
                 (owner_id,),
             ).fetchall()
         return [json.loads(str(row["snapshot_json"])) for row in rows]
+
+    def strategy_auto_orders(self) -> list[dict[str, object]]:
+        with self.lock:
+            rows = self.connection.execute(
+                "SELECT owner_user_id,snapshot_json FROM paper_order_read_model "
+                "WHERE json_extract(snapshot_json, '$.order_source')="
+                "'strategy_auto' ORDER BY sequence"
+            ).fetchall()
+        return [
+            {"owner_user_id": str(row["owner_user_id"]), **json.loads(
+                str(row["snapshot_json"])
+            )}
+            for row in rows
+        ]
 
     def fill_snapshot(
         self, owner_id: str, fill_id: str
@@ -566,6 +594,21 @@ class SQLitePaperRepository:
             if int(payload.get("quantity", 0)) != 0:
                 result.append(payload)
         return result
+
+    def strategy_auto_positions(self) -> list[dict[str, object]]:
+        with self.lock:
+            rows = self.connection.execute(
+                "SELECT owner_user_id,payload_json FROM paper_position_read_model "
+                "WHERE quantity != 0 AND "
+                "json_extract(payload_json, '$.order_source')='strategy_auto' "
+                "ORDER BY sequence"
+            ).fetchall()
+        return [
+            {"owner_user_id": str(row["owner_user_id"]), **json.loads(
+                str(row["payload_json"])
+            )}
+            for row in rows
+        ]
 
     def append_control(
         self, owner_id: str, action: str, reason: str, occurred_at: datetime

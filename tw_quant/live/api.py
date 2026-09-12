@@ -158,6 +158,7 @@ def create_app(
     paper_auto = PaperAutoExecutionController(
         repo, identity_repo, service, paper
     )
+    paper_auto.recover()
     runtime_app.add_decision_listener(paper_auto.on_decision)
     service.add_bar_listener(paper_auto.before_bar)
     service.add_bar_listener(paper.on_bar)
