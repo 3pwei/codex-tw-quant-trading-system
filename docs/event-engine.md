@@ -28,6 +28,9 @@ MarketEvent / BarClosedEvent
 - Paper Auto 的 SL／TP 使用 `bar_trigger`：只允許 server-side strategy-auto
   reduce-only intent，成交價採已收盤 OHLC 可證明的保守觸發價；跳空使用開盤價，
   同棒同時觸及 SL／TP 時 stop loss 優先。
+- 自動交易以 decision ID 作 correlation：Order 的 causation 是 durable Decision，
+  Risk Decision 指向 Order，Fill 指向成交前最後一次 Risk Decision，Position 再指向
+  Fill；Decision 同時保存 deterministic `source_bar_id`。
 - 歷史策略核心已先決定下一根開盤或盤中停損價，因此研究管線使用
   `signal_price` 重建成交事件，避免再延遲一根 K 棒；此模式不可用於 Paper Trading。
 - 買進滑價向上、賣出滑價向下；每邊手續費與期貨交易稅皆寫入 `FillEvent`。

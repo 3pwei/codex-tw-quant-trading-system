@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Literal
+from typing import Callable, Literal
 
 from ..events import (
     BarClosedEvent,
@@ -29,6 +29,7 @@ class OrderRecord:
     approved_quantity: int = 0
     status_reason: str = "awaiting_risk"
     fill_id: str | None = None
+    risk_decision_id: str | None = None
 
 
 class SimulatedBroker:
@@ -48,6 +49,10 @@ class SimulatedBroker:
         self._order_sequence: list[str] = []
         self._last_close: dict[tuple[str, str], float] = {}
         self._bars_with_fills: set[str] = set()
+        self.entry_prefill_risk: Callable[
+            [OrderIntent, float, datetime], RiskDecision
+        ] | None = None
+        self.gap_risk_rejections = 0
 
     def update_market_price(self, symbol: str, contract: str, price: float) -> None:
         """Seed the latest server-side market price for an immediate paper fill."""
@@ -197,6 +202,7 @@ class SimulatedBroker:
         record.status = "approved"
         record.approved_quantity = event.approved_quantity
         record.status_reason = event.reason
+        record.risk_decision_id = event.meta.event_id
         if record.intent.execution_timing == "next_bar_open":
             return None
         if record.intent.execution_timing in {"signal_price", "bar_trigger"}:
@@ -229,11 +235,11 @@ class SimulatedBroker:
 
     def on_bar(
         self, event: DomainEvent
-    ) -> list[FillEvent | OrderStatusEvent] | None:
+    ) -> list[FillEvent | OrderStatusEvent | RiskDecision] | None:
         if not isinstance(event, BarClosedEvent):
             raise TypeError("SimulatedBroker.on_bar requires BarClosedEvent")
         self._last_close[(event.symbol, event.contract)] = event.close
-        emitted: list[FillEvent | OrderStatusEvent] = []
+        emitted: list[FillEvent | OrderStatusEvent | RiskDecision] = []
         for record in self.orders.values():
             order = record.intent
             if (
@@ -258,6 +264,34 @@ class SimulatedBroker:
                 and order.meta.occurred_at < event.meta.occurred_at
             ):
                 quantity = record.approved_quantity
+                fill_cause: DomainEvent = event
+                if (
+                    not order.reduce_only
+                    and order.order_source == "strategy_auto"
+                ):
+                    expected_fill = (
+                        event.open
+                        + self.costs.slippage_points
+                        * (1 if order.side == "buy" else -1)
+                    )
+                    if self.entry_prefill_risk is None:
+                        emitted.append(self._reject(
+                            record, event, "prefill_risk_unavailable"
+                        ))
+                        continue
+                    prefill = self.entry_prefill_risk(
+                        order, expected_fill, event.meta.occurred_at
+                    )
+                    emitted.append(prefill)
+                    record.risk_decision_id = prefill.meta.event_id
+                    if not prefill.approved:
+                        if prefill.reason == "gap_risk_exceeded":
+                            self.gap_risk_rejections += 1
+                        emitted.append(self._reject(
+                            record, prefill, prefill.reason
+                        ))
+                        continue
+                    fill_cause = prefill
                 if order.reduce_only:
                     owner_id = PositionLedger._owner(order)
                     key = PositionKey(
@@ -281,7 +315,7 @@ class SimulatedBroker:
                         record,
                         raw_price=event.open,
                         occurred_at=event.meta.occurred_at,
-                        cause=event,
+                        cause=fill_cause,
                         quantity=quantity,
                     )
                 fills.append(fill)

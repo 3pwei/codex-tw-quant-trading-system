@@ -15,7 +15,7 @@
 | 策略 | 14 套基本策略（含三種共用 Dow Channel 結構的進場邏輯）、多週期 Setup／Entry／Exit／Risk、ALL／ANY、三層組合策略引用 |
 | 版本 | 不可變版本、參數快照、名稱唯一、封存、引用保護及回測追溯 |
 | 執行 | Backtest／Replay／Paper 共用事件語意；Live foundation 提供 durable outbox、callback audit、Recovery Lock、三方對帳與 Execution Worker |
-| 風控 | 帳戶與資料隔離、回測停損停利、Paper Auto managed exit、部位／每日限制、連敗冷卻、Kill Switch |
+| 風控 | 帳戶與資料隔離、Paper Auto recovery lock／gap recheck／managed exit、部位與每日限制、連敗冷卻、Kill Switch |
 | 平台 | Cloudflare OTP、FastAPI RBAC、申請與審核、Rate Limit、Request Size Limit、稽核紀錄 |
 | 穩定性 | 重啟復原、SQLite verified backup、Queue／WebSocket／DB／主機監控、五種服務狀態 |
 | UI | `/trade/` 整合即時圖表與 Paper 下單；Backtest／History／Replay 提供策略 overlays、診斷副圖、參數摘要與進出場判斷脈絡；手機 Bottom Sheet |

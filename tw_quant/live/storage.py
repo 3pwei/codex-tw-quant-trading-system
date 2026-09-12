@@ -138,6 +138,19 @@ class TradingRuntimeRepository(Protocol):
     def paper_auto_runtimes(
         self, symbol: str
     ) -> list[dict[str, object]]: ...
+    def lock_paper_auto_runtimes_for_recovery(
+        self, symbol: str
+    ) -> list[dict[str, object]]: ...
+    def set_trading_runtime_recovery(
+        self,
+        runtime_id: str,
+        owner_user_id: str,
+        issue: str | None,
+    ) -> dict[str, object] | None: ...
+    def trading_decision(
+        self, decision_id: str, owner_user_id: str
+    ) -> dict[str, object] | None: ...
+    def runtime_metrics(self) -> dict[str, object]: ...
     def stop_trading_runtime(
         self, runtime_id: str, owner_user_id: str
     ) -> dict[str, object] | None: ...
@@ -190,6 +203,7 @@ class SQLiteBarRepository:
         self.connection = sqlite3.connect(target, check_same_thread=False)
         self.connection.row_factory = sqlite3.Row
         self.lock = Lock()
+        self.duplicate_decisions_blocked = 0
         self.connection.execute("PRAGMA foreign_keys=ON")
         self.connection.execute("PRAGMA journal_mode=WAL")
         self.connection.execute(
@@ -501,13 +515,17 @@ class SQLiteBarRepository:
                 quantity INTEGER NOT NULL,
                 mode TEXT NOT NULL,
                 status TEXT NOT NULL,
+                recovery_issue TEXT,
+                recovery_checked_at TEXT,
                 last_evaluated_bar TEXT,
                 last_decision TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 CHECK(strategy_kind IN ('atomic', 'composite')),
                 CHECK(mode IN ('observe', 'paper_auto')),
-                CHECK(status IN ('active', 'paused', 'armed', 'stopped'))
+                CHECK(status IN (
+                    'active', 'paused', 'armed', 'recovery_locked', 'stopped'
+                ))
             );
             CREATE INDEX IF NOT EXISTS idx_strategy_runtimes_owner_updated
                 ON strategy_runtimes(owner_user_id, updated_at DESC);
@@ -528,6 +546,7 @@ class SQLiteBarRepository:
                 reason TEXT NOT NULL,
                 context_json TEXT NOT NULL,
                 source_bar_time TEXT NOT NULL,
+                source_bar_id TEXT,
                 execution_status TEXT NOT NULL DEFAULT 'not_applicable',
                 execution_reason TEXT,
                 order_id TEXT,
@@ -550,6 +569,12 @@ class SQLiteBarRepository:
         ).fetchone()[0]
         if "'armed'" not in runtime_sql:
             self._upgrade_trading_runtime_schema()
+            runtime_sql = self.connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' "
+                "AND name='strategy_runtimes'"
+            ).fetchone()[0]
+        if "'recovery_locked'" not in runtime_sql:
+            self._upgrade_paper_auto_recovery_schema()
         decision_columns = {
             row["name"] for row in self.connection.execute(
                 "PRAGMA table_info(trading_decisions)"
@@ -562,12 +587,90 @@ class SQLiteBarRepository:
             ("reference_price", "REAL"),
             ("planned_stop_price", "REAL"),
             ("actual_fill_price", "REAL"),
+            ("source_bar_id", "TEXT"),
         ):
             if name not in decision_columns:
                 self.connection.execute(
                     f"ALTER TABLE trading_decisions ADD COLUMN {name} {definition}"
                 )
         self.connection.commit()
+
+    def _upgrade_paper_auto_recovery_schema(self) -> None:
+        """Add the durable Paper Auto recovery state without losing PR #99 data."""
+        self.connection.execute("PRAGMA foreign_keys=OFF")
+        try:
+            self.connection.executescript(
+                """
+                ALTER TABLE trading_decisions RENAME TO trading_decisions_recovery_legacy;
+                ALTER TABLE strategy_runtimes RENAME TO strategy_runtimes_recovery_legacy;
+                CREATE TABLE strategy_runtimes (
+                    runtime_id TEXT PRIMARY KEY, owner_user_id TEXT NOT NULL,
+                    strategy_kind TEXT NOT NULL, strategy_id TEXT NOT NULL,
+                    strategy_version INTEGER, strategy_snapshot_json TEXT NOT NULL,
+                    symbol TEXT NOT NULL, interval TEXT NOT NULL,
+                    quantity INTEGER NOT NULL, mode TEXT NOT NULL,
+                    status TEXT NOT NULL, recovery_issue TEXT,
+                    recovery_checked_at TEXT, last_evaluated_bar TEXT,
+                    last_decision TEXT, created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    CHECK(strategy_kind IN ('atomic', 'composite')),
+                    CHECK(mode IN ('observe', 'paper_auto')),
+                    CHECK(status IN (
+                        'active', 'paused', 'armed', 'recovery_locked', 'stopped'
+                    ))
+                );
+                INSERT INTO strategy_runtimes(
+                    runtime_id,owner_user_id,strategy_kind,strategy_id,
+                    strategy_version,strategy_snapshot_json,symbol,interval,
+                    quantity,mode,status,last_evaluated_bar,last_decision,
+                    created_at,updated_at
+                ) SELECT runtime_id,owner_user_id,strategy_kind,strategy_id,
+                    strategy_version,strategy_snapshot_json,symbol,interval,
+                    quantity,mode,status,last_evaluated_bar,last_decision,
+                    created_at,updated_at
+                    FROM strategy_runtimes_recovery_legacy;
+                CREATE TABLE trading_decisions (
+                    decision_id TEXT PRIMARY KEY, runtime_id TEXT NOT NULL,
+                    owner_user_id TEXT NOT NULL, strategy_id TEXT NOT NULL,
+                    strategy_version INTEGER, symbol TEXT NOT NULL,
+                    contract TEXT NOT NULL, interval TEXT NOT NULL,
+                    trigger_time TEXT NOT NULL, direction TEXT NOT NULL,
+                    action TEXT NOT NULL, reason TEXT NOT NULL,
+                    context_json TEXT NOT NULL, source_bar_time TEXT NOT NULL,
+                    source_bar_id TEXT,
+                    execution_status TEXT NOT NULL DEFAULT 'not_applicable',
+                    execution_reason TEXT, order_id TEXT, reference_price REAL,
+                    planned_stop_price REAL, actual_fill_price REAL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(runtime_id) REFERENCES strategy_runtimes(runtime_id)
+                        ON DELETE CASCADE,
+                    CHECK(direction IN ('long', 'short')),
+                    CHECK(action IN ('entry', 'exit', 'none'))
+                );
+                INSERT INTO trading_decisions(
+                    decision_id,runtime_id,owner_user_id,strategy_id,
+                    strategy_version,symbol,contract,interval,trigger_time,
+                    direction,action,reason,context_json,source_bar_time,
+                    execution_status,execution_reason,order_id,reference_price,
+                    planned_stop_price,actual_fill_price,created_at
+                ) SELECT decision_id,runtime_id,owner_user_id,strategy_id,
+                    strategy_version,symbol,contract,interval,trigger_time,
+                    direction,action,reason,context_json,source_bar_time,
+                    execution_status,execution_reason,order_id,reference_price,
+                    planned_stop_price,actual_fill_price,created_at
+                    FROM trading_decisions_recovery_legacy;
+                DROP TABLE trading_decisions_recovery_legacy;
+                DROP TABLE strategy_runtimes_recovery_legacy;
+                CREATE INDEX idx_strategy_runtimes_owner_updated
+                    ON strategy_runtimes(owner_user_id, updated_at DESC);
+                CREATE INDEX idx_strategy_runtimes_active_symbol
+                    ON strategy_runtimes(status, symbol);
+                CREATE INDEX idx_trading_decisions_runtime_time
+                    ON trading_decisions(runtime_id, trigger_time DESC);
+                """
+            )
+        finally:
+            self.connection.execute("PRAGMA foreign_keys=ON")
 
     def _upgrade_trading_runtime_schema(self) -> None:
         """Upgrade the PR #98 runtime tables without an external migration."""
@@ -662,6 +765,8 @@ class SQLiteBarRepository:
             "quantity": row["quantity"],
             "mode": row["mode"],
             "status": row["status"],
+            "recovery_issue": row["recovery_issue"],
+            "recovery_checked_at": row["recovery_checked_at"],
             "last_evaluated_bar": row["last_evaluated_bar"],
             "last_decision": row["last_decision"],
             "created_at": row["created_at"],
@@ -685,6 +790,7 @@ class SQLiteBarRepository:
             "reason": row["reason"],
             "context": json.loads(row["context_json"]),
             "source_bar_time": row["source_bar_time"],
+            "source_bar_id": row["source_bar_id"],
             "execution_status": row["execution_status"],
             "execution_reason": row["execution_reason"],
             "order_id": row["order_id"],
@@ -771,6 +877,48 @@ class SQLiteBarRepository:
             ).fetchall()
         return [self._runtime_row(row) for row in rows]
 
+    def lock_paper_auto_runtimes_for_recovery(
+        self, symbol: str
+    ) -> list[dict[str, object]]:
+        """Durably disarm runtimes that could create exposure after restart."""
+        now = datetime.now().astimezone().isoformat(timespec="seconds")
+        with self.lock:
+            self.connection.execute(
+                "UPDATE strategy_runtimes SET status='recovery_locked',"
+                "recovery_issue=NULL,recovery_checked_at=NULL,updated_at=? "
+                "WHERE symbol=? AND mode='paper_auto' "
+                "AND status IN ('armed','recovery_locked')",
+                (now, symbol),
+            )
+            self.connection.commit()
+            rows = self.connection.execute(
+                "SELECT * FROM strategy_runtimes WHERE symbol=? "
+                "AND mode='paper_auto' ORDER BY created_at",
+                (symbol,),
+            ).fetchall()
+        return [self._runtime_row(row) for row in rows]
+
+    def set_trading_runtime_recovery(
+        self,
+        runtime_id: str,
+        owner_user_id: str,
+        issue: str | None,
+    ) -> dict[str, object] | None:
+        now = datetime.now().astimezone().isoformat(timespec="seconds")
+        with self.lock:
+            self.connection.execute(
+                "UPDATE strategy_runtimes SET recovery_issue=?,"
+                "recovery_checked_at=?,updated_at=? "
+                "WHERE runtime_id=? AND owner_user_id=?",
+                (issue, now, now, runtime_id, owner_user_id),
+            )
+            self.connection.commit()
+            row = self.connection.execute(
+                "SELECT * FROM strategy_runtimes WHERE runtime_id=? "
+                "AND owner_user_id=?", (runtime_id, owner_user_id),
+            ).fetchone()
+        return self._runtime_row(row) if row else None
+
     def stop_trading_runtime(
         self, runtime_id: str, owner_user_id: str
     ) -> dict[str, object] | None:
@@ -827,6 +975,16 @@ class SQLiteBarRepository:
             ).fetchall()
         return [self._decision_row(row) for row in rows]
 
+    def trading_decision(
+        self, decision_id: str, owner_user_id: str
+    ) -> dict[str, object] | None:
+        with self.lock:
+            row = self.connection.execute(
+                "SELECT * FROM trading_decisions WHERE decision_id=? "
+                "AND owner_user_id=?", (decision_id, owner_user_id),
+            ).fetchone()
+        return self._decision_row(row) if row else None
+
     def record_runtime_evaluation(
         self,
         runtime_id: str,
@@ -851,6 +1009,7 @@ class SQLiteBarRepository:
                         and evaluated_bar <= runtime["last_evaluated_bar"]
                     )
                 ):
+                    self.duplicate_decisions_blocked += len(decisions)
                     self.connection.rollback()
                     return []
                 for decision in decisions:
@@ -859,8 +1018,9 @@ class SQLiteBarRepository:
                         "decision_id,runtime_id,owner_user_id,strategy_id,"
                         "strategy_version,symbol,contract,interval,trigger_time,"
                         "direction,action,reason,context_json,source_bar_time,"
-                        "execution_status,reference_price,created_at) "
-                        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        "source_bar_id,execution_status,execution_reason,"
+                        "reference_price,created_at) "
+                        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         (
                             decision["decision_id"], runtime_id,
                             decision["owner_user_id"], decision["strategy_id"],
@@ -873,7 +1033,9 @@ class SQLiteBarRepository:
                                 ensure_ascii=False, sort_keys=True,
                             ),
                             decision["source_bar_time"],
+                            decision.get("source_bar_id"),
                             decision.get("execution_status", "not_applicable"),
+                            decision.get("execution_reason"),
                             decision.get("reference_price"),
                             now,
                         ),
@@ -881,6 +1043,8 @@ class SQLiteBarRepository:
                     if cursor.rowcount:
                         inserted.append(decision)
                         last_decision = str(decision["decision_id"])
+                    else:
+                        self.duplicate_decisions_blocked += 1
                 if last_decision is None:
                     previous = self.connection.execute(
                         "SELECT last_decision FROM strategy_runtimes "
@@ -897,6 +1061,35 @@ class SQLiteBarRepository:
                 self.connection.rollback()
                 raise
         return inserted
+
+    def runtime_metrics(self) -> dict[str, object]:
+        with self.lock:
+            runtimes = self.connection.execute(
+                "SELECT COUNT(*) AS total, "
+                "SUM(status='active') AS active, "
+                "SUM(status='armed') AS armed, "
+                "SUM(status='recovery_locked') AS recovery_locked "
+                "FROM strategy_runtimes"
+            ).fetchone()
+            decisions = self.connection.execute(
+                "SELECT COUNT(*) AS total, "
+                "SUM(execution_status='filled') AS executed, "
+                "SUM(execution_status='skipped') AS skipped, "
+                "MAX(trigger_time) AS last_decision_time "
+                "FROM trading_decisions"
+            ).fetchone()
+        assert runtimes is not None and decisions is not None
+        return {
+            "runtimes": int(runtimes["total"] or 0),
+            "active_runtimes": int(runtimes["active"] or 0),
+            "armed_runtimes": int(runtimes["armed"] or 0),
+            "recovery_locked_runtimes": int(runtimes["recovery_locked"] or 0),
+            "decisions": int(decisions["total"] or 0),
+            "executed_decisions": int(decisions["executed"] or 0),
+            "skipped_decisions": int(decisions["skipped"] or 0),
+            "last_runtime_decision_time": decisions["last_decision_time"],
+            "duplicate_decisions_blocked": self.duplicate_decisions_blocked,
+        }
 
     def update_decision_execution(
         self, decision_id: str, owner_user_id: str, values: dict[str, object]

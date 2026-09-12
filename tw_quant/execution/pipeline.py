@@ -44,6 +44,9 @@ class SimulatedExecutionPipeline:
         engine.subscribe("order_intent", self.broker.on_order)
         engine.subscribe("order_intent", self.risk.on_order)
         engine.subscribe("risk_decision", self.broker.on_risk_decision)
+        risk_status_handler = getattr(self.risk, "on_order_status", None)
+        if callable(risk_status_handler):
+            engine.subscribe("order_status", risk_status_handler)
         engine.subscribe("bar_closed", self.broker.on_bar)
         engine.subscribe("bar_closed", self._mark_after_bar)
         engine.subscribe("bar_closed", self.liquidator.on_bar)

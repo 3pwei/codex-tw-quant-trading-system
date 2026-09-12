@@ -230,6 +230,9 @@ class RiskDecision:
     approved: bool
     approved_quantity: int
     reason: str
+    estimated_risk: float | None = None
+    reference_price: float | None = None
+    phase: Literal["initial", "prefill"] = "initial"
     kind: Literal["risk_decision"] = field(default="risk_decision", init=False)
 
     def __post_init__(self) -> None:
@@ -241,6 +244,10 @@ class RiskDecision:
             raise ValueError("approved decisions require a positive quantity")
         if not self.approved and self.approved_quantity != 0:
             raise ValueError("rejected decisions must have zero quantity")
+        if self.estimated_risk is not None and self.estimated_risk < 0:
+            raise ValueError("estimated_risk cannot be negative")
+        if self.reference_price is not None and self.reference_price <= 0:
+            raise ValueError("reference_price must be positive when provided")
 
 
 @dataclass(frozen=True)

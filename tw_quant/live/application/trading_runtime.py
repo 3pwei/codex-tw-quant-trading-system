@@ -46,6 +46,13 @@ def decision_fingerprint(
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def source_bar_fingerprint(
+    symbol: str, contract: str, interval: str, source_bar_time: str
+) -> str:
+    canonical = "|".join((symbol, contract, interval, source_bar_time))
+    return "bar:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 class TradingRuntimeApplicationService:
     """Persist decisions produced from closed canonical bars."""
 
@@ -183,6 +190,10 @@ class TradingRuntimeApplicationService:
             raise InvalidInputError("only paper_auto runtimes can be armed")
         if runtime["status"] == "stopped":
             raise InvalidInputError("a stopped runtime cannot be armed")
+        if runtime.get("recovery_issue"):
+            raise InvalidInputError(
+                f"runtime recovery is locked: {runtime['recovery_issue']}"
+            )
         latest = [
             bar for bar in self.market_repository.latest(
                 self.symbol, self.history_limit
@@ -220,6 +231,9 @@ class TradingRuntimeApplicationService:
                 runtime_id, owner_id, limit
             )
         }
+
+    def health(self) -> dict[str, object]:
+        return self.runtime_repository.runtime_metrics()
 
     @staticmethod
     def _completed_interval(bar: KBar, interval: str) -> bool:
@@ -297,14 +311,25 @@ class TradingRuntimeApplicationService:
                 evaluated_time = evaluated.time.isoformat(
                     timespec="milliseconds"
                 )
+                is_fresh = (
+                    timeframe_bucket(evaluated, interval)
+                    == timeframe_bucket(bar, interval)
+                )
                 decisions = [
-                    self._decision(runtime, item, evaluated.close)
+                    self._decision(
+                        runtime,
+                        item,
+                        evaluated.close,
+                        stale_or_recovered=not is_fresh,
+                    )
                     for item in intents_by_time.get(evaluated_time, [])
                 ]
                 inserted = self.runtime_repository.record_runtime_evaluation(
                     str(runtime["runtime_id"]), evaluated_time, decisions
                 )
                 for decision in inserted:
+                    if decision.get("execution_status") == "skipped":
+                        continue
                     for listener in tuple(self._decision_listeners):
                         listener(runtime, decision, evaluated)
 
@@ -313,6 +338,8 @@ class TradingRuntimeApplicationService:
         runtime: Mapping[str, object],
         intent: Mapping[str, object],
         reference_price: float,
+        *,
+        stale_or_recovered: bool = False,
     ) -> dict[str, object]:
         version = runtime.get("strategy_version")
         decision_id = decision_fingerprint(
@@ -339,11 +366,26 @@ class TradingRuntimeApplicationService:
             "reason": intent["reason"],
             "context": dict(intent.get("context", {})),
             "source_bar_time": intent["source_bar_time"],
+            "source_bar_id": source_bar_fingerprint(
+                str(runtime["symbol"]),
+                str(intent["contract"]),
+                str(runtime["interval"]),
+                str(intent["source_bar_time"]),
+            ),
             "execution_status": (
-                "pending"
-                if runtime["mode"] == "paper_auto"
-                and intent["action"] in {"entry", "exit"}
+                ("skipped" if stale_or_recovered else "pending")
+                if (
+                    runtime["mode"] == "paper_auto"
+                    and intent["action"] in {"entry", "exit"}
+                )
                 else "not_applicable"
+            ),
+            "execution_reason": (
+                "stale_or_recovered_signal"
+                if stale_or_recovered
+                and runtime["mode"] == "paper_auto"
+                and intent["action"] in {"entry", "exit"}
+                else None
             ),
             "reference_price": reference_price,
         }

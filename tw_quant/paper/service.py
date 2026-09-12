@@ -4,7 +4,7 @@ from dataclasses import asdict, dataclass
 from datetime import date, datetime
 from math import isclose
 from time import perf_counter
-from typing import Literal
+from typing import Callable, Literal
 
 from ..auth import AuthUser
 from ..broker import BrokerOrderRequest, ExecutionMode, canonical_paper_status
@@ -14,6 +14,8 @@ from ..events import (
     EventMetadata,
     FillEvent,
     OrderIntent,
+    OrderStatusEvent,
+    RiskDecision,
 )
 from ..execution import OrderRecord, SimulatedExecutionPipeline
 from ..market import KBar, TAIPEI
@@ -40,6 +42,8 @@ class PaperOrderCommand:
     stop_loss_pct: float | None = None
     take_profit_pct: float | None = None
     strategy_snapshot: dict[str, object] | None = None
+    correlation_id: str | None = None
+    causation_id: str | None = None
 
     def __post_init__(self) -> None:
         if not self.strategy_id:
@@ -97,7 +101,31 @@ class PaperTradingService:
         self.last_submission_at: datetime | None = None
         self.total_submission_ms = 0.0
         self.max_submission_ms = 0.0
+        self.last_auto_order_at: datetime | None = None
+        self._auto_entry_guard: Callable[[OrderIntent], str | None] | None = None
         self.recovery = self._recover()
+        self.pipeline.broker.entry_prefill_risk = self._entry_prefill_risk
+
+    def set_auto_entry_guard(
+        self, guard: Callable[[OrderIntent], str | None]
+    ) -> None:
+        self._auto_entry_guard = guard
+
+    def _entry_prefill_risk(
+        self,
+        order: OrderIntent,
+        expected_fill_price: float,
+        occurred_at: datetime,
+    ) -> RiskDecision:
+        blocked_reason = (
+            self._auto_entry_guard(order) if self._auto_entry_guard else None
+        )
+        return self.risk.recheck_before_fill(
+            order,
+            expected_fill_price,
+            occurred_at,
+            blocked_reason=blocked_reason,
+        )
 
     @staticmethod
     def _metadata(payload: dict[str, object]) -> EventMetadata:
@@ -320,6 +348,12 @@ class PaperTradingService:
                         record.status_reason = str(
                             decision.get("reason", "risk_approved")
                         )
+                        record.risk_decision_id = self._metadata(
+                            decision
+                        ).event_id
+                        self.risk.restore_reservation(
+                            order, record.approved_quantity
+                        )
                     except (KeyError, TypeError, ValueError):
                         issue(owner_id, "invalid_pending_order")
 
@@ -519,6 +553,8 @@ class PaperTradingService:
                 else "paper_api"
             ),
             source_key=source_key,
+            correlation_id=command.correlation_id,
+            causation_id=command.causation_id,
             owner_id=user.user_id,
         )
         order = OrderIntent(
@@ -568,6 +604,8 @@ class PaperTradingService:
         self.engine.publish(order)
         self._run()
         result = self._record(self.pipeline.broker.orders[order.order_id])
+        if command.order_source == "strategy_auto":
+            self.last_auto_order_at = submitted_at
         return self._track_submission(result, started), True
 
     def submit_request(
@@ -665,6 +703,49 @@ class PaperTradingService:
     ) -> dict[str, object] | None:
         return self.repository.order_for_client_id(owner_id, client_order_id)
 
+    def strategy_auto_recovery_state(self) -> dict[str, list[dict[str, object]]]:
+        return {
+            "orders": self.repository.strategy_auto_orders(),
+            "positions": self.repository.strategy_auto_positions(),
+        }
+
+    def reject_pending_auto_entries(
+        self, runtime_ids: set[str], reason: str
+    ) -> list[dict[str, object]]:
+        """Terminally reject recovered exposure instead of backfilling it."""
+        rejected: list[dict[str, object]] = []
+        occurred_at = datetime.now(TAIPEI)
+        for record in self.pipeline.broker.orders.values():
+            order = record.intent
+            if not (
+                record.status in {"pending_risk", "approved"}
+                and order.order_source == "strategy_auto"
+                and not order.reduce_only
+                and order.runtime_id in runtime_ids
+            ):
+                continue
+            record.status = "rejected"
+            record.status_reason = reason
+            status = OrderStatusEvent(
+                meta=EventMetadata.create(
+                    kind="order_status",
+                    occurred_at=occurred_at,
+                    source="paper_recovery",
+                    source_key=f"{order.order_id}:{reason}",
+                    causation_id=order.meta.event_id,
+                    correlation_id=order.meta.correlation_id,
+                    owner_id=order.meta.owner_id,
+                ),
+                order_id=order.order_id,
+                status="rejected",
+                reason=reason,
+            )
+            self.engine.publish(status)
+            rejected.append(self._record(record))
+        if rejected:
+            self._run()
+        return rejected
+
     def account(self, owner_id: str) -> dict[str, object]:
         snapshot = asdict(self.risk.snapshot(owner_id))
         snapshot["trading_date"] = (
@@ -715,6 +796,16 @@ class PaperTradingService:
             "last_submission_at": self.last_submission_at.isoformat(
                 timespec="milliseconds"
             ) if self.last_submission_at else None,
+            "last_auto_order_time": (
+                repository.get("last_auto_order_time")
+                or (
+                    self.last_auto_order_at.isoformat(timespec="milliseconds")
+                    if self.last_auto_order_at else None
+                )
+            ),
+            "gap_risk_rejected": int(
+                repository.get("gap_risk_rejected", 0)
+            ),
             "repository": repository,
         }
 

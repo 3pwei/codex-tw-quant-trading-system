@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from typing import Protocol
 
@@ -10,6 +10,7 @@ from ..events import (
     EventMetadata,
     FillEvent,
     OrderIntent,
+    OrderStatusEvent,
     RiskDecision,
     SessionEvent,
 )
@@ -269,6 +270,8 @@ class AccountRiskGate:
             approved=approved,
             approved_quantity=quantity if approved else 0,
             reason=reason,
+            estimated_risk=estimated_risk,
+            reference_price=(order.reference_price or None),
         )
         self.audit_log.append(
             RiskAuditEntry(
@@ -283,6 +286,115 @@ class AccountRiskGate:
             )
         )
         return [decision]
+
+    def recheck_before_fill(
+        self,
+        order: OrderIntent,
+        expected_fill_price: float,
+        occurred_at: datetime,
+        *,
+        blocked_reason: str | None = None,
+    ) -> RiskDecision:
+        """Revalidate an approved entry against the executable next open."""
+        owner_id = self._owner(order)
+        state = self._state(owner_id, self._trading_date(order))
+        adjusted = replace(order, reference_price=expected_fill_price)
+        estimated_risk = self._estimated_risk(adjusted)
+        reason = blocked_reason
+        account = self.access.resolve(owner_id)
+        if reason is None and account is None:
+            reason = "account_unknown"
+        elif reason is None and account.status != AccountStatus.ACTIVE:
+            reason = "account_not_active"
+        elif reason is None and account.trading_mode != TradingMode.PAPER:
+            reason = "paper_mode_required"
+        elif reason is None and "orders.paper" not in account.permissions:
+            reason = "paper_permission_required"
+        elif reason is None and state.kill_switch_active:
+            reason = "kill_switch_active"
+        elif reason is None and state.realized_pnl <= -self.config.max_daily_loss:
+            reason = "daily_loss_limit"
+        elif (
+            reason is None
+            and state.cooldown_until is not None
+            and occurred_at < state.cooldown_until
+        ):
+            reason = "loss_streak_cooldown"
+        elif reason is None and order.order_id not in state.reserved_entries:
+            reason = "risk_reservation_missing"
+        elif reason is None and (
+            state.trades + len(state.reserved_entries)
+            > self.config.max_trades_per_day
+        ):
+            reason = "daily_trade_limit"
+        elif reason is None and (
+            self._open_contracts(owner_id)
+            + sum(state.reserved_entries.values())
+            > self.config.max_position_contracts
+        ):
+            reason = "max_position_exceeded"
+        elif reason is None and order.stop_loss_price is None:
+            reason = "stop_loss_required"
+        elif reason is None and not (
+            (order.side == "buy" and order.stop_loss_price < expected_fill_price)
+            or (order.side == "sell" and order.stop_loss_price > expected_fill_price)
+        ):
+            reason = "gap_risk_exceeded"
+        elif reason is None and (
+            estimated_risk is None
+            or estimated_risk > self.config.max_risk_per_trade
+        ):
+            reason = "gap_risk_exceeded"
+
+        approved = reason is None
+        reason = reason or "gap_risk_approved"
+        metadata = EventMetadata.create(
+            kind="risk_decision",
+            occurred_at=occurred_at,
+            source="account_risk_prefill",
+            source_key=f"{order.order_id}:{expected_fill_price}:{reason}",
+            causation_id=order.meta.event_id,
+            correlation_id=order.meta.correlation_id,
+            owner_id=owner_id,
+        )
+        decision = RiskDecision(
+            meta=metadata,
+            order_id=order.order_id,
+            approved=approved,
+            approved_quantity=order.quantity if approved else 0,
+            reason=reason,
+            estimated_risk=estimated_risk,
+            reference_price=expected_fill_price,
+            phase="prefill",
+        )
+        self.audit_log.append(RiskAuditEntry(
+            event_id=metadata.event_id,
+            occurred_at=occurred_at,
+            owner_id=owner_id,
+            order_id=order.order_id,
+            approved=approved,
+            approved_quantity=decision.approved_quantity,
+            reason=reason,
+            estimated_risk=estimated_risk,
+        ))
+        return decision
+
+    def restore_reservation(self, order: OrderIntent, quantity: int) -> None:
+        if order.reduce_only or quantity <= 0:
+            return
+        owner_id = self._owner(order)
+        state = self._state(owner_id, self._trading_date(order))
+        state.reserved_entries[order.order_id] = quantity
+        self._seen_order_ids.add(order.order_id)
+
+    def on_order_status(self, event: DomainEvent) -> None:
+        if not isinstance(event, OrderStatusEvent):
+            raise TypeError("AccountRiskGate.on_order_status requires OrderStatusEvent")
+        owner_id = self._owner(event)
+        state = self._states.get(owner_id)
+        if state is not None:
+            state.reserved_entries.pop(event.order_id, None)
+        return None
 
     def on_order(self, event: DomainEvent) -> list[RiskDecision]:
         if not isinstance(event, OrderIntent):
