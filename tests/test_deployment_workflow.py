@@ -65,5 +65,10 @@ class DeploymentWorkflowTests(unittest.TestCase):
         self.assertLess(prepare, first_compose)
 
 
+    def test_host_preparation_script_is_executable(self):
+        script = ROOT / "deploy/lightsail/prepare-host.sh"
+
+        self.assertNotEqual(script.stat().st_mode & 0o111, 0)
+
 if __name__ == "__main__":
     unittest.main()
