@@ -44,12 +44,14 @@ boundary，再由 `PaperTradingService` 轉為現有事件鏈。`PaperBrokerAdap
 `BrokerPort`，讓背景 runner 或 contract test 可以使用同一套 broker 介面；舊的
 `PaperOrderCommand` 暫時保留給 Replay 與相容呼叫端。
 
-armed 的 `paper_auto` Runtime 另有一條僅限進場的路徑：
+armed 的 `paper_auto` Runtime 使用 managed position 路徑：
 
 ```text
 Closed K → durable Entry Decision → Paper Auto safety gates
          → AccountRiskGate → next_bar_open OrderIntent
-         → next closed bar open FillEvent → PositionEvent
+         → next closed bar open FillEvent → protected PositionEvent
+Closed K → SL / TP（stop first）→ bar_trigger reduce-only FillEvent
+         → durable Strategy Exit Decision → next-open reduce-only FillEvent
 ```
 
 自動單的 idempotency key 由 owner、runtime、contract、trigger time、direction 與 entry
@@ -58,13 +60,13 @@ snapshot，reference price 取訊號確認 K 的 close。Order、Fill、Position
 `order_source=strategy_auto`、runtime 與 decision attribution。manual Paper 仍使用
 `current_close`，不受此時序改動影響。
 
-自動 entry 的 planned stop 目前只供 AccountRiskGate 核准，並不是已掛出的保護單。
-reference close 與 next open 之間可能跳空；系統保存 reference、planned stop 與 actual
-fill，後續 gap-risk hardening 完成前不得宣稱此風險已受保護。
+自動 entry 的 planned stop 只供 AccountRiskGate 核准。成交後會改以 actual fill 與
+immutable strategy snapshot 重算並保存真正的 stop loss／take profit；reference close
+與 next open 的跳空仍保留在 reference、planned stop 與 actual fill audit 欄位。
 
-目前僅支援市價、立即、全數成交。`stop_loss_price` 只供進場風險核准及圖表顯示，
-不是會在後續行情觸發的保護委託；目前也沒有 Paper `take_profit_price`。在真正的
-Protective Order／OCO 完成前，任何 UI 或文件都不得宣稱 Paper 部位已有自動保護。
+手動 Paper 仍僅支援市價、立即、全數成交，手動輸入的 `stop_loss_price` 只供進場
+風險核准及圖表顯示。Paper Auto managed exit 是平台內的 closed-bar simulated policy，
+不是外部券商原生 Protective Order／OCO；服務中斷期間不會在券商端獨立保護部位。
 
 ### Shioaji Simulation 與 Live
 

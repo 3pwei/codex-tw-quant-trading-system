@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from ..events import (
     BarClosedEvent,
     DomainEvent,
@@ -14,8 +16,13 @@ from .position_ledger import PositionKey, PositionLedger, PositionState
 class PositionLiquidator:
     """Create reduce-only liquidation intents for session end and contract roll."""
 
-    def __init__(self, ledger: PositionLedger):
+    def __init__(
+        self,
+        ledger: PositionLedger,
+        has_pending_exit: Callable[[PositionKey], bool] | None = None,
+    ):
         self.ledger = ledger
+        self.has_pending_exit = has_pending_exit or (lambda _key: False)
         self._pending: set[PositionKey] = set()
 
     @staticmethod
@@ -64,7 +71,7 @@ class PositionLiquidator:
     ) -> list[OrderIntent] | None:
         orders: list[OrderIntent] = []
         for state in states:
-            if state.key in self._pending:
+            if state.key in self._pending or self.has_pending_exit(state.key):
                 continue
             self._pending.add(state.key)
             orders.append(self._build_intent(state, cause, reason))

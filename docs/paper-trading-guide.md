@@ -26,7 +26,9 @@ Market Data Provider，成交、持倉與風控結果則寫入平台 SQLite。
 若進場委託有設定停損，也會顯示停損線。切換 K 棒週期只改變圖表聚合與標記位置，
 不會改變伺服器保存的成交價、持倉或風控資料。
 
-> 現階段停損價只用於進場風險審核與圖表提示，不是掛在模擬券商的保護單。
+> 手動 Paper 的停損價只用於進場風險審核與圖表提示。Paper Auto 部位則由伺服器以
+> immutable snapshot 與實際 entry fill 建立 SL／TP，於 closed K 以 reduce-only
+> simulated exit 執行；這不是外部券商原生保護單。
 > 行情觸及該價格不會自動平倉，Paper 也尚未支援自動停利或 OCO。持倉者必須自行
 > 監看並使用 reduce-only 平倉，直到 Protective Order 功能完成。
 

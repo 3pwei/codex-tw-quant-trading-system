@@ -25,6 +25,9 @@ MarketEvent / BarClosedEvent
 
 - 策略 entry／exit 訊號轉成 market `OrderIntent`，成交量預設一口且可設定。
 - 一般訂單只會在嚴格晚於訊號時間的下一根同契約 K 棒開盤成交。
+- Paper Auto 的 SL／TP 使用 `bar_trigger`：只允許 server-side strategy-auto
+  reduce-only intent，成交價採已收盤 OHLC 可證明的保守觸發價；跳空使用開盤價，
+  同棒同時觸及 SL／TP 時 stop loss 優先。
 - 歷史策略核心已先決定下一根開盤或盤中停損價，因此研究管線使用
   `signal_price` 重建成交事件，避免再延遲一根 K 棒；此模式不可用於 Paper Trading。
 - 買進滑價向上、賣出滑價向下；每邊手續費與期貨交易稅皆寫入 `FillEvent`。
@@ -66,7 +69,8 @@ MarketEvent / BarClosedEvent
 - 模擬成交與部位引擎已消費 `OrderIntent`／`RiskDecision`。
 - 帳戶層風控已能取代預設閘門，並記錄核准或拒絕原因。
 - Backtest 與 Replay 已改由相同事件流驅動，Replay 快照並提供 execution audit events。
-- Paper Trading 手動委託使用伺服器最新行情立即模擬成交；已收盤 K 棒另供損益
-  標記、換月與未來保護單監控。事件與狀態快照會保存以支援重啟。
+- Paper Trading 手動委託使用伺服器最新行情立即模擬成交；Paper Auto 的已收盤
+  K 棒另供 next-open entry／strategy exit、SL／TP、損益標記與換月監控。保護價、
+  策略快照、OrderStatus 與成交事件會保存以支援重啟。
 
 任何真實券商 adapter 都不在目前 Level 2 範圍內；`OrderExecutor` 預設仍維持停用。

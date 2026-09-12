@@ -35,7 +35,9 @@ class SimulatedExecutionPipeline:
             default_quantity=default_quantity,
             execution_timing=execution_timing,
         )
-        self.liquidator = PositionLiquidator(self.ledger)
+        self.liquidator = PositionLiquidator(
+            self.ledger, self.broker.has_pending_reduce_only
+        )
 
     def install(self, engine: DeterministicEventEngine) -> None:
         engine.subscribe("signal", self.router.on_signal)

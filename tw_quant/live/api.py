@@ -21,7 +21,7 @@ from ..replay import ReplayTradingSessionRegistry
 from .api_context import ApiDependencies
 from .application import (
     PaperApplicationService,
-    PaperAutoEntryController,
+    PaperAutoExecutionController,
     ResearchApplicationService,
     StrategyApplicationService,
     TradingRuntimeApplicationService,
@@ -155,10 +155,11 @@ def create_app(
     runtime_app = TradingRuntimeApplicationService(
         repo, repo, repo, config.symbol, config.history_limit
     )
-    paper_auto = PaperAutoEntryController(
+    paper_auto = PaperAutoExecutionController(
         repo, identity_repo, service, paper
     )
     runtime_app.add_decision_listener(paper_auto.on_decision)
+    service.add_bar_listener(paper_auto.before_bar)
     service.add_bar_listener(paper.on_bar)
     service.add_bar_listener(paper_auto.after_bar)
     service.add_bar_listener(runtime_app.on_bar)
@@ -173,6 +174,7 @@ def create_app(
         finally:
             await service.stop()
             await execution_worker.stop()
+            service.remove_bar_listener(paper_auto.before_bar)
             service.remove_bar_listener(paper.on_bar)
             service.remove_bar_listener(paper_auto.after_bar)
             service.remove_bar_listener(runtime_app.on_bar)

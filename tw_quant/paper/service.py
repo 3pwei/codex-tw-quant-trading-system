@@ -30,11 +30,16 @@ class PaperOrderCommand:
     stop_loss_price: float | None
     reduce_only: bool = False
     reason: str = "manual_paper_order"
-    execution_timing: Literal["current_close", "next_bar_open"] = "current_close"
+    execution_timing: Literal[
+        "current_close", "next_bar_open", "bar_trigger"
+    ] = "current_close"
     order_source: Literal["manual", "strategy_auto"] = "manual"
     runtime_id: str | None = None
     decision_id: str | None = None
     reference_price: float | None = None
+    stop_loss_pct: float | None = None
+    take_profit_pct: float | None = None
+    strategy_snapshot: dict[str, object] | None = None
 
     def __post_init__(self) -> None:
         if not self.strategy_id:
@@ -46,6 +51,12 @@ class PaperOrderCommand:
         ):
             raise ValueError(
                 "strategy_auto orders require runtime_id and decision_id"
+            )
+        if self.execution_timing == "bar_trigger" and not (
+            self.order_source == "strategy_auto" and self.reduce_only
+        ):
+            raise ValueError(
+                "bar_trigger execution is reserved for strategy_auto reduce-only orders"
             )
 
 
@@ -132,6 +143,18 @@ class PaperTradingService:
             order_source=str(payload.get("order_source", "manual")),  # type: ignore[arg-type]
             runtime_id=(str(payload["runtime_id"]) if payload.get("runtime_id") else None),
             decision_id=(str(payload["decision_id"]) if payload.get("decision_id") else None),
+            stop_loss_price=(
+                float(payload["stop_loss_price"])
+                if payload.get("stop_loss_price") is not None else None
+            ),
+            take_profit_price=(
+                float(payload["take_profit_price"])
+                if payload.get("take_profit_price") is not None else None
+            ),
+            strategy_snapshot=(
+                dict(payload["strategy_snapshot"])
+                if isinstance(payload.get("strategy_snapshot"), dict) else None
+            ),
         )
 
     @classmethod
@@ -155,6 +178,18 @@ class PaperTradingService:
             stop_loss_price=(
                 float(payload["stop_loss_price"])
                 if payload.get("stop_loss_price") is not None else None
+            ),
+            stop_loss_pct=(
+                float(payload["stop_loss_pct"])
+                if payload.get("stop_loss_pct") is not None else None
+            ),
+            take_profit_pct=(
+                float(payload["take_profit_pct"])
+                if payload.get("take_profit_pct") is not None else None
+            ),
+            strategy_snapshot=(
+                dict(payload["strategy_snapshot"])
+                if isinstance(payload.get("strategy_snapshot"), dict) else None
             ),
             trading_date=(date.fromisoformat(str(trading_date)) if trading_date else None),
             client_order_id=(
@@ -183,6 +218,7 @@ class PaperTradingService:
         intents: dict[str, dict[str, dict[str, object]]] = {}
         decisions: dict[str, dict[str, dict[str, object]]] = {}
         fills: dict[str, set[str]] = {}
+        terminal_orders: dict[str, set[str]] = {}
         latest_positions: dict[
             str, dict[tuple[str, int, str, str], dict[str, object]]
         ] = {}
@@ -225,6 +261,10 @@ class PaperTradingService:
                 intents.setdefault(owner_id, {})[order_id] = payload
             elif kind == "risk_decision":
                 decisions.setdefault(owner_id, {})[order_id] = payload
+            elif kind == "order_status":
+                if order_id not in intents.get(owner_id, {}):
+                    issue(owner_id, "order_status_without_order")
+                terminal_orders.setdefault(owner_id, set()).add(order_id)
             elif kind == "fill":
                 if order_id not in intents.get(owner_id, {}):
                     issue(owner_id, "fill_without_order")
@@ -260,12 +300,14 @@ class PaperTradingService:
                     bool(decision.get("approved"))
                     and intent.get("execution_timing") == "current_close"
                     and order_id not in fills.get(owner_id, set())
+                    and order_id not in terminal_orders.get(owner_id, set())
                 ):
                     issue(owner_id, "approved_order_without_fill")
                 elif (
                     bool(decision.get("approved"))
                     and intent.get("execution_timing") == "next_bar_open"
                     and order_id not in fills.get(owner_id, set())
+                    and order_id not in terminal_orders.get(owner_id, set())
                 ):
                     try:
                         order = self._order_event(intent)
@@ -358,6 +400,9 @@ class PaperTradingService:
             "reduce_only": order.reduce_only,
             "reference_price": order.reference_price,
             "stop_loss_price": order.stop_loss_price,
+            "stop_loss_pct": order.stop_loss_pct,
+            "take_profit_pct": order.take_profit_pct,
+            "strategy_snapshot": order.strategy_snapshot,
             "status": record.status,
             "lifecycle_status": canonical_paper_status(record.status).value,
             "status_reason": record.status_reason,
@@ -402,6 +447,9 @@ class PaperTradingService:
             command.order_source,
             command.runtime_id,
             command.decision_id,
+            command.stop_loss_pct,
+            command.take_profit_pct,
+            command.strategy_snapshot,
         )
         actual = (
             str(existing["strategy_id"]),
@@ -417,6 +465,15 @@ class PaperTradingService:
             str(existing.get("order_source", "manual")),
             existing.get("runtime_id"),
             existing.get("decision_id"),
+            (
+                float(existing["stop_loss_pct"])
+                if existing.get("stop_loss_pct") is not None else None
+            ),
+            (
+                float(existing["take_profit_pct"])
+                if existing.get("take_profit_pct") is not None else None
+            ),
+            existing.get("strategy_snapshot"),
         )
         if actual != expected:
             raise IdempotencyConflict(
@@ -483,6 +540,9 @@ class PaperTradingService:
                 else market_bar.close
             ),
             stop_loss_price=command.stop_loss_price,
+            stop_loss_pct=command.stop_loss_pct,
+            take_profit_pct=command.take_profit_pct,
+            strategy_snapshot=command.strategy_snapshot,
             trading_date=market_bar.trading_date,
             client_order_id=key,
             order_source=command.order_source,
