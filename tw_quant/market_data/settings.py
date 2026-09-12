@@ -32,6 +32,14 @@ class MarketDataSettings:
         provider = os.getenv("MARKET_DATA_PROVIDER")
         if provider is None:
             provider = os.getenv("MARKET_MODE", "mock")
+        environment = os.getenv("PLATFORM_ENVIRONMENT", "production").lower().strip()
+        api_key = os.getenv("MARKET_SJ_API_KEY")
+        secret_key = os.getenv("MARKET_SJ_SECRET_KEY")
+        # Legacy names remain local/test-only. Production must never make live
+        # execution secret names available to the public application process.
+        if environment != "production":
+            api_key = api_key or os.getenv("SJ_API_KEY")
+            secret_key = secret_key or os.getenv("SJ_SEC_KEY")
         return cls(
             provider=normalize_provider(provider),
             symbol=os.getenv("MARKET_SYMBOL", "TMF").upper(),
@@ -40,9 +48,11 @@ class MarketDataSettings:
             replay_speed=float(os.getenv("MARKET_REPLAY_SPEED", "8")),
             history_days=int(os.getenv("MARKET_HISTORY_DAYS", "30")),
             history_limit=int(os.getenv("MARKET_HISTORY_LIMIT", "50000")),
-            shioaji_api_key=os.getenv("SJ_API_KEY"),
-            shioaji_secret_key=os.getenv("SJ_SEC_KEY"),
-            shioaji_production=os.getenv("SJ_PRODUCTION", "false").lower()
+            shioaji_api_key=api_key,
+            shioaji_secret_key=secret_key,
+            shioaji_production=os.getenv(
+                "MARKET_SJ_PRODUCTION", os.getenv("SJ_PRODUCTION", "false")
+            ).lower()
             in {"1", "true", "yes"},
         )
 
@@ -60,4 +70,6 @@ class MarketDataSettings:
         if self.provider == "shioaji" and not (
             self.shioaji_api_key and self.shioaji_secret_key
         ):
-            raise ValueError("SJ_API_KEY and SJ_SEC_KEY are required for Shioaji")
+            raise ValueError(
+                "MARKET_SJ_API_KEY and MARKET_SJ_SECRET_KEY are required for Shioaji"
+            )

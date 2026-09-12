@@ -90,10 +90,30 @@ jobs:
         env:
           MARKET_ENV_FILE: ${{ github.workspace }}/deploy/lightsail/market.env.example
           GATEWAY_ENV_FILE: ${{ github.workspace }}/deploy/lightsail/gateway.env.example
+          EXECUTION_ENV_FILE: ${{ github.workspace }}/deploy/lightsail/execution.env.example
+          EXECUTION_SECRETS_DIR: ${{ github.workspace }}/deploy/lightsail
         run: docker compose -f deploy/lightsail/docker-compose.yml config --quiet
 
       - name: Build FastAPI and Shioaji image
-        run: docker build --tag tw-quant-market-api:ci .
+        run: docker build --target market-api --tag tw-quant-market-api:ci .
+
+      - name: Build locked execution image
+        run: docker build --target execution-worker --tag tw-quant-execution-worker:ci .
+
+      - name: Validate locked execution image
+        run: >-
+          docker run --rm
+          --env BROKER_PROVIDER=shioaji
+          --env LIVE_TRADING_ENABLED=true
+          --env LIVE_TRADING_CONFIRMATION=I_UNDERSTAND_LIVE_ORDERS
+          tw-quant-execution-worker:ci
+          python -m tw_quant.execution_service validate
+
+      - name: Confirm execution image declares no public port
+        run: >-
+          test -z "$(docker image inspect
+          --format '{{range $port, $_ := .Config.ExposedPorts}}{{$port}}{{end}}'
+          tw-quant-execution-worker:ci)"
 
       - name: Build Dashboard and Caddy image
         run: docker build --file deploy/lightsail/Dockerfile.gateway --tag tw-quant-gateway:ci .

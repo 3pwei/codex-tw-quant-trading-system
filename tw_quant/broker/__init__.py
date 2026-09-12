@@ -24,7 +24,9 @@ from .models import (
 from .ports import (
     BrokerAccount,
     BrokerPort,
+    CompositeOrderAdmissionGate,
     LiveOrderStore,
+    LockedOrderAdmissionGate,
     OrderAdmissionGate,
     OrderExecutor,
 )
@@ -84,6 +86,7 @@ __all__ = [
     "BrokerOrderSnapshot",
     "BrokerPositionSnapshot",
     "BrokerPort",
+    "CompositeOrderAdmissionGate",
     "BrokerReconciliationSnapshot",
     "BrokerReconciliationSource",
     "BrokerSettings",
@@ -99,6 +102,7 @@ __all__ = [
     "LiveTradingSafety",
     "LiveOrderManager",
     "LiveOrderStore",
+    "LockedOrderAdmissionGate",
     "LiveReconciliationService",
     "OrderAdmissionGate",
     "OrderExecutor",

@@ -33,6 +33,24 @@ class DeploymentWorkflowTests(unittest.TestCase):
         self.assertIn("docker image inspect --format '{{.Id}}'", script)
         self.assertIn("docker inspect --format '{{.Image}}'", script)
 
+    def test_execution_service_is_built_validated_and_has_no_public_route(self):
+        compose = (ROOT / "deploy/lightsail/docker-compose.yml").read_text()
+        caddy = (ROOT / "deploy/lightsail/Caddyfile").read_text()
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        script = (ROOT / "deploy/lightsail/deploy.sh").read_text()
+
+        self.assertIn("execution-worker:", compose)
+        execution = compose.split("  execution-worker:", 1)[1].split(
+            "\n  gateway:", 1
+        )[0]
+        self.assertNotIn("ports:", execution)
+        self.assertNotIn("expose:", execution)
+        self.assertIn("execution-internal", execution)
+        self.assertNotIn("execution-worker", caddy)
+        self.assertIn("--target execution-worker", workflow)
+        self.assertIn("tw_quant.execution_service validate", script)
+        self.assertIn("published_ports", script)
+
 
 if __name__ == "__main__":
     unittest.main()

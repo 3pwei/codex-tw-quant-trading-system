@@ -2,11 +2,19 @@
 set -euo pipefail
 
 INSTALL_ROOT="/opt/tw-quant"
+EXECUTION_ENV="${INSTALL_ROOT}/config/execution.env"
 SWAP_FILE="${INSTALL_ROOT}/build.swap"
 SWAP_SIZE="2G"
 MIN_MEMORY_KIB=$((3 * 1024 * 1024))
 
 memory_kib="$(awk '/^MemTotal:/ { print $2 }' /proc/meminfo)"
+
+install -d -m 0700 "${INSTALL_ROOT}/secrets"
+if [[ ! -e "${EXECUTION_ENV}" ]]; then
+  install -m 0600 \
+    "${INSTALL_ROOT}/repo/deploy/lightsail/execution.env.example" \
+    "${EXECUTION_ENV}"
+fi
 
 # Larger hosts do not need deployment swap. Small Lightsail plans can otherwise
 # become unreachable while Next.js and Docker are building images.

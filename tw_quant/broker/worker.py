@@ -4,13 +4,13 @@ import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Literal, Protocol
+from typing import Callable, Literal, Protocol, Sequence
 
 from .audit import BrokerEventAuditStatus, SQLiteBrokerEventAuditRepository
 from .callback_consumer import BrokerCallbackConsumer
 from .events import BrokerEvent
 from .manager import LiveOrderManager
-from .ports import BrokerPort
+from .ports import BrokerPort, CompositeOrderAdmissionGate, OrderAdmissionGate
 from .reconciliation import (
     BrokerReconciliationSource,
     LiveReconciliationService,
@@ -301,6 +301,7 @@ def build_execution_runtime(
     broker: BrokerPort,
     reconciliation_source: BrokerReconciliationSource,
     settings: ExecutionWorkerSettings | None = None,
+    admission_gates: Sequence[OrderAdmissionGate] = (),
 ) -> ExecutionRuntime:
     """Compose the persistent worker without constructing credentials or SDKs."""
 
@@ -316,7 +317,10 @@ def build_execution_runtime(
     order_repository = SQLiteLiveOrderRepository(path)
     audit_repository = SQLiteBrokerEventAuditRepository(path)
     recovery_repository = SQLiteRecoveryLockRepository(path)
-    gate = RecoveryOrderGate(recovery_repository, broker_name, account_id)
+    gate = CompositeOrderAdmissionGate((
+        RecoveryOrderGate(recovery_repository, broker_name, account_id),
+        *admission_gates,
+    ))
     manager = LiveOrderManager(order_repository, broker, gate)
     reconciliation = LiveReconciliationService(
         broker_name=broker_name,

@@ -1,6 +1,8 @@
 services:
   market-api:
-    build: .
+    build:
+      context: .
+      target: market-api
     env_file: .env
     ports:
       - "8000:8000"
@@ -8,3 +10,32 @@ services:
       - ./output:/app/output
       - ./data:/app/data:ro
     restart: unless-stopped
+
+  execution-worker:
+    build:
+      context: .
+      target: execution-worker
+    environment:
+      BROKER_PROVIDER: disabled
+      LIVE_TRADING_ENABLED: "false"
+      LIVE_EXECUTION_DB_PATH: /data/live_market.sqlite3
+      LIVE_EXECUTION_HEALTH_PATH: /run/tw-quant-execution/health.json
+    volumes:
+      - ./output:/data
+      - execution-health:/run/tw-quant-execution
+    networks:
+      - execution-internal
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-m", "tw_quant.execution_service", "healthcheck"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 10s
+
+volumes:
+  execution-health:
+
+networks:
+  execution-internal:
+    internal: true

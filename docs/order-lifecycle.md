@@ -1,5 +1,9 @@
 # 訂單生命週期
 
+> Production real order execution is still disabled. Public Application 與
+> Dedicated Execution Service 的 process、secret、network 邊界見
+> [Live Execution Security Boundary](live-execution-security-boundary.md)。
+
 本文件區分研究訊號、Paper 委託與未來 Live 委託，避免將 signal、order 與 fill
 混用為「下單」。
 
