@@ -6,6 +6,7 @@
 配套文件：
 
 - [Paper Trading 操作手冊](paper-trading-guide.md)
+- [Automated Paper Trading 四小時驗收](automated-paper-trading-acceptance.md)
 - [故障復原手冊](disaster-recovery.md)
 - [部署驗收清單](deployment-acceptance-checklist.md)
 - [Level 2 完成標準](level2-definition-of-done.md)

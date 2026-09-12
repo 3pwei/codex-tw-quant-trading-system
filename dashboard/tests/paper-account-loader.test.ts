@@ -41,6 +41,14 @@ test("an authorized poll returns one consistent overlay snapshot", async () => {
     cooldown_until: null,
     recovery_status: "healthy",
     recovery_issues: [],
+    risk_limits: {
+      max_position_contracts: 2,
+      max_risk_per_trade: 10_000,
+      max_daily_loss: 50_000,
+      max_trades_per_day: 20,
+      max_consecutive_losses: 3,
+      cooldown_minutes: 30,
+    },
   } satisfies Account;
   const position = {
     strategy_id: "manual",

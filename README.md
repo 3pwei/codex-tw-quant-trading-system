@@ -18,7 +18,7 @@
 | 風控 | 帳戶與資料隔離、Paper Auto recovery lock／gap recheck／managed exit、部位與每日限制、連敗冷卻、Kill Switch |
 | 平台 | Cloudflare OTP、FastAPI RBAC、申請與審核、Rate Limit、Request Size Limit、稽核紀錄 |
 | 穩定性 | 重啟復原、SQLite verified backup、Queue／WebSocket／DB／主機監控、五種服務狀態 |
-| UI | `/trade/` 整合即時圖表與 Paper 下單；Backtest／History／Replay 提供策略 overlays、診斷副圖、參數摘要與進出場判斷脈絡；手機 Bottom Sheet |
+| UI | `/trade/` 整合 Observe／Manual Paper／Paper Auto、即時圖表與操作控制；Backtest／History／Replay 提供策略診斷；手機具防誤觸控制 |
 | 部署 | Docker、Caddy、AWS Lightsail、GitHub Actions、Python 套件鎖定 |
 
 Level 2 工程能力已實作；每個正式候選版本仍須依 [Level 2 完成標準](docs/level2-definition-of-done.md) 留存四小時 soak 與人工驗收證據。Live execution foundation 已具備可測試的 simulation 組裝邊界，但 production 固定使用 `DisabledExecutionWorker`，不載入 CA、不建立真實下單 client，也不接受 HTTP 真實委託。本平台不宣稱具備可用的實盤券商整合或 HFT 能力。
@@ -44,6 +44,27 @@ flowchart TD
 - 行情資料全平台共用；策略、版本、回測與 Paper 資料依 `owner_user_id` 隔離。
 - Live 下單基礎先持久化 order／outbox，再由 Recovery Lock 控制 dispatch；callback 只觸發 audit 與券商狀態 refresh。
 - 券商 orders、fills、positions 全部一致才允許 worker 進入 ready；production 目前保持 disabled／locked。
+
+## Systematic Paper Trading
+
+`/trade/` 將交易工作區明確分成三種模式：`OBSERVE` 只看 closed-bar 策略訊號，
+`MANUAL PAPER` 保留手動模擬委託，`PAPER AUTO` 則以不可變策略快照、帳戶風控與
+明確 ARM 控制自動模擬進出。Pause 只停止新進場，既有部位仍接受 canonical strategy
+exit 與 server-owned Stop Loss／Take Profit；Stop 不會偷偷強制平倉，既有部位繼續由
+保護價管理至 flat，使用者也可手動緊急平倉。
+
+```mermaid
+flowchart TD
+    A["Closed Market Bar"] --> B["Strategy Runtime"]
+    B --> C["Paper Auto Controller"]
+    C --> D["Account Risk"]
+    D --> E["Simulated Broker"]
+    E --> F["Paper Position"]
+```
+
+**Automated Paper Trading ≠ Live Trading。** Production 仍為 Shioaji quote-only，不載入
+CA、不建立真實 order client，且固定使用 `DisabledExecutionWorker`；即使 Runtime 顯示
+`PAPER AUTO · ARMED`，所有委託也只會進入平台的 Simulated Broker。
 
 Dow Channel 策略共用同一套 confirmed pivot、ATR、HH／HL、LH／LL 與平行軌道偵測；`Dow Channel Pullback` 在邊界測試後收回時順勢進場，`Dow Channel Reversal` 在反向突破趨勢軌道時反向進場，`Dow Channel Momentum` 則沿既有趨勢突破外側軌道。既有 key `linear_channel_breakout` 保留為 Momentum 的 canonical key，確保歷史回測、參數快照及組合策略引用持續有效。
 
@@ -206,6 +227,7 @@ API_MAX_REQUEST_BODY_BYTES=262144
 - [部署驗收清單](docs/deployment-acceptance-checklist.md)
 - [故障復原手冊](docs/disaster-recovery.md)
 - [Paper Trading 操作手冊](docs/paper-trading-guide.md)
+- [Automated Paper Trading 四小時驗收](docs/automated-paper-trading-acceptance.md)
 - [Replay Trading 操作手冊](docs/replay-trading-guide.md)
 - [帳戶風控](docs/account-risk.md)
 - [事件引擎](docs/event-engine.md)

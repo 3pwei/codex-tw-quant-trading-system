@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { FormEvent, type ReactNode, useEffect, useMemo, useState } from "react";
+import type { StrategyOption, StrategyResult, Timeframe } from "../live/types";
 import { apiRequest, jsonRequest } from "../lib/api-client";
 import {
   formatMoney,
@@ -17,6 +18,8 @@ import type {
   PaperQuote,
 } from "./types";
 import { usePaperAccount } from "./use-paper-account";
+import PaperAutoPanel from "../trade/paper-auto-panel";
+import type { WorkspaceTradingMode } from "../trade/paper-auto-types";
 
 export type {
   Account,
@@ -35,6 +38,12 @@ type PaperTradingDashboardProps = {
   quoteFresh: boolean;
   marketHealth: MarketHealth | null;
   onOverlayChange: (snapshot: PaperOverlaySnapshot) => void;
+  strategyOptions: StrategyOption[];
+  strategyResults: StrategyResult[];
+  selectedStrategies: string[];
+  symbol: string;
+  interval: Timeframe;
+  onStrategySelected: (strategy: string) => void;
 };
 
 type LedgerTab = "positions" | "orders" | "fills";
@@ -61,6 +70,12 @@ export default function PaperTradingDashboard({
   quoteFresh,
   marketHealth,
   onOverlayChange,
+  strategyOptions,
+  strategyResults,
+  selectedStrategies,
+  symbol,
+  interval,
+  onStrategySelected,
 }: PaperTradingDashboardProps) {
   const {
     user, account, positions, orders, fills, error, setError, loading, load,
@@ -72,6 +87,7 @@ export default function PaperTradingDashboard({
   const [notice, setNotice] = useState("");
   const [ledgerTab, setLedgerTab] = useState<LedgerTab>("positions");
   const [mobileOrderOpen, setMobileOrderOpen] = useState(false);
+  const [workspaceMode, setWorkspaceMode] = useState<WorkspaceTradingMode>("observe");
 
   useEffect(() => {
     if (!mobileOrderOpen) return;
@@ -106,6 +122,9 @@ export default function PaperTradingDashboard({
     { key: "orders", label: "最近委託", count: orders.length },
     { key: "fills", label: "最近成交", count: fills.length },
   ];
+  const latestObservedSignal = strategyResults
+    .flatMap(strategy => strategy.signals.map(signal => ({ ...signal, strategyName: strategy.name })))
+    .sort((left, right) => Date.parse(right.time) - Date.parse(left.time))[0];
 
   function chooseSide(nextSide: "buy" | "sell") {
     setSide(nextSide);
@@ -192,9 +211,22 @@ export default function PaperTradingDashboard({
       <article><span>風控狀態</span><strong className={!paperEnabled ? "warning" : account?.kill_switch_active ? "loss" : "profit"}>{!paperEnabled ? "未啟用" : account?.kill_switch_active ? "已停止" : "可交易"}</strong><small>{account?.kill_switch_reason ? reasonLabel(account.kill_switch_reason) : paperEnabled ? "風控閘門正常" : "送單功能維持停用"}</small></article>
     </section>
 
+    <nav className="workspace-mode-tabs panel" aria-label="交易模式">
+      <button type="button" className={workspaceMode === "observe" ? "active" : ""} aria-pressed={workspaceMode === "observe"} onClick={() => setWorkspaceMode("observe")}><b>OBSERVE</b><small>只看策略，不下單</small></button>
+      <button type="button" className={workspaceMode === "manual_paper" ? "active" : ""} aria-pressed={workspaceMode === "manual_paper"} onClick={() => setWorkspaceMode("manual_paper")}><b>MANUAL PAPER</b><small>手動模擬委託</small></button>
+      <button type="button" className={workspaceMode === "paper_auto" ? "active auto" : ""} aria-pressed={workspaceMode === "paper_auto"} onClick={() => setWorkspaceMode("paper_auto")}><b>PAPER AUTO</b><small>需確認並 ARM</small></button>
+    </nav>
+
     <div className="trade-workspace-grid">
       <div className="trade-market-column">{marketPanel}</div>
       <aside className="trade-order-column">
+      {workspaceMode === "observe" && <section className="observe-panel panel">
+        <div className="panel-head"><div><span>OBSERVE</span><h2>策略觀察</h2></div><strong>NO ORDERS</strong></div>
+        <p>只顯示 closed-bar 策略訊號與 overlays；此模式不建立任何委託。</p>
+        <div className="observe-strategies">{strategyResults.map(strategy => <div key={strategy.key}><i style={{ background: strategy.color }} /><span><b>{strategy.name}</b><small>{strategy.signals.length} 個訊號</small></span></div>)}</div>
+        <section className="observe-latest"><span>LATEST SIGNAL</span>{latestObservedSignal ? <><b>{latestObservedSignal.strategyName}</b><strong>{latestObservedSignal.event.toUpperCase()} · {latestObservedSignal.direction.toUpperCase()}</strong><p>{latestObservedSignal.reason}</p><small>{formatTaipeiDateTime(latestObservedSignal.time)}</small></> : <p>等待已收盤 K 棒產生策略訊號。</p>}</section>
+      </section>}
+      {workspaceMode === "manual_paper" && <>
       <form className={`paper-order panel ${mobileOrderOpen ? "mobile-open" : ""}`} onSubmit={submitOrder} aria-label="模擬市價單">
         <div className="panel-head"><div><span>MANUAL ORDER</span><h2>模擬市價單</h2></div><small>成交價由伺服器決定</small><button type="button" className="mobile-sheet-close" aria-label="關閉下單面板" onClick={() => setMobileOrderOpen(false)}>×</button></div>
         <div className="paper-side">
@@ -215,6 +247,23 @@ export default function PaperTradingDashboard({
           ? <button className="reset" disabled={Boolean(busy)} onClick={() => void control("reset")}>解除 Kill Switch</button>
           : <button className="activate" disabled={Boolean(busy) || !paperEnabled} onClick={() => void control("activate")}>啟用 Kill Switch</button>}
       </section>
+      </>}
+      {workspaceMode === "paper_auto" && <PaperAutoPanel
+        user={user}
+        account={account}
+        marketHealth={marketHealth}
+        strategyOptions={strategyOptions}
+        selectedStrategies={selectedStrategies}
+        symbol={symbol}
+        interval={interval}
+        positions={positions}
+        orders={orders}
+        fills={fills}
+        busy={Boolean(busy)}
+        onClosePosition={closePosition}
+        onKillSwitch={() => control("activate")}
+        onStrategySelected={onStrategySelected}
+      />}
       </aside>
     </div>
 
@@ -224,18 +273,18 @@ export default function PaperTradingDashboard({
       </div>
       {ledgerTab === "positions" && <div id="paper-panel-positions" className="paper-positions" role="tabpanel" aria-labelledby="paper-tab-positions">
         <div className="table-scroll"><table><thead><tr><th>契約</th><th>方向／口數</th><th>均價</th><th>未實現損益</th><th>建立時間</th><th></th></tr></thead><tbody>
-          {positions.map(position => <tr key={`${position.strategy_id}:${position.contract}:${position.runtime_id ?? "manual"}`}><td data-label="契約"><b>{position.contract}</b><small>{position.strategy_id} · v{position.strategy_version} · {sourceLabel(position.order_source)}</small></td><td data-label="方向／口數"><i className={`dir ${position.quantity > 0 ? "long" : "short"}`}>{position.quantity > 0 ? "多" : "空"}</i> {Math.abs(position.quantity)} 口</td><td data-label="均價">{formatPrice(position.average_price)}</td><td data-label="未實現損益" className={position.unrealized_pnl >= 0 ? "profit" : "loss"}><b>{formatSignedMoney(position.unrealized_pnl)}</b></td><td data-label="建立時間">{formatTaipeiDateTime(position.opened_at)}</td><td className="paper-close-cell"><button disabled={Boolean(busy) || !quoteFresh} onClick={() => void closePosition(position)}>{busy === `close:${position.contract}` ? "平倉中…" : "全部平倉"}</button></td></tr>)}
+          {positions.map(position => <tr key={`${position.strategy_id}:${position.contract}:${position.runtime_id ?? "manual"}`}><td data-label="契約"><b>{position.contract}</b><small>{position.order_source === "strategy_auto" ? `AUTO · ${position.strategy_id} v${position.strategy_version}` : `${position.strategy_id} · v${position.strategy_version} · ${sourceLabel(position.order_source)}`}</small></td><td data-label="方向／口數"><i className={`dir ${position.quantity > 0 ? "long" : "short"}`}>{position.quantity > 0 ? "多" : "空"}</i> {Math.abs(position.quantity)} 口</td><td data-label="均價">{formatPrice(position.average_price)}</td><td data-label="未實現損益" className={position.unrealized_pnl >= 0 ? "profit" : "loss"}><b>{formatSignedMoney(position.unrealized_pnl)}</b></td><td data-label="建立時間">{formatTaipeiDateTime(position.opened_at)}</td><td className="paper-close-cell"><button disabled={Boolean(busy) || !quoteFresh} onClick={() => void closePosition(position)}>{busy === `close:${position.contract}` ? "平倉中…" : position.order_source === "strategy_auto" ? "手動緊急平倉" : "全部平倉"}</button></td></tr>)}
         </tbody></table>{!positions.length && <p className="paper-empty">目前沒有模擬持倉。</p>}</div>
       </div>}
       {ledgerTab === "orders" && <div id="paper-panel-orders" className="paper-record-list" role="tabpanel" aria-labelledby="paper-tab-orders">{orders.slice(0, 20).map(order => <article key={order.order_id}><div><b>{order.side === "buy" ? "買進" : "賣出"} {order.quantity} 口</b><span className={order.status}>{order.status === "filled" ? "已成交" : order.status === "rejected" ? "已拒絕" : "處理中"}</span></div><strong>{order.contract} · {formatPrice(order.reference_price)}</strong><small>{sourceLabel(order.order_source)} · {formatTaipeiDateTime(order.submitted_at)} · {reasonLabel(order.status_reason)}</small></article>)}{!orders.length && <p className="paper-empty">尚無委託紀錄。</p>}</div>}
       {ledgerTab === "fills" && <div id="paper-panel-fills" className="paper-record-list" role="tabpanel" aria-labelledby="paper-tab-fills">{fills.slice(0, 20).map(fill => <article key={fill.fill_id}><div><b>{fill.side === "buy" ? "買進" : "賣出"} {fill.quantity} 口</b><span className="filled">已成交</span></div><strong>{fill.contract} · {formatPrice(fill.price)}</strong><small>{sourceLabel(fill.order_source)} · {formatTaipeiDateTime(fill.meta.occurred_at)} · 成本 NT$ {formatMoney(fill.commission + fill.tax)} · 滑價 {formatPrice(fill.slippage)} 點</small></article>)}{!fills.length && <p className="paper-empty">尚無成交紀錄。</p>}</div>}
     </section>
 
-    {mobileOrderOpen && <button type="button" className="mobile-sheet-backdrop" aria-label="關閉下單面板" onClick={() => setMobileOrderOpen(false)} />}
-    <div className="mobile-trade-bar" aria-label="快速模擬下單">
+    {workspaceMode === "manual_paper" && mobileOrderOpen && <button type="button" className="mobile-sheet-backdrop" aria-label="關閉下單面板" onClick={() => setMobileOrderOpen(false)} />}
+    {workspaceMode === "manual_paper" && <div className="mobile-trade-bar" aria-label="快速模擬下單">
       <span><small>{quote?.contract ?? "等待行情"}</small><b>{formatPrice(quote?.close)}</b></span>
       <button type="button" className="buy" disabled={orderDisabled} onClick={() => openMobileOrder("buy")}>買進</button>
       <button type="button" className="sell" disabled={orderDisabled} onClick={() => openMobileOrder("sell")}>賣出</button>
-    </div>
+    </div>}
   </div>;
 }

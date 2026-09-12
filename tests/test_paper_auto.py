@@ -448,6 +448,36 @@ class PaperAutoEntryTests(unittest.TestCase):
         exit_decision = next(item for item in stored if item["action"] == "exit")
         self.assertEqual(exit_decision["execution_status"], "filled")
 
+    def test_paused_runtime_still_permits_managed_strategy_exit(self):
+        self._open_auto_long()
+        self.runtime = self.runtime_service.pause(
+            str(self.runtime["runtime_id"]), self.user.user_id
+        )
+        decision, signal_bar = self._exit_decision(24)
+        self.controller.on_decision(self.runtime, decision, signal_bar)
+        order = self.paper.orders(self.user.user_id)[0]
+        self.assertTrue(order["reduce_only"])
+        self.assertEqual(order["execution_timing"], "next_bar_open")
+
+        fill_bar = market_bar(25, 9_030.0, open_price=9_025.0)
+        self.paper.on_bar(fill_bar)
+        self.controller.after_bar(fill_bar)
+        self.assertEqual(self.paper.positions(self.user.user_id), [])
+
+    def test_paused_runtime_remains_evaluable_without_allowing_entry(self):
+        self.runtime = self.runtime_service.pause(
+            str(self.runtime["runtime_id"]), self.user.user_id
+        )
+        active = self.repo.active_trading_runtimes("TMF")
+        self.assertEqual([item["runtime_id"] for item in active], [
+            self.runtime["runtime_id"]
+        ])
+        decision, _signal = self._decision(26)
+        stored = self.repo.trading_decision(
+            str(decision["decision_id"]), self.user.user_id
+        )
+        self.assertIsNotNone(stored)
+
     def test_stop_loss_uses_conservative_gap_price(self):
         self._open_auto_long()
         position = self.paper.positions(self.user.user_id)[0]

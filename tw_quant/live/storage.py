@@ -860,7 +860,8 @@ class SQLiteBarRepository:
             rows = self.connection.execute(
                 "SELECT * FROM strategy_runtimes WHERE symbol=? AND ("
                 "(status='active' AND mode='observe') OR "
-                "(status='armed' AND mode='paper_auto')) ORDER BY created_at",
+                "(status IN ('armed','paused','recovery_locked') "
+                "AND mode='paper_auto')) ORDER BY created_at",
                 (symbol,),
             ).fetchall()
         return [self._runtime_row(row) for row in rows]
@@ -1003,7 +1004,9 @@ class SQLiteBarRepository:
                 ).fetchone()
                 if (
                     runtime is None
-                    or runtime["status"] not in {"active", "armed"}
+                    or runtime["status"] not in {
+                        "active", "armed", "paused", "recovery_locked"
+                    }
                     or (
                         runtime["last_evaluated_bar"] is not None
                         and evaluated_bar <= runtime["last_evaluated_bar"]

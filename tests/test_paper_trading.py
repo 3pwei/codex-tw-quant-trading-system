@@ -135,6 +135,11 @@ class PaperTradingApiTests(unittest.TestCase):
             headers=self.headers("cf-trader", "trader@example.com"),
         ).json()
         self.assertEqual(account["account"]["open_contracts"], 1)
+        self.assertEqual(
+            account["account"]["risk_limits"]["max_position_contracts"],
+            2,
+        )
+        self.assertIn("max_risk_per_trade", account["account"]["risk_limits"])
         self.assertEqual(account["positions"][0]["quantity"], 1)
         self.assertEqual(account["positions"][0]["order_source"], "manual")
         fills = self.client.get(
