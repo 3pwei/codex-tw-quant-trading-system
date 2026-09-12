@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import Callable, Protocol
 
 from .manager import LiveOrderManager
+from .identity import BrokerAccountRef
 from .models import BrokerOrder, BrokerOrderStatus, OrderSide
 from .ports import LiveOrderStore
 from .recovery import RecoveryLockStore, RecoveryState
@@ -67,6 +68,10 @@ class BrokerReconciliationSnapshot:
         if self.captured_at.tzinfo is None or self.captured_at.utcoffset() is None:
             raise ValueError("snapshot captured_at must be timezone-aware")
 
+    @property
+    def account_ref(self) -> BrokerAccountRef:
+        return BrokerAccountRef(self.broker_name, self.account_id)
+
 
 class BrokerReconciliationSource(Protocol):
     async def reconciliation_snapshot(self) -> BrokerReconciliationSnapshot: ...
@@ -97,18 +102,14 @@ class LiveReconciliationService:
     def __init__(
         self,
         *,
-        broker_name: str,
-        account_id: str,
+        account_ref: BrokerAccountRef,
         order_store: LiveOrderStore,
         order_manager: LiveOrderManager,
         source: BrokerReconciliationSource,
         recovery_lock: RecoveryLockStore,
         now: Callable[[], datetime] | None = None,
     ):
-        if not broker_name.strip() or not account_id.strip():
-            raise ValueError("broker_name and account_id are required")
-        self.broker_name = broker_name
-        self.account_id = account_id
+        self.account_ref = account_ref
         self.order_store = order_store
         self.order_manager = order_manager
         self.source = source
@@ -117,14 +118,14 @@ class LiveReconciliationService:
 
     async def reconcile(self) -> ReconciliationReport:
         attempt = self.recovery_lock.begin(
-            self.broker_name,
-            self.account_id,
+            self.account_ref.broker_name,
+            self.account_ref.account_id,
             updated_at=self.now(),
         )
         local_orders: list[BrokerOrder] = []
         try:
-            await self.order_manager.reconcile_broker_orders()
-            local_orders = self.order_store.orders()
+            await self.order_manager.reconcile_broker_orders(self.account_ref)
+            local_orders = self.order_store.orders(target=self.account_ref)
             snapshot = await self.source.reconciliation_snapshot()
             issues = self._issues(local_orders, snapshot)
         except Exception as exc:
@@ -134,8 +135,8 @@ class LiveReconciliationService:
                 detail=f"{type(exc).__name__}: {exc}",
             )]
             state = self.recovery_lock.complete(
-                self.broker_name,
-                self.account_id,
+                self.account_ref.broker_name,
+                self.account_ref.account_id,
                 [issue.code for issue in issues],
                 expected_generation=attempt.generation,
                 updated_at=captured_at,
@@ -150,8 +151,8 @@ class LiveReconciliationService:
                 issues=tuple(issues),
             )
         state = self.recovery_lock.complete(
-            self.broker_name,
-            self.account_id,
+            self.account_ref.broker_name,
+            self.account_ref.account_id,
             [issue.code for issue in issues],
             expected_generation=attempt.generation,
             updated_at=self.now(),
@@ -172,12 +173,12 @@ class LiveReconciliationService:
         snapshot: BrokerReconciliationSnapshot,
     ) -> list[ReconciliationIssue]:
         issues: list[ReconciliationIssue] = []
-        if snapshot.broker_name != self.broker_name:
+        if snapshot.broker_name != self.account_ref.broker_name:
             issues.append(ReconciliationIssue(
                 "broker_mismatch",
-                f"expected {self.broker_name}, received {snapshot.broker_name}",
+                f"expected {self.account_ref.broker_name}, received {snapshot.broker_name}",
             ))
-        if snapshot.account_id != self.account_id:
+        if snapshot.account_id != self.account_ref.account_id:
             issues.append(ReconciliationIssue(
                 "account_mismatch",
                 "broker snapshot belongs to a different account",

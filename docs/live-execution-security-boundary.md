@@ -74,9 +74,9 @@ known secret values before a record is emitted.
 
 The final gate is deliberate for this release. Therefore even a complete
 configuration with `BROKER_PROVIDER=shioaji` and `LIVE_TRADING_ENABLED=true`
-produces zero external order calls. The composition root uses
-`DisabledBroker` and `DisabledExecutionWorker`; it does not construct a
-production Shioaji client.
+produces zero external order calls. The composition root registers a
+target-scoped `LockedBroker` and uses `DisabledExecutionWorker`; it does not
+construct a production Shioaji client.
 
 Live activation will require a separate reviewed PR to replace only the final
 gate and disabled adapter after Live Risk, ARM/Kill Switch, protective-order,
@@ -96,8 +96,15 @@ SQLite + WAL remains suitable for the current single-node deployment and
 No Paper order, fill, position, ID space, or recovery state is reused for Live.
 `live_recovery_lock` already uses `(broker_name, account_id)` as its composite
 primary key, so identical account IDs at different brokers remain independent.
-Order/outbox routing identity is deferred with Multi-Broker Dispatch and is not
-invented in this security-boundary PR.
+PR #108 adds routing without enabling execution: `live_orders` and
+`live_order_outbox` persist `broker_name + account_id`. Legacy rows without
+a target remain readable, but pending or processing outbox rows are marked
+blocked. Restart never substitutes the current default broker.
+
+Registry, capabilities, and instrument mapping remain inside the isolated
+execution boundary. They do not move credentials, SDKs, or routing choices into
+the Public Application. Production continues to register only a locked terminal
+broker runtime and performs zero external order calls.
 Durable Live fill and position projections remain future work with real account
 and callback integration; this PR does not invent them or infer broker state.
 

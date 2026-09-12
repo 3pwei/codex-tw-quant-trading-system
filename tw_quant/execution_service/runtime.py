@@ -10,12 +10,17 @@ from typing import Mapping
 
 from ..broker import (
     BrokerAccountSafety,
+    BrokerCapabilities,
     BrokerConnectionSettings,
+    BrokerRegistration,
+    BrokerRegistry,
+    BrokerRuntimeState,
     BrokerSecretMaterial,
     BrokerSecretProvider,
     CompositeOrderAdmissionGate,
-    DisabledBroker,
     DisabledExecutionWorker,
+    LockedBroker,
+    LockedInstrumentMapper,
     LiveOrderManager,
     LIVE_TRADING_CONFIRMATION,
     LockedOrderAdmissionGate,
@@ -46,6 +51,7 @@ class ExecutionServiceRuntime:
     recovery_repository: SQLiteRecoveryLockRepository | None = field(
         default=None, repr=False
     )
+    broker_registry: BrokerRegistry | None = field(default=None, repr=False)
     redaction_filter: SecretRedactionFilter | None = field(default=None, repr=False)
     _stop_event: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
 
@@ -161,6 +167,7 @@ def build_execution_service(
     manager = None
     orders = None
     recovery = None
+    registry = None
     redactor = None
     account = connection.account_ref if connection is not None else None
     if material is not None and account is not None and not config.validation_issues():
@@ -170,8 +177,17 @@ def build_execution_service(
         LOGGER.addFilter(redactor)
         orders = SQLiteLiveOrderRepository(config.database_path)
         recovery = SQLiteRecoveryLockRepository(config.database_path)
+        registry = BrokerRegistry()
+        registry.register(BrokerRegistration(
+            account_ref=account,
+            port=LockedBroker(account.broker_name),
+            capabilities=BrokerCapabilities(),
+            instrument_mapper=LockedInstrumentMapper(),
+            state=BrokerRuntimeState.LOCKED,
+        ))
+        registry.freeze()
         admission = CompositeOrderAdmissionGate((
-            RecoveryOrderGate(recovery, account.broker_name, account.account_id),
+            RecoveryOrderGate(recovery, account),
             BrokerAccountSafety(
                 account=account,
                 enabled=config.live_trading_enabled,
@@ -180,7 +196,7 @@ def build_execution_service(
             ),
             LockedOrderAdmissionGate(),
         ))
-        manager = LiveOrderManager(orders, DisabledBroker(), admission)
+        manager = LiveOrderManager(orders, registry, {account: admission})
 
     issues.append("production_submit_not_implemented")
     return ExecutionServiceRuntime(
@@ -191,5 +207,6 @@ def build_execution_service(
         manager=manager,
         order_repository=orders,
         recovery_repository=recovery,
+        broker_registry=registry,
         redaction_filter=redactor,
     )

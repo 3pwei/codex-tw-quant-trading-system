@@ -64,6 +64,7 @@ class SQLiteBrokerEventAuditRepository:
                 CREATE TABLE IF NOT EXISTS live_broker_events (
                     event_id TEXT PRIMARY KEY,
                     broker_name TEXT NOT NULL,
+                    account_id TEXT,
                     event_type TEXT NOT NULL,
                     broker_order_id TEXT,
                     received_at TEXT NOT NULL,
@@ -74,10 +75,27 @@ class SQLiteBrokerEventAuditRepository:
                     error TEXT,
                     updated_at TEXT NOT NULL
                 );
-                CREATE INDEX IF NOT EXISTS idx_broker_events_order_received
-                    ON live_broker_events(broker_order_id, received_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_broker_events_status_updated
                     ON live_broker_events(processing_status, updated_at);
+                """
+            )
+            columns = {
+                str(row["name"])
+                for row in self.connection.execute(
+                    "PRAGMA table_info(live_broker_events)"
+                ).fetchall()
+            }
+            if "account_id" not in columns:
+                self.connection.execute(
+                    "ALTER TABLE live_broker_events ADD COLUMN account_id TEXT"
+                )
+            self.connection.executescript(
+                """
+                DROP INDEX IF EXISTS idx_broker_events_order_received;
+                CREATE INDEX idx_broker_events_order_received
+                    ON live_broker_events(
+                        broker_name, account_id, broker_order_id, received_at DESC
+                    );
                 """
             )
             self.connection.commit()
@@ -87,6 +105,9 @@ class SQLiteBrokerEventAuditRepository:
         event = BrokerEvent(
             event_id=str(row["event_id"]),
             broker_name=str(row["broker_name"]),
+            account_id=(
+                str(row["account_id"]) if row["account_id"] is not None else None
+            ),
             event_type=str(row["event_type"]),
             broker_order_id=(
                 str(row["broker_order_id"]) if row["broker_order_id"] else None
@@ -113,14 +134,15 @@ class SQLiteBrokerEventAuditRepository:
             cursor = self.connection.execute(
                 "INSERT OR IGNORE INTO live_broker_events "
                 "(event_id, broker_name, event_type, broker_order_id, received_at, "
-                "payload_json, processing_status, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "account_id, payload_json, processing_status, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     event.event_id,
                     event.broker_name,
                     event.event_type,
                     event.broker_order_id,
                     timestamp,
+                    event.account_id,
                     canonical_payload(event.payload),
                     BrokerEventAuditStatus.RECEIVED.value,
                     timestamp,

@@ -8,6 +8,7 @@ from functools import partial
 from typing import Any, Callable, Mapping
 
 from .events import BrokerEvent, broker_event_id
+from .identity import BrokerAccountRef
 from .models import BrokerOrderRequest, BrokerOrderStatus, OrderSide
 from .reconciliation import (
     BrokerFillSnapshot,
@@ -444,6 +445,7 @@ def normalize_callback(
     state: object,
     message: object,
     *,
+    account_ref: BrokerAccountRef,
     now: Callable[[], datetime] | None = None,
 ) -> ShioajiCallbackEvent:
     """Validate a FORDER/FDEAL callback without mutating persistence."""
@@ -464,8 +466,15 @@ def normalize_callback(
     )
     broker_order_id = next((str(value) for value in candidates if value), None)
     return BrokerEvent(
-        event_id=broker_event_id("shioaji", event_type, broker_order_id, payload),
+        event_id=broker_event_id(
+            account_ref.broker_name,
+            account_ref.account_id,
+            event_type,
+            broker_order_id,
+            payload,
+        ),
         broker_name="shioaji",
+        account_id=account_ref.account_id,
         event_type=event_type,
         broker_order_id=broker_order_id,
         received_at=clock(),
@@ -479,6 +488,7 @@ class ShioajiCallbackBridge:
     def __init__(
         self,
         loop: asyncio.AbstractEventLoop,
+        account_ref: BrokerAccountRef,
         queue: asyncio.Queue[ShioajiCallbackEvent] | None = None,
         *,
         enqueue_callback: Callable[[ShioajiCallbackEvent], bool] | None = None,
@@ -487,13 +497,18 @@ class ShioajiCallbackBridge:
         if (queue is None) == (enqueue_callback is None):
             raise ValueError("provide exactly one callback queue or callback sink")
         self.loop = loop
+        if account_ref.broker_name != "shioaji":
+            raise ValueError("Shioaji callback bridge requires a Shioaji account")
+        self.account_ref = account_ref
         self.queue = queue
         self.enqueue_callback = enqueue_callback
         self.now = now
 
     def __call__(self, state: object, message: object) -> None:
         try:
-            event = normalize_callback(state, message, now=self.now)
+            event = normalize_callback(
+                state, message, account_ref=self.account_ref, now=self.now
+            )
         except (TypeError, ValueError):
             return
         self.loop.call_soon_threadsafe(self._enqueue, event)

@@ -6,6 +6,8 @@ import tempfile
 import unittest
 
 from tw_quant.broker import (
+    BrokerAccountRef,
+    BrokerCapabilities,
     BrokerFillSnapshot,
     BrokerOrder,
     BrokerOrderRequest,
@@ -13,17 +15,34 @@ from tw_quant.broker import (
     BrokerOrderStatus,
     BrokerPositionSnapshot,
     BrokerReconciliationSnapshot,
+    BrokerRegistration,
+    BrokerRegistry,
+    CanonicalInstrument,
     ExecutionMode,
     LiveOrderManager,
     LiveReconciliationService,
     RecoveryOrderGate,
     RecoveryStatus,
+    RoutedBrokerOrderRequest,
     SQLiteLiveOrderRepository,
     SQLiteRecoveryLockRepository,
 )
 
 
 NOW = datetime(2026, 9, 9, 14, tzinfo=timezone.utc)
+TARGET = BrokerAccountRef("shioaji", "sim-1")
+
+
+class FakeMapper:
+    def to_broker_contract(self, instrument):
+        return instrument.contract
+
+    def to_canonical_instrument(self, broker_contract):
+        return CanonicalInstrument("TMF", broker_contract)
+
+
+def routed(order_request=None):
+    return RoutedBrokerOrderRequest(TARGET, order_request or request())
 
 
 def request(client_order_id: str = "client-1") -> BrokerOrderRequest:
@@ -99,7 +118,12 @@ class LiveReconciliationTests(unittest.IsolatedAsyncioTestCase):
         self.path = Path(self.temp.name) / "live.sqlite3"
         self.orders = SQLiteLiveOrderRepository(self.path)
         self.recovery = SQLiteRecoveryLockRepository(self.path)
-        self.manager = LiveOrderManager(self.orders, StaticBroker())
+        self.registry = BrokerRegistry()
+        self.registry.register(BrokerRegistration(
+            TARGET, StaticBroker(), BrokerCapabilities(), FakeMapper()
+        ))
+        self.registry.freeze()
+        self.manager = LiveOrderManager(self.orders, self.registry)
 
     def tearDown(self):
         self.recovery.close()
@@ -108,8 +132,8 @@ class LiveReconciliationTests(unittest.IsolatedAsyncioTestCase):
 
     def save_filled_order(self) -> None:
         order_request = request()
-        self.orders.reserve(order_request, occurred_at=NOW)
-        self.assertIsNotNone(self.orders.claim_next())
+        self.orders.reserve(routed(order_request), occurred_at=NOW)
+        self.assertIsNotNone(self.orders.claim_next(TARGET))
         self.orders.finish_dispatch(BrokerOrder(
             request=order_request,
             status=BrokerOrderStatus.FILLED,
@@ -121,8 +145,7 @@ class LiveReconciliationTests(unittest.IsolatedAsyncioTestCase):
 
     def service(self, source: StaticSource) -> LiveReconciliationService:
         return LiveReconciliationService(
-            broker_name="shioaji",
-            account_id="sim-1",
+            account_ref=TARGET,
             order_store=self.orders,
             order_manager=self.manager,
             source=source,
@@ -148,11 +171,11 @@ class LiveReconciliationTests(unittest.IsolatedAsyncioTestCase):
     async def test_recovery_gate_blocks_reservation_until_ready(self):
         gated = LiveOrderManager(
             self.orders,
-            StaticBroker(),
-            RecoveryOrderGate(self.recovery, "shioaji", "sim-1"),
+            self.registry,
+            {TARGET: RecoveryOrderGate(self.recovery, TARGET)},
         )
         with self.assertRaisesRegex(RuntimeError, "recovery lock"):
-            gated.create(request())
+            gated.create(routed())
         attempt = self.recovery.begin("shioaji", "sim-1", updated_at=NOW)
         self.recovery.complete(
             "shioaji",
@@ -161,19 +184,19 @@ class LiveReconciliationTests(unittest.IsolatedAsyncioTestCase):
             expected_generation=attempt.generation,
             updated_at=NOW,
         )
-        _order, created = gated.create(request())
+        _order, created = gated.create(routed())
         self.assertTrue(created)
 
     async def test_recovery_gate_blocks_dispatch_of_already_reserved_order(self):
-        self.orders.reserve(request(), occurred_at=NOW)
-        gate = RecoveryOrderGate(self.recovery, "shioaji", "sim-1")
-        gated = LiveOrderManager(self.orders, StaticBroker(), gate)
+        self.orders.reserve(routed(), occurred_at=NOW)
+        gate = RecoveryOrderGate(self.recovery, TARGET)
+        gated = LiveOrderManager(self.orders, self.registry, {TARGET: gate})
         with self.assertRaisesRegex(RuntimeError, "recovery lock"):
-            await gated.dispatch_once()
+            await gated.dispatch_once(TARGET)
         self.assertIsNone(self.orders.get("owner-1", "client-1").broker_order_id)
 
     async def test_unsent_outbox_order_is_not_misclassified_as_unknown(self):
-        self.orders.reserve(request(), occurred_at=NOW)
+        self.orders.reserve(routed(), occurred_at=NOW)
         empty = BrokerReconciliationSnapshot(
             "shioaji", "sim-1", NOW, (), (), ()
         )
@@ -224,8 +247,10 @@ class LiveReconciliationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_ambiguous_local_order_without_broker_id_stays_locked(self):
         order_request = request()
-        reserved, _created = self.orders.reserve(order_request, occurred_at=NOW)
-        self.assertIsNotNone(self.orders.claim_next())
+        reserved, _created = self.orders.reserve(
+            routed(order_request), occurred_at=NOW
+        )
+        self.assertIsNotNone(self.orders.claim_next(TARGET))
         self.orders.finish_dispatch(BrokerOrder(
             request=reserved.request,
             status=BrokerOrderStatus.UNKNOWN,

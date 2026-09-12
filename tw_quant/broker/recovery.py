@@ -9,6 +9,8 @@ from pathlib import Path
 from threading import Lock
 from typing import Protocol, Sequence
 
+from .identity import BrokerAccountRef
+
 
 class RecoveryStatus(str, Enum):
     LOCKED = "locked"
@@ -53,11 +55,12 @@ class RecoveryLockStore(Protocol):
 @dataclass(frozen=True)
 class RecoveryOrderGate:
     store: RecoveryLockStore
-    broker_name: str
-    account_id: str
+    account_ref: BrokerAccountRef
 
     def assert_ordering_allowed(self) -> None:
-        self.store.assert_ready(self.broker_name, self.account_id)
+        self.store.assert_ready(
+            self.account_ref.broker_name, self.account_ref.account_id
+        )
 
 
 class SQLiteRecoveryLockRepository:

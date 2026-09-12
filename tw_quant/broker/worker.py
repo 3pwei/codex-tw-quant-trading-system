@@ -9,6 +9,9 @@ from typing import Callable, Literal, Protocol, Sequence
 from .audit import BrokerEventAuditStatus, SQLiteBrokerEventAuditRepository
 from .callback_consumer import BrokerCallbackConsumer
 from .events import BrokerEvent
+from .identity import BrokerAccountRef
+from .capabilities import BrokerCapabilities
+from .instruments import BrokerInstrumentMapper, LockedInstrumentMapper
 from .manager import LiveOrderManager
 from .ports import BrokerPort, CompositeOrderAdmissionGate, OrderAdmissionGate
 from .reconciliation import (
@@ -22,6 +25,7 @@ from .recovery import (
     SQLiteRecoveryLockRepository,
 )
 from .repository import SQLiteLiveOrderRepository
+from .registry import BrokerRegistration, BrokerRegistry
 
 
 WorkerState = Literal["disabled", "starting", "running", "degraded", "stopped"]
@@ -93,6 +97,7 @@ class ExecutionWorker:
         reconciliation: LiveReconciliationService,
         callback_consumer: BrokerCallbackConsumer,
         callback_queue: asyncio.Queue[BrokerEvent],
+        account_ref: BrokerAccountRef,
         *,
         settings: ExecutionWorkerSettings | None = None,
         now: Callable[[], datetime] | None = None,
@@ -103,6 +108,7 @@ class ExecutionWorker:
         self.reconciliation = reconciliation
         self.callback_consumer = callback_consumer
         self.callback_queue = callback_queue
+        self.account_ref = account_ref
         self.settings = settings or ExecutionWorkerSettings(
             callback_queue_size=callback_queue.maxsize
         )
@@ -155,6 +161,18 @@ class ExecutionWorker:
         self.heartbeat_at = self.now()
 
     def enqueue_callback(self, event: BrokerEvent) -> bool:
+        try:
+            callback_target = event.account_ref
+        except ValueError as exc:
+            self.dropped_callbacks += 1
+            self._record_failure(exc)
+            return False
+        if callback_target != self.account_ref:
+            self.dropped_callbacks += 1
+            self._record_failure(
+                RuntimeError("broker callback belongs to another execution target")
+            )
+            return False
         try:
             self.callback_queue.put_nowait(event)
         except asyncio.QueueFull:
@@ -229,7 +247,7 @@ class ExecutionWorker:
         while not self._stop_event.is_set():
             if self.recovery_status is RecoveryStatus.READY:
                 try:
-                    result = await self.manager.dispatch_once()
+                    result = await self.manager.dispatch_once(self.account_ref)
                     if result is not None:
                         self.dispatches += 1
                         self.last_dispatch_at = self.now()
@@ -256,6 +274,12 @@ class ExecutionWorker:
     def snapshot(self) -> dict[str, object]:
         return {
             "state": self.state,
+            "broker_name": self.account_ref.broker_name,
+            "masked_account_id": (
+                "****" + self.account_ref.account_id[-4:]
+                if self.account_ref.account_id
+                else None
+            ),
             "recovery_status": self.recovery_status.value,
             "recovery_issues": list(self.recovery_issues),
             "started_at": self._time(self.started_at),
@@ -285,6 +309,7 @@ class ExecutionRuntime:
     order_repository: SQLiteLiveOrderRepository
     audit_repository: SQLiteBrokerEventAuditRepository
     recovery_repository: SQLiteRecoveryLockRepository
+    registry: BrokerRegistry
 
     async def close(self) -> None:
         await self.worker.stop()
@@ -300,31 +325,38 @@ def build_execution_runtime(
     account_id: str,
     broker: BrokerPort,
     reconciliation_source: BrokerReconciliationSource,
+    capabilities: BrokerCapabilities | None = None,
+    instrument_mapper: BrokerInstrumentMapper | None = None,
     settings: ExecutionWorkerSettings | None = None,
     admission_gates: Sequence[OrderAdmissionGate] = (),
 ) -> ExecutionRuntime:
     """Compose the persistent worker without constructing credentials or SDKs."""
 
-    broker_name = broker_name.strip()
-    account_id = account_id.strip()
+    broker_name = broker_name.strip().lower()
     if broker_name == "disabled":
         raise ValueError("disabled execution does not create a persistent runtime")
-    if not broker_name or not account_id:
-        raise ValueError("broker_name and account_id are required")
-    if broker.broker_name != broker_name:
+    account_ref = BrokerAccountRef(broker_name, account_id)
+    if broker.broker_name != account_ref.broker_name:
         raise ValueError("broker identity does not match execution runtime")
     worker_settings = settings or ExecutionWorkerSettings()
     order_repository = SQLiteLiveOrderRepository(path)
     audit_repository = SQLiteBrokerEventAuditRepository(path)
     recovery_repository = SQLiteRecoveryLockRepository(path)
+    registry = BrokerRegistry()
+    registry.register(BrokerRegistration(
+        account_ref=account_ref,
+        port=broker,
+        capabilities=capabilities or BrokerCapabilities(),
+        instrument_mapper=instrument_mapper or LockedInstrumentMapper(),
+    ))
+    registry.freeze()
     gate = CompositeOrderAdmissionGate((
-        RecoveryOrderGate(recovery_repository, broker_name, account_id),
+        RecoveryOrderGate(recovery_repository, account_ref),
         *admission_gates,
     ))
-    manager = LiveOrderManager(order_repository, broker, gate)
+    manager = LiveOrderManager(order_repository, registry, {account_ref: gate})
     reconciliation = LiveReconciliationService(
-        broker_name=broker_name,
-        account_id=account_id,
+        account_ref=account_ref,
         order_store=order_repository,
         order_manager=manager,
         source=reconciliation_source,
@@ -339,6 +371,7 @@ def build_execution_runtime(
         reconciliation,
         consumer,
         callback_queue,
+        account_ref,
         settings=worker_settings,
     )
     return ExecutionRuntime(
@@ -348,4 +381,5 @@ def build_execution_runtime(
         order_repository=order_repository,
         audit_repository=audit_repository,
         recovery_repository=recovery_repository,
+        registry=registry,
     )

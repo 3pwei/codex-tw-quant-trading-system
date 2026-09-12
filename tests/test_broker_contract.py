@@ -6,15 +6,21 @@ import tempfile
 import unittest
 
 from tw_quant.broker import (
+    BrokerAccountRef,
+    BrokerCapabilities,
     BrokerOrder,
     BrokerOrderRequest,
     BrokerOrderStatus,
+    BrokerRegistration,
+    BrokerRegistry,
     BrokerSettings,
+    CanonicalInstrument,
     ExecutionMode,
     ExternalOrderReport,
     InvalidOrderTransition,
     LiveTradingSafety,
     LiveOrderManager,
+    RoutedBrokerOrderRequest,
     ShioajiBrokerAdapter,
     SQLiteLiveOrderRepository,
     transition_order,
@@ -23,6 +29,28 @@ from tw_quant.broker import (
 
 
 NOW = datetime(2026, 9, 9, tzinfo=timezone.utc)
+TARGET = BrokerAccountRef("shioaji", "acct-1")
+
+
+class FakeMapper:
+    def to_broker_contract(self, instrument):
+        return instrument.contract
+
+    def to_canonical_instrument(self, broker_contract):
+        return CanonicalInstrument("TMF", broker_contract)
+
+
+def manager_for(repository, broker):
+    registry = BrokerRegistry()
+    registry.register(BrokerRegistration(
+        TARGET, broker, BrokerCapabilities(), FakeMapper()
+    ))
+    registry.freeze()
+    return LiveOrderManager(repository, registry)
+
+
+def routed(order_request=None):
+    return RoutedBrokerOrderRequest(TARGET, order_request or request())
 
 
 def request(*, mode: ExecutionMode = ExecutionMode.LIVE) -> BrokerOrderRequest:
@@ -153,16 +181,16 @@ class ShioajiBrokerAdapterTests(unittest.IsolatedAsyncioTestCase):
         adapter = ShioajiBrokerAdapter(client, self.safety())
         with tempfile.TemporaryDirectory() as directory:
             repository = SQLiteLiveOrderRepository(Path(directory) / "orders.sqlite3")
-            manager = LiveOrderManager(repository, adapter)
-            first, created = manager.create(request())
-            repeated, repeated_created = manager.create(request())
+            manager = manager_for(repository, adapter)
+            first, created = manager.create(routed())
+            repeated, repeated_created = manager.create(routed())
             self.assertTrue(created)
             self.assertFalse(repeated_created)
             self.assertEqual(first, repeated)
-            submitted = await manager.dispatch_once()
+            submitted = await manager.dispatch_once(TARGET)
             self.assertIsNotNone(submitted)
             self.assertEqual(submitted.status, BrokerOrderStatus.ACCEPTED)
-            self.assertIsNone(await manager.dispatch_once())
+            self.assertIsNone(await manager.dispatch_once(TARGET))
             self.assertEqual(client.submissions, 1)
             self.assertEqual(repository.outbox_state("client-1"), "completed")
             repository.close()
@@ -173,10 +201,10 @@ class ShioajiBrokerAdapterTests(unittest.IsolatedAsyncioTestCase):
         adapter = ShioajiBrokerAdapter(client, self.safety())
         with tempfile.TemporaryDirectory() as directory:
             repository = SQLiteLiveOrderRepository(Path(directory) / "orders.sqlite3")
-            manager = LiveOrderManager(repository, adapter)
-            manager.create(request())
-            first = await manager.dispatch_once()
-            repeated = await manager.dispatch_once()
+            manager = manager_for(repository, adapter)
+            manager.create(routed())
+            first = await manager.dispatch_once(TARGET)
+            repeated = await manager.dispatch_once(TARGET)
             self.assertEqual(first.status, BrokerOrderStatus.UNKNOWN)
             self.assertIsNone(repeated)
             self.assertEqual(client.submissions, 1)
@@ -192,12 +220,12 @@ class ShioajiBrokerAdapterTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "orders.sqlite3"
             repository = SQLiteLiveOrderRepository(path)
-            repository.reserve(request())
-            self.assertIsNotNone(repository.claim_next())
+            repository.reserve(routed())
+            self.assertIsNotNone(repository.claim_next(TARGET))
             repository.close()
 
             recovered = SQLiteLiveOrderRepository(path)
-            manager = LiveOrderManager(
+            manager = manager_for(
                 recovered,
                 ShioajiBrokerAdapter(FakeShioajiClient(), self.safety()),
             )
@@ -206,7 +234,7 @@ class ShioajiBrokerAdapterTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNotNone(order)
             self.assertEqual(order.status, BrokerOrderStatus.UNKNOWN)
             self.assertEqual(recovered.outbox_state("client-1"), "blocked")
-            self.assertIsNone(await manager.dispatch_once())
+            self.assertIsNone(await manager.dispatch_once(TARGET))
             reconciled = await manager.reconcile("owner-1", "client-1")
             self.assertEqual(reconciled.status, BrokerOrderStatus.ACCEPTED)
             self.assertEqual(recovered.outbox_state("client-1"), "resolved")

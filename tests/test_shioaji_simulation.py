@@ -8,11 +8,18 @@ import tempfile
 import unittest
 
 from tw_quant.broker import (
+    BrokerAccountRef,
+    BrokerCapabilities,
+    BrokerOrder,
     BrokerOrderRequest,
     BrokerOrderStatus,
+    BrokerRegistration,
+    BrokerRegistry,
+    CanonicalInstrument,
     ExecutionMode,
     LiveOrderManager,
     LiveTradingSafety,
+    RoutedBrokerOrderRequest,
     ShioajiBrokerAdapter,
     ShioajiCallbackBridge,
     ShioajiSimulationExecutionClient,
@@ -23,6 +30,15 @@ from tw_quant.broker import (
 
 
 NOW = datetime(2026, 9, 9, 12, tzinfo=timezone.utc)
+TARGET = BrokerAccountRef("shioaji", "sim-1")
+
+
+class FakeMapper:
+    def to_broker_contract(self, instrument):
+        return instrument.contract
+
+    def to_canonical_instrument(self, broker_contract):
+        return CanonicalInstrument("TMF", broker_contract)
 
 
 def request(**changes: object) -> BrokerOrderRequest:
@@ -237,7 +253,7 @@ class CallbackBridgeTests(unittest.IsolatedAsyncioTestCase):
     async def test_normalizes_and_enqueues_supported_callbacks(self):
         queue: asyncio.Queue = asyncio.Queue()
         bridge = ShioajiCallbackBridge(
-            asyncio.get_running_loop(), queue, now=lambda: NOW
+            asyncio.get_running_loop(), TARGET, queue, now=lambda: NOW
         )
         bridge("FORDER", {"order_id": "broker-1", "status": "Submitted"})
         event = await asyncio.wait_for(queue.get(), 1)
@@ -247,7 +263,9 @@ class CallbackBridgeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_ignores_malformed_callbacks(self):
         queue: asyncio.Queue = asyncio.Queue()
-        bridge = ShioajiCallbackBridge(asyncio.get_running_loop(), queue)
+        bridge = ShioajiCallbackBridge(
+            asyncio.get_running_loop(), TARGET, queue
+        )
         bridge("STOCK", {"id": "not-a-futures-order"})
         bridge("FORDER", "invalid")
         await asyncio.sleep(0)
@@ -262,6 +280,7 @@ class CallbackBridgeTests(unittest.IsolatedAsyncioTestCase):
 
         bridge = ShioajiCallbackBridge(
             asyncio.get_running_loop(),
+            TARGET,
             enqueue_callback=capture,
             now=lambda: NOW,
         )
@@ -274,21 +293,26 @@ class CallbackBridgeTests(unittest.IsolatedAsyncioTestCase):
         loop = asyncio.new_event_loop()
         self.addCleanup(loop.close)
         with self.assertRaisesRegex(ValueError, "exactly one"):
-            ShioajiCallbackBridge(loop)
+            ShioajiCallbackBridge(loop, TARGET)
         with self.assertRaisesRegex(ValueError, "exactly one"):
             ShioajiCallbackBridge(
                 loop,
+                TARGET,
                 asyncio.Queue(),
                 enqueue_callback=lambda _event: True,
             )
 
     def test_callback_normalizer_is_pure_and_rejects_unknown_state(self):
         message = {"trade_id": "deal-1", "price": 20_000}
-        event = normalize_callback("FDEAL", message, now=lambda: NOW)
+        event = normalize_callback(
+            "FDEAL", message, account_ref=TARGET, now=lambda: NOW
+        )
         self.assertEqual(event.payload["price"], 20_000)
         self.assertEqual(message, {"trade_id": "deal-1", "price": 20_000})
         with self.assertRaisesRegex(ValueError, "unsupported"):
-            normalize_callback("SORDER", message, now=lambda: NOW)
+            normalize_callback(
+                "SORDER", message, account_ref=TARGET, now=lambda: NOW
+            )
 
 
 class ReconciliationTests(unittest.IsolatedAsyncioTestCase):
@@ -309,22 +333,30 @@ class ReconciliationTests(unittest.IsolatedAsyncioTestCase):
         )
         with tempfile.TemporaryDirectory() as directory:
             repository = SQLiteLiveOrderRepository(Path(directory) / "orders.sqlite3")
-            repository.reserve(request(), occurred_at=NOW)
-            claimed = repository.claim_next()
+            repository.reserve(
+                RoutedBrokerOrderRequest(TARGET, request()), occurred_at=NOW
+            )
+            claimed = repository.claim_next(TARGET)
             self.assertIsNotNone(claimed)
             repository.finish_dispatch(
-                claimed.__class__(
-                    request=claimed.request,
+                BrokerOrder(
+                    request=claimed.order.request,
                     status=BrokerOrderStatus.UNKNOWN,
                     updated_at=NOW,
                     broker_order_id="broker-1",
                     status_reason="test_interruption",
                 )
             )
-            manager = LiveOrderManager(
-                repository, ShioajiBrokerAdapter(client, safety)
-            )
-            results = await manager.reconcile_broker_orders("owner-1")
+            registry = BrokerRegistry()
+            registry.register(BrokerRegistration(
+                TARGET,
+                ShioajiBrokerAdapter(client, safety),
+                BrokerCapabilities(),
+                FakeMapper(),
+            ))
+            registry.freeze()
+            manager = LiveOrderManager(repository, registry)
+            results = await manager.reconcile_broker_orders(TARGET, "owner-1")
             self.assertEqual([item.status for item in results], [BrokerOrderStatus.ACCEPTED])
             self.assertFalse(any(call[0] == "place_order" for call in api.calls))
             self.assertEqual(repository.outbox_state("client-1"), "resolved")

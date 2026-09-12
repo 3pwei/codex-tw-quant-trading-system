@@ -31,6 +31,13 @@ class BrokerCallbackConsumer:
         record, _created = self.audit_store.record_received(event)
         if record.status is BrokerEventAuditStatus.RECONCILED:
             return record
+        if not event.account_id:
+            return self.audit_store.mark(
+                event.event_id,
+                BrokerEventAuditStatus.UNMATCHED,
+                updated_at=self.now(),
+                error="callback_has_no_account_id",
+            )
         if not event.broker_order_id:
             return self.audit_store.mark(
                 event.event_id,
@@ -40,7 +47,7 @@ class BrokerCallbackConsumer:
             )
         try:
             order = await self.order_manager.reconcile_by_broker_order_id(
-                event.broker_order_id
+                event.account_ref, event.broker_order_id
             )
         except Exception as exc:
             return self.audit_store.mark(

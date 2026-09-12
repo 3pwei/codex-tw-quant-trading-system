@@ -7,10 +7,16 @@ from .audit import (
     SQLiteBrokerEventAuditRepository,
 )
 from .callback_consumer import BrokerCallbackConsumer
-from .disabled import DisabledBroker
+from .capabilities import BrokerCapabilities
+from .disabled import DisabledBroker, LockedBroker
 from .events import BrokerEvent, broker_event_id
-from .factory import build_broker
+from .factory import BrokerAdapterFactory, build_broker
 from .identity import BrokerAccountRef
+from .instruments import (
+    BrokerInstrumentMapper,
+    CanonicalInstrument,
+    LockedInstrumentMapper,
+)
 from .lifecycle import InvalidOrderTransition, transition_order
 from .manager import LiveOrderManager
 from .models import (
@@ -49,6 +55,12 @@ from .recovery import (
     SQLiteRecoveryLockRepository,
 )
 from .repository import SQLiteLiveOrderRepository
+from .registry import (
+    BrokerRegistration,
+    BrokerRegistry,
+    BrokerRuntimeState,
+)
+from .routing import RoutedBrokerOrder, RoutedBrokerOrderRequest
 from .secrets import (
     BrokerSecretMaterial,
     BrokerSecretProvider,
@@ -79,16 +91,19 @@ from .worker import (
 )
 
 __all__ = [
+    "BrokerAdapterFactory",
     "BrokerAccount",
     "BrokerAccountRef",
     "BrokerAccountSafety",
     "BrokerAccountSnapshot",
+    "BrokerCapabilities",
     "BrokerCallbackConsumer",
     "BrokerEvent",
     "BrokerEventAuditRecord",
     "BrokerEventAuditStatus",
     "BrokerEventAuditStore",
     "BrokerFillSnapshot",
+    "BrokerInstrumentMapper",
     "BrokerOrder",
     "BrokerOrderRequest",
     "BrokerOrderStatus",
@@ -98,10 +113,14 @@ __all__ = [
     "CompositeOrderAdmissionGate",
     "BrokerReconciliationSnapshot",
     "BrokerReconciliationSource",
+    "BrokerRegistration",
+    "BrokerRegistry",
+    "BrokerRuntimeState",
     "BrokerConnectionSettings",
     "BrokerSettings",
     "BrokerSecretMaterial",
     "BrokerSecretProvider",
+    "CanonicalInstrument",
     "DisabledBroker",
     "DisabledExecutionWorker",
     "ExecutionMode",
@@ -116,6 +135,8 @@ __all__ = [
     "LiveOrderManager",
     "LiveOrderStore",
     "LockedOrderAdmissionGate",
+    "LockedBroker",
+    "LockedInstrumentMapper",
     "LiveReconciliationService",
     "OrderAdmissionGate",
     "OrderExecutor",
@@ -126,6 +147,8 @@ __all__ = [
     "RecoveryOrderGate",
     "RecoveryState",
     "RecoveryStatus",
+    "RoutedBrokerOrder",
+    "RoutedBrokerOrderRequest",
     "ShioajiBrokerAdapter",
     "ShioajiCallbackBridge",
     "ShioajiCallbackEvent",
