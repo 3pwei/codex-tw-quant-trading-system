@@ -1,4 +1,7 @@
+import os
 from pathlib import Path
+import subprocess
+import tempfile
 import unittest
 
 
@@ -69,6 +72,48 @@ class DeploymentWorkflowTests(unittest.TestCase):
         script = ROOT / "deploy/lightsail/prepare-host.sh"
 
         self.assertNotEqual(script.stat().st_mode & 0o111, 0)
+
+    def test_host_preparation_migrates_legacy_market_secret_names(self):
+        script = (ROOT / "deploy/lightsail/prepare-host.sh").read_text()
+
+        self.assertIn('migrate_market_key "SJ_API_KEY" "MARKET_SJ_API_KEY"', script)
+        self.assertIn(
+            'migrate_market_key "SJ_SEC_KEY" "MARKET_SJ_SECRET_KEY"', script
+        )
+        self.assertIn(
+            'migrate_market_key "SJ_PRODUCTION" "MARKET_SJ_PRODUCTION"', script
+        )
+        self.assertNotIn('cat "${MARKET_ENV}"', script)
+
+        with tempfile.TemporaryDirectory() as directory:
+            install_root = Path(directory)
+            config = install_root / "config"
+            example = install_root / "repo/deploy/lightsail/execution.env.example"
+            config.mkdir(parents=True)
+            example.parent.mkdir(parents=True)
+            example.write_text("BROKER_PROVIDER=disabled\n")
+            market_env = config / "market.env"
+            market_env.write_text(
+                "SJ_API_KEY=legacy-key\n"
+                "SJ_SEC_KEY=legacy-secret\n"
+                "SJ_PRODUCTION=false\n"
+            )
+
+            result = subprocess.run(
+                [str(ROOT / "deploy/lightsail/prepare-host.sh")],
+                env={**os.environ, "INSTALL_ROOT": str(install_root)},
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            migrated = market_env.read_text()
+
+        self.assertIn("MARKET_SJ_API_KEY=legacy-key", migrated)
+        self.assertIn("MARKET_SJ_SECRET_KEY=legacy-secret", migrated)
+        self.assertIn("MARKET_SJ_PRODUCTION=false", migrated)
+        self.assertNotRegex(migrated, r"(?m)^SJ_(?:API_KEY|SEC_KEY|PRODUCTION)=")
+        self.assertNotIn("legacy-key", result.stdout + result.stderr)
+        self.assertNotIn("legacy-secret", result.stdout + result.stderr)
 
 if __name__ == "__main__":
     unittest.main()
