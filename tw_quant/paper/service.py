@@ -748,6 +748,7 @@ class PaperTradingService:
 
     def account(self, owner_id: str) -> dict[str, object]:
         snapshot = asdict(self.risk.snapshot(owner_id))
+        snapshot["risk_limits"] = asdict(self.risk.config)
         snapshot["trading_date"] = (
             snapshot["trading_date"].isoformat()
             if snapshot["trading_date"] else None

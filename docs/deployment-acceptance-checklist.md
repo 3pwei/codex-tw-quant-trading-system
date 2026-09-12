@@ -30,6 +30,9 @@
 - [ ] Kill Switch 阻止新倉，最新報價有效時允許 reduce-only 平倉。
 - [ ] Provider 中斷時禁止新倉，恢復後沒有補送委託。
 - [ ] Paper Recovery 為 healthy，重啟前後持倉與風控狀態一致。
+- [ ] `/trade/` 只顯示 Observe／Manual Paper／Paper Auto，沒有可操作的 Live 按鈕。
+- [ ] Paper Auto ARM 需再次確認；Pause 阻止 Entry 但 managed exit 可用。
+- [ ] 已依 [四小時 Paper Auto 驗收](automated-paper-trading-acceptance.md) 留存 metrics evidence。
 
 ## 驗收紀錄
 

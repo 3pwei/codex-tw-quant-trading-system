@@ -11,7 +11,18 @@ Market Data Provider，成交、持倉與風控結果則寫入平台 SQLite。
 4. Paper 頁不得顯示 `PROVIDER DISCONNECTED`、`MARKET STALE`、Recovery Lock。
 5. Kill Switch 必須解除，最新報價必須仍在有效期限內。
 
-## 建立模擬市價單
+## 選擇交易模式
+
+- `OBSERVE`：只看策略 overlays、closed-bar signals 與最新訊號，不建立委託。
+- `MANUAL PAPER`：保留原本的 Buy／Sell／Quantity／Stop Loss 與手動平倉。
+- `PAPER AUTO`：先選策略、interval、quantity 並建立 immutable snapshot；核對參數與
+  帳戶風控上限後，經確認視窗才能 `ARM PAPER AUTO`。
+
+Paper Auto 面板會顯示 Runtime 狀態、最後評估 K 棒、最後決策／委託／成交、持倉、
+SL／TP、行情與風控健康。`PAUSE` 停止新 Entry 但仍允許 managed exit；`STOP` 停止新
+策略決策，不會強制平倉，現有部位由 server-side protective levels 管理至 flat。
+
+## 建立手動模擬市價單
 
 1. 進入 `/trade/`，在同一頁確認即時圖表、連線、報價新鮮度、最新價與持倉。
 2. 桌機使用圖表右側委託票；手機點擊底部固定的「買進」或「賣出」開啟委託
@@ -28,9 +39,7 @@ Market Data Provider，成交、持倉與風控結果則寫入平台 SQLite。
 
 > 手動 Paper 的停損價只用於進場風險審核與圖表提示。Paper Auto 部位則由伺服器以
 > immutable snapshot 與實際 entry fill 建立 SL／TP，於 closed K 以 reduce-only
-> simulated exit 執行；這不是外部券商原生保護單。
-> 行情觸及該價格不會自動平倉，Paper 也尚未支援自動停利或 OCO。持倉者必須自行
-> 監看並使用 reduce-only 平倉，直到 Protective Order 功能完成。
+> simulated exit 執行；這不是外部券商原生保護單，也不是 Live Trading。
 
 ## 平倉與 Kill Switch
 
@@ -59,4 +68,5 @@ Market Data Provider，成交、持倉與風控結果則寫入平台 SQLite。
 | 相同 Idempotency-Key、不同內容 | 回傳 `409 Conflict`；呼叫端必須產生新的 key 或修正重送邏輯 |
 
 正式驗收時至少使用兩個 Trader 帳號交錯操作，確認彼此看不到對方的委託、成交與
-持倉。
+持倉。完整四小時驗收流程與證據格式見
+[Automated Paper Trading 驗收](automated-paper-trading-acceptance.md)。

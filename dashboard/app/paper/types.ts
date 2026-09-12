@@ -14,6 +14,14 @@ export type Account = {
   cooldown_until: string | null;
   recovery_status: "healthy" | "degraded";
   recovery_issues: string[];
+  risk_limits: {
+    max_position_contracts: number;
+    max_risk_per_trade: number;
+    max_daily_loss: number;
+    max_trades_per_day: number;
+    max_consecutive_losses: number;
+    cooldown_minutes: number;
+  };
 };
 
 export type PaperPosition = {
@@ -30,6 +38,9 @@ export type PaperPosition = {
   order_source?: "manual" | "strategy_auto";
   runtime_id?: string | null;
   decision_id?: string | null;
+  stop_loss_price?: number | null;
+  take_profit_price?: number | null;
+  strategy_snapshot?: Record<string, unknown> | null;
 };
 
 export type PaperOrder = {

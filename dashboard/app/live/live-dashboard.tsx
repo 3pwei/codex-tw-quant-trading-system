@@ -292,6 +292,15 @@ export default function TradingWorkspace() {
       quoteFresh={quoteFresh}
       marketHealth={marketHealth}
       onOverlayChange={updatePaperOverlay}
+      strategyOptions={strategyOptions}
+      strategyResults={strategyResults}
+      selectedStrategies={selectedStrategies}
+      symbol={selection.symbol}
+      interval={selectedInterval}
+      onStrategySelected={strategy => setSelection(current => ({
+        ...current,
+        strategies: [strategy],
+      }))}
       marketPanel={<>
         <section className="live-chart-panel">
           <div className="live-toolbar">
@@ -300,7 +309,7 @@ export default function TradingWorkspace() {
             <div className={`bar-state ${latest?.status ?? "forming"}`}>{latest?.status === "closed" ? "已收盤" : "形成中"}</div>
           </div>
           <div ref={hostRef} className="live-chart" />
-          <div className="chart-legend"><span><i className="legend-forming" />形成中 K 棒</span><span><i className="legend-closed" />已收盤 K 棒</span>{paperOverlay.fills.length > 0 && <span><i className="legend-paper-fill" />Paper 成交</span>}{paperOverlay.positions.length > 0 && <><span><i className="legend-position" />持倉均價</span><span><i className="legend-stop-line" />停損</span></>}{strategyOptions.filter(option => selectedStrategies.includes(option.key)).map(option => <span key={option.key}><i style={{ background: option.color }} />{option.name}</span>)}</div>
+          <div className="chart-legend"><span><i className="legend-forming" />形成中 K 棒</span><span><i className="legend-closed" />已收盤 K 棒</span>{paperOverlay.fills.some(fill => fill.order_source !== "strategy_auto") && <span><i className="legend-manual-fill" />Manual Paper Fill</span>}{paperOverlay.fills.some(fill => fill.order_source === "strategy_auto") && <span><i className="legend-auto-fill" />Auto Entry / Exit</span>}{paperOverlay.positions.length > 0 && <><span><i className="legend-position" />持倉均價</span><span><i className="legend-stop-line" />Stop Loss</span><span><i className="legend-take-line" />Take Profit</span></>}{strategyOptions.filter(option => selectedStrategies.includes(option.key)).map(option => <span key={option.key}><i style={{ background: option.color }} />{option.name}</span>)}</div>
         </section>
         {error && <div className="live-error">{error}；系統將以指數退避自動重連。</div>}
       </>}
