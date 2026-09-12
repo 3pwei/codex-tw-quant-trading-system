@@ -51,6 +51,14 @@ class DeploymentWorkflowTests(unittest.TestCase):
         self.assertIn("tw_quant.execution_service validate", script)
         self.assertIn("published_ports", script)
 
+    def test_host_preparation_runs_only_after_approved_revision_checkout(self):
+        workflow = (ROOT / ".github/workflows/deploy-lightsail.yml").read_text()
+        script = (ROOT / "deploy/lightsail/deploy.sh").read_text()
+
+        self.assertNotIn("prepare-host.sh' | sudo bash", workflow)
+        self.assertIn('checkout --detach "${COMMIT_SHA}"', script)
+        self.assertIn('"${REPOSITORY}/deploy/lightsail/prepare-host.sh"', script)
+
 
 if __name__ == "__main__":
     unittest.main()

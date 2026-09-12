@@ -108,7 +108,7 @@ jobs:
           ssh -i ~/.ssh/lightsail \
             -o BatchMode=yes \
             "${LIGHTSAIL_USER}@${LIGHTSAIL_HOST}" \
-            "set -e; trap 'rm -f ${remote_bundle} /tmp/tw-quant-deploy.sh' EXIT; sudo git -C /opt/tw-quant/repo fetch '${remote_bundle}' HEAD; sudo git -C /opt/tw-quant/repo cat-file -e '${DEPLOY_SHA}^{commit}'; sudo git -C /opt/tw-quant/repo show '${DEPLOY_SHA}:deploy/lightsail/prepare-host.sh' | sudo bash; sudo git -C /opt/tw-quant/repo show '${DEPLOY_SHA}:deploy/lightsail/deploy.sh' > /tmp/tw-quant-deploy.sh; sudo bash /tmp/tw-quant-deploy.sh '${DEPLOY_SHA}'"
+            "set -e; trap 'rm -f ${remote_bundle} /tmp/tw-quant-deploy.sh' EXIT; sudo git -C /opt/tw-quant/repo fetch '${remote_bundle}' HEAD; sudo git -C /opt/tw-quant/repo cat-file -e '${DEPLOY_SHA}^{commit}'; sudo git -C /opt/tw-quant/repo show '${DEPLOY_SHA}:deploy/lightsail/deploy.sh' > /tmp/tw-quant-deploy.sh; sudo bash /tmp/tw-quant-deploy.sh '${DEPLOY_SHA}'"
 
       - name: Verify public health endpoint
         env:
