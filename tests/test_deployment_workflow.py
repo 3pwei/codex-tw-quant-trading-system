@@ -58,6 +58,11 @@ class DeploymentWorkflowTests(unittest.TestCase):
         self.assertNotIn("prepare-host.sh' | sudo bash", workflow)
         self.assertIn('checkout --detach "${COMMIT_SHA}"', script)
         self.assertIn('"${REPOSITORY}/deploy/lightsail/prepare-host.sh"', script)
+        checkout = script.index('checkout --detach "${COMMIT_SHA}"')
+        prepare = script.index('"${REPOSITORY}/deploy/lightsail/prepare-host.sh"')
+        first_compose = script.index("docker compose")
+        self.assertLess(checkout, prepare)
+        self.assertLess(prepare, first_compose)
 
 
 if __name__ == "__main__":

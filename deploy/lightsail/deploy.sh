@@ -19,6 +19,10 @@ if ! git -C "${REPOSITORY}" cat-file -e "${COMMIT_SHA}^{commit}"; then
 fi
 git -C "${REPOSITORY}" checkout --detach "${COMMIT_SHA}"
 
+# Compose resolves every service env_file before running even a read-only
+# command. Materialize the locked execution config before the first Compose use.
+"${REPOSITORY}/deploy/lightsail/prepare-host.sh"
+
 if docker compose --env-file "${COMPOSE_ENV}" -f "${COMPOSE_FILE}" \
   ps --status running --services | grep -qx market-api; then
   docker compose --env-file "${COMPOSE_ENV}" -f "${COMPOSE_FILE}" \
@@ -46,8 +50,6 @@ if source_path.exists():
     print(f"SQLite backup created and verified: {backup_path}")
 PY
 fi
-
-"${REPOSITORY}/deploy/lightsail/prepare-host.sh"
 
 if [[ ! -f "${EXECUTION_ENV}" || "$(stat -c '%a' "${EXECUTION_ENV}")" != "600" ]]; then
   echo "execution.env must exist as a regular file with mode 600" >&2
