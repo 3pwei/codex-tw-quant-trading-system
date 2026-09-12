@@ -169,6 +169,9 @@ class SQLitePaperRepository:
                 "reduce_only": payload["reduce_only"],
                 "reference_price": payload["reference_price"],
                 "stop_loss_price": payload.get("stop_loss_price"),
+                "stop_loss_pct": payload.get("stop_loss_pct"),
+                "take_profit_pct": payload.get("take_profit_pct"),
+                "strategy_snapshot": payload.get("strategy_snapshot"),
                 "status": "pending_risk",
                 "lifecycle_status": canonical_paper_status("pending_risk").value,
                 "status_reason": "awaiting_risk",
@@ -207,6 +210,19 @@ class SQLitePaperRepository:
                 lifecycle_status=canonical_paper_status(status).value,
                 status_reason=str(payload["reason"]),
                 approved_quantity=payload.get("approved_quantity", 0),
+            )
+            self._update_order_locked(owner_id, order_id, sequence, snapshot)
+            return
+        if kind == "order_status":
+            order_id = str(payload["order_id"])
+            snapshot = self._order_snapshot_locked(owner_id, order_id)
+            if snapshot is None:
+                return
+            status = str(payload["status"])
+            snapshot.update(
+                status=status,
+                lifecycle_status=canonical_paper_status(status).value,
+                status_reason=str(payload["reason"]),
             )
             self._update_order_locked(owner_id, order_id, sequence, snapshot)
             return
@@ -284,6 +300,10 @@ class SQLitePaperRepository:
                 "order_source": payload.get("order_source", "manual"),
                 "runtime_id": payload.get("runtime_id"),
                 "decision_id": payload.get("decision_id"),
+                "entry_fill_price": payload.get("entry_fill_price"),
+                "stop_loss_price": payload.get("stop_loss_price"),
+                "take_profit_price": payload.get("take_profit_price"),
+                "strategy_snapshot": payload.get("strategy_snapshot"),
             }
             self.connection.execute(
                 "INSERT INTO paper_position_read_model("

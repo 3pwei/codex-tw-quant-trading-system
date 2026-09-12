@@ -40,6 +40,8 @@ Trading，不支援也不應用於真實券商下單。
 - 手動 Kill Switch 跨交易日維持，必須明確執行 reset。
 - 啟用與解除必須提供含時區時間及原因，並寫入 `control_log`。
 - Kill Switch 只阻止新增曝險；合法的 `reduce_only` 與強制平倉仍可核准。
+- Paper Auto 的 strategy exit、SL 與 TP 全部為 `reduce_only`；模擬券商會把成交量
+  截斷至現有部位，防止平倉競態造成反向開倉。
 
 ## 交易日與未成交單
 

@@ -6,7 +6,9 @@ from ..events import DomainEvent, EventMetadata, OrderIntent, SignalEvent
 from .position_ledger import PositionLedger
 
 
-ExecutionTiming = Literal["next_bar_open", "current_close", "signal_price"]
+ExecutionTiming = Literal[
+    "next_bar_open", "current_close", "signal_price", "bar_trigger"
+]
 
 
 class SignalOrderRouter:

@@ -135,6 +135,9 @@ class TradingRuntimeRepository(Protocol):
     def active_trading_runtimes(
         self, symbol: str
     ) -> list[dict[str, object]]: ...
+    def paper_auto_runtimes(
+        self, symbol: str
+    ) -> list[dict[str, object]]: ...
     def stop_trading_runtime(
         self, runtime_id: str, owner_user_id: str
     ) -> dict[str, object] | None: ...
@@ -158,6 +161,9 @@ class TradingRuntimeRepository(Protocol):
         self, decision_id: str, owner_user_id: str, values: dict[str, object]
     ) -> dict[str, object] | None: ...
     def auto_entry_decisions(
+        self, symbol: str, statuses: tuple[str, ...]
+    ) -> list[dict[str, object]]: ...
+    def auto_decisions(
         self, symbol: str, statuses: tuple[str, ...]
     ) -> list[dict[str, object]]: ...
 
@@ -753,6 +759,18 @@ class SQLiteBarRepository:
             ).fetchall()
         return [self._runtime_row(row) for row in rows]
 
+    def paper_auto_runtimes(
+        self, symbol: str
+    ) -> list[dict[str, object]]:
+        """Return Paper Auto snapshots, including paused/stopped positions."""
+        with self.lock:
+            rows = self.connection.execute(
+                "SELECT * FROM strategy_runtimes "
+                "WHERE symbol=? AND mode='paper_auto' ORDER BY created_at",
+                (symbol,),
+            ).fetchall()
+        return [self._runtime_row(row) for row in rows]
+
     def stop_trading_runtime(
         self, runtime_id: str, owner_user_id: str
     ) -> dict[str, object] | None:
@@ -904,7 +922,7 @@ class SQLiteBarRepository:
             ).fetchone()
         return self._decision_row(row) if row else None
 
-    def auto_entry_decisions(
+    def auto_decisions(
         self, symbol: str, statuses: tuple[str, ...]
     ) -> list[dict[str, object]]:
         if not statuses:
@@ -915,13 +933,22 @@ class SQLiteBarRepository:
                 "SELECT decision.* FROM trading_decisions AS decision "
                 "JOIN strategy_runtimes AS runtime "
                 "ON runtime.runtime_id=decision.runtime_id "
-                "WHERE decision.symbol=? AND decision.action='entry' "
+                "WHERE decision.symbol=? AND decision.action IN ('entry','exit') "
                 "AND runtime.mode='paper_auto' "
                 f"AND decision.execution_status IN ({placeholders}) "
                 "ORDER BY decision.trigger_time",
                 (symbol, *statuses),
             ).fetchall()
         return [self._decision_row(row) for row in rows]
+
+    def auto_entry_decisions(
+        self, symbol: str, statuses: tuple[str, ...]
+    ) -> list[dict[str, object]]:
+        """Compatibility query retained for PR #99 callers."""
+        return [
+            item for item in self.auto_decisions(symbol, statuses)
+            if item["action"] == "entry"
+        ]
 
     def save(self, bar: KBar) -> None:
         values = (

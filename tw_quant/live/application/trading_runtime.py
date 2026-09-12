@@ -342,7 +342,7 @@ class TradingRuntimeApplicationService:
             "execution_status": (
                 "pending"
                 if runtime["mode"] == "paper_auto"
-                and intent["action"] == "entry"
+                and intent["action"] in {"entry", "exit"}
                 else "not_applicable"
             ),
             "reference_price": reference_price,

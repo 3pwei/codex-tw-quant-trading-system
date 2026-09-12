@@ -12,6 +12,7 @@ EventKind = Literal[
     "bar_closed",
     "signal",
     "order_intent",
+    "order_status",
     "risk_decision",
     "fill",
     "position",
@@ -160,12 +161,15 @@ class OrderIntent:
     order_type: Literal["market"] = "market"
     purpose: Literal["entry", "exit", "liquidation"] = "entry"
     execution_timing: Literal[
-        "next_bar_open", "current_close", "signal_price"
+        "next_bar_open", "current_close", "signal_price", "bar_trigger"
     ] = "next_bar_open"
     reduce_only: bool = False
     reason: str = "strategy_signal"
     reference_price: float = 0.0
     stop_loss_price: float | None = None
+    stop_loss_pct: float | None = None
+    take_profit_pct: float | None = None
+    strategy_snapshot: dict[str, object] | None = None
     trading_date: date | None = None
     client_order_id: str | None = None
     order_source: Literal["manual", "strategy_auto"] = "manual"
@@ -184,6 +188,16 @@ class OrderIntent:
             raise ValueError("reference_price cannot be negative")
         if self.stop_loss_price is not None and self.stop_loss_price <= 0:
             raise ValueError("stop_loss_price must be positive when provided")
+        for name in ("stop_loss_pct", "take_profit_pct"):
+            value = getattr(self, name)
+            if value is not None and not 0 < value < 1:
+                raise ValueError(f"{name} must be between 0 and 1 when provided")
+        if self.execution_timing == "bar_trigger" and not (
+            self.reduce_only and self.order_source == "strategy_auto"
+        ):
+            raise ValueError(
+                "bar_trigger execution is reserved for strategy_auto reduce-only orders"
+            )
         if self.client_order_id is not None and (
             not self.client_order_id.strip() or len(self.client_order_id) > 128
         ):
@@ -194,6 +208,19 @@ class OrderIntent:
             raise ValueError(
                 "strategy_auto orders require runtime_id and decision_id"
             )
+
+
+@dataclass(frozen=True)
+class OrderStatusEvent:
+    meta: EventMetadata
+    order_id: str
+    status: Literal["rejected"]
+    reason: str
+    kind: Literal["order_status"] = field(default="order_status", init=False)
+
+    def __post_init__(self) -> None:
+        if not self.order_id or not self.reason:
+            raise ValueError("order_id and reason are required")
 
 
 @dataclass(frozen=True)
@@ -237,6 +264,9 @@ class FillEvent:
     order_source: Literal["manual", "strategy_auto"] = "manual"
     runtime_id: str | None = None
     decision_id: str | None = None
+    stop_loss_price: float | None = None
+    take_profit_price: float | None = None
+    strategy_snapshot: dict[str, object] | None = None
     kind: Literal["fill"] = field(default="fill", init=False)
 
     def __post_init__(self) -> None:
@@ -248,6 +278,10 @@ class FillEvent:
             raise ValueError("quantity and price must be positive")
         if min(self.commission, self.tax, self.slippage) < 0:
             raise ValueError("fill costs cannot be negative")
+        for name in ("stop_loss_price", "take_profit_price"):
+            value = getattr(self, name)
+            if value is not None and value <= 0:
+                raise ValueError(f"{name} must be positive when provided")
 
 
 @dataclass(frozen=True)
@@ -265,6 +299,10 @@ class PositionEvent:
     order_source: Literal["manual", "strategy_auto"] = "manual"
     runtime_id: str | None = None
     decision_id: str | None = None
+    entry_fill_price: float | None = None
+    stop_loss_price: float | None = None
+    take_profit_price: float | None = None
+    strategy_snapshot: dict[str, object] | None = None
     kind: Literal["position"] = field(default="position", init=False)
 
     def __post_init__(self) -> None:
@@ -278,6 +316,10 @@ class PositionEvent:
             raise ValueError("flat positions must have zero average_price")
         if self.total_cost < 0:
             raise ValueError("total_cost cannot be negative")
+        for name in ("entry_fill_price", "stop_loss_price", "take_profit_price"):
+            value = getattr(self, name)
+            if value is not None and value <= 0:
+                raise ValueError(f"{name} must be positive when provided")
 
 
 @dataclass(frozen=True)
@@ -300,6 +342,7 @@ DomainEvent: TypeAlias = (
     | BarClosedEvent
     | SignalEvent
     | OrderIntent
+    | OrderStatusEvent
     | RiskDecision
     | FillEvent
     | PositionEvent

@@ -6,6 +6,7 @@ from typing import Mapping, Protocol
 from ...auth import AccountStatus, AuthUser, TradingMode
 from ...market import KBar
 from ...paper import PaperOrderCommand, PaperTradingService
+from ...risk import RiskLevels, triggered_exit
 from ..storage import TradingRuntimeRepository
 
 
@@ -30,8 +31,28 @@ def auto_entry_idempotency_key(
     return "auto:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-class PaperAutoEntryController:
-    """Fail-closed bridge from durable entry decisions to Paper execution."""
+def auto_exit_idempotency_key(
+    owner_id: str,
+    runtime_id: str,
+    contract: str,
+    position_opened_at: str,
+    trigger_time: str,
+    reason: str,
+) -> str:
+    canonical = "|".join((
+        owner_id,
+        runtime_id,
+        contract,
+        position_opened_at,
+        trigger_time,
+        reason,
+        "exit",
+    ))
+    return "auto:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+class PaperAutoExecutionController:
+    """Bridge durable decisions and server-owned protection to Paper execution."""
 
     def __init__(
         self,
@@ -46,7 +67,9 @@ class PaperAutoEntryController:
         self.paper = paper
 
     @staticmethod
-    def _stop_loss_pct(runtime: Mapping[str, object]) -> float:
+    def _risk_percentages(
+        runtime: Mapping[str, object]
+    ) -> tuple[float, float]:
         snapshot = runtime.get("strategy_snapshot")
         if not isinstance(snapshot, Mapping):
             raise ValueError("strategy_snapshot_missing")
@@ -55,12 +78,16 @@ class PaperAutoEntryController:
         else:
             definition = snapshot.get("definition")
             values = definition.get("risk") if isinstance(definition, Mapping) else None
-        if not isinstance(values, Mapping) or values.get("stop_loss_pct") is None:
-            raise ValueError("stop_loss_pct_missing")
-        value = float(values["stop_loss_pct"])
-        if value <= 0:
-            raise ValueError("stop_loss_pct_invalid")
-        return value
+        if not isinstance(values, Mapping):
+            raise ValueError("risk_parameters_missing")
+        try:
+            stop = float(values["stop_loss_pct"])
+            take = float(values["take_profit_pct"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("risk_parameters_missing") from exc
+        if not 0 < stop < 1 or not 0 < take < 1:
+            raise ValueError("risk_parameters_invalid")
+        return stop, take
 
     def _skip(self, decision: Mapping[str, object], reason: str) -> None:
         self.runtimes.update_decision_execution(
@@ -108,6 +135,7 @@ class PaperAutoEntryController:
         if any(
             order.get("runtime_id") == runtime_id
             and order.get("status") in {"pending_risk", "approved"}
+            and not order.get("reduce_only")
             and order.get("decision_id") != decision.get("decision_id")
             for order in self.paper.orders(user.user_id)
         ):
@@ -120,6 +148,9 @@ class PaperAutoEntryController:
         decision: Mapping[str, object],
         signal_bar: KBar,
     ) -> None:
+        if decision.get("action") == "exit":
+            self._on_strategy_exit(runtime, decision, signal_bar)
+            return
         if decision.get("action") != "entry":
             return
         current = self.runtimes.trading_runtime(
@@ -134,7 +165,7 @@ class PaperAutoEntryController:
             return
         try:
             reference = float(decision.get("reference_price") or signal_bar.close)
-            stop_pct = self._stop_loss_pct(current)
+            stop_pct, take_pct = self._risk_percentages(current)
             is_long = decision["direction"] == "long"
             planned_stop = reference * (1 - stop_pct if is_long else 1 + stop_pct)
             key = auto_entry_idempotency_key(
@@ -158,6 +189,9 @@ class PaperAutoEntryController:
                     runtime_id=str(current["runtime_id"]),
                     decision_id=str(decision["decision_id"]),
                     reference_price=reference,
+                    stop_loss_pct=stop_pct,
+                    take_profit_pct=take_pct,
+                    strategy_snapshot=dict(current["strategy_snapshot"]),
                 ),
                 idempotency_key=key,
                 market_bar=signal_bar,
@@ -179,10 +213,153 @@ class PaperAutoEntryController:
         except Exception as exc:
             self._skip(decision, f"controller_error:{type(exc).__name__}")
 
+    def _on_strategy_exit(
+        self,
+        runtime: Mapping[str, object],
+        decision: Mapping[str, object],
+        signal_bar: KBar,
+    ) -> None:
+        current = self.runtimes.trading_runtime(
+            str(runtime["runtime_id"]), str(runtime["owner_user_id"])
+        )
+        if current is None:
+            self._skip(decision, "runtime_unavailable")
+            return
+        owner_id = str(current["owner_user_id"])
+        position = next((
+            item for item in self.paper.positions(owner_id)
+            if item.get("runtime_id") == current["runtime_id"]
+            and item.get("contract") == decision.get("contract")
+            and int(item.get("quantity", 0)) != 0
+        ), None)
+        if position is None:
+            self._skip(decision, "position_not_open")
+            return
+        quantity = int(position["quantity"])
+        direction = "long" if quantity > 0 else "short"
+        if decision.get("direction") != direction:
+            self._skip(decision, "position_direction_mismatch")
+            return
+        user = self.users.user_by_id(owner_id)
+        if user is None:
+            self._skip(decision, "account_unavailable")
+            return
+        try:
+            key = auto_exit_idempotency_key(
+                owner_id,
+                str(current["runtime_id"]),
+                str(decision["contract"]),
+                str(position.get("opened_at") or "legacy"),
+                str(decision["trigger_time"]),
+                str(decision["reason"]),
+            )
+            order, _created = self.paper.submit(
+                user,
+                PaperOrderCommand(
+                    strategy_id=str(position["strategy_id"]),
+                    strategy_version=int(position["strategy_version"]),
+                    side="sell" if quantity > 0 else "buy",
+                    quantity=abs(quantity),
+                    stop_loss_price=None,
+                    reduce_only=True,
+                    reason=str(decision["reason"]),
+                    execution_timing="next_bar_open",
+                    order_source="strategy_auto",
+                    runtime_id=str(current["runtime_id"]),
+                    decision_id=str(decision["decision_id"]),
+                    reference_price=float(
+                        decision.get("reference_price") or signal_bar.close
+                    ),
+                    strategy_snapshot=dict(current["strategy_snapshot"]),
+                ),
+                idempotency_key=key,
+                market_bar=signal_bar,
+                occurred_at=signal_bar.received_time,
+            )
+            status = str(order["status"])
+            self.runtimes.update_decision_execution(
+                str(decision["decision_id"]), owner_id,
+                {
+                    "execution_status": (
+                        "submitted" if status == "approved" else "rejected"
+                    ),
+                    "execution_reason": order["status_reason"],
+                    "order_id": order["order_id"],
+                },
+            )
+        except Exception as exc:
+            self._skip(decision, f"controller_error:{type(exc).__name__}")
+
+    def _protect_positions(self, bar: KBar) -> None:
+        for runtime in self.runtimes.paper_auto_runtimes(bar.symbol):
+            owner_id = str(runtime["owner_user_id"])
+            user = self.users.user_by_id(owner_id)
+            if user is None:
+                continue
+            for position in self.paper.positions(owner_id):
+                if (
+                    position.get("runtime_id") != runtime["runtime_id"]
+                    or position.get("contract") != bar.contract
+                ):
+                    continue
+                stop = position.get("stop_loss_price")
+                take = position.get("take_profit_price")
+                if stop is None or take is None:
+                    continue
+                quantity = int(position["quantity"])
+                result = triggered_exit(
+                    direction=1 if quantity > 0 else -1,
+                    open_price=bar.open,
+                    high=bar.high,
+                    low=bar.low,
+                    levels=RiskLevels(float(stop), float(take)),
+                )
+                if result is None:
+                    continue
+                trigger_price, reason = result
+                key = auto_exit_idempotency_key(
+                    owner_id,
+                    str(runtime["runtime_id"]),
+                    bar.contract,
+                    str(position.get("opened_at") or "legacy"),
+                    bar.time.isoformat(timespec="milliseconds"),
+                    reason,
+                )
+                protective_id = f"protective:{key.removeprefix('auto:')}"
+                self.paper.submit(
+                    user,
+                    PaperOrderCommand(
+                        strategy_id=str(position["strategy_id"]),
+                        strategy_version=int(position["strategy_version"]),
+                        side="sell" if quantity > 0 else "buy",
+                        quantity=abs(quantity),
+                        stop_loss_price=None,
+                        reduce_only=True,
+                        reason=reason,
+                        execution_timing="bar_trigger",
+                        order_source="strategy_auto",
+                        runtime_id=str(runtime["runtime_id"]),
+                        decision_id=protective_id,
+                        reference_price=float(trigger_price),
+                        strategy_snapshot=(
+                            dict(position["strategy_snapshot"])
+                            if isinstance(position.get("strategy_snapshot"), dict)
+                            else dict(runtime["strategy_snapshot"])
+                        ),
+                    ),
+                    idempotency_key=key,
+                    market_bar=bar,
+                    occurred_at=bar.received_time,
+                )
+
+    def before_bar(self, bar: KBar) -> None:
+        if bar.status == "closed":
+            self._protect_positions(bar)
+
     def after_bar(self, bar: KBar) -> None:
         if bar.status != "closed":
             return
-        for decision in self.runtimes.auto_entry_decisions(
+        for decision in self.runtimes.auto_decisions(
             bar.symbol, ("submitted",)
         ):
             order_id = decision.get("order_id")
@@ -218,3 +395,11 @@ class PaperAutoEntryController:
                         "execution_reason": order.get("status_reason"),
                     },
                 )
+        # A next-open entry filled while processing this bar. Its protective
+        # levels are derived from that actual fill, so this same bar can now be
+        # evaluated without using the preliminary reference-close stop.
+        self._protect_positions(bar)
+
+
+# Compatibility alias for integrations introduced by PR #99.
+PaperAutoEntryController = PaperAutoExecutionController

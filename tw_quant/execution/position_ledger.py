@@ -35,6 +35,10 @@ class PositionState:
     order_source: Literal["manual", "strategy_auto"] = "manual"
     runtime_id: str | None = None
     decision_id: str | None = None
+    entry_fill_price: float | None = None
+    stop_loss_price: float | None = None
+    take_profit_price: float | None = None
+    strategy_snapshot: dict[str, object] | None = None
 
 
 @dataclass(frozen=True)
@@ -147,6 +151,10 @@ class PositionLedger:
             order_source=state.order_source,
             runtime_id=state.runtime_id,
             decision_id=state.decision_id,
+            entry_fill_price=state.entry_fill_price,
+            stop_loss_price=state.stop_loss_price,
+            take_profit_price=state.take_profit_price,
+            strategy_snapshot=state.strategy_snapshot,
         )
 
     def on_fill(self, event: DomainEvent) -> list[PositionEvent] | None:
@@ -168,6 +176,10 @@ class PositionLedger:
             state.order_source = event.order_source
             state.runtime_id = event.runtime_id
             state.decision_id = event.decision_id
+            state.entry_fill_price = event.price
+            state.stop_loss_price = event.stop_loss_price
+            state.take_profit_price = event.take_profit_price
+            state.strategy_snapshot = event.strategy_snapshot
         signed_fill = event.quantity if event.side == "buy" else -event.quantity
         old_quantity = state.quantity
         old_abs = abs(old_quantity)
@@ -238,6 +250,10 @@ class PositionLedger:
             state.opened_at = None
             state.entry_commission = 0.0
             state.entry_tax = 0.0
+            state.entry_fill_price = None
+            state.stop_loss_price = None
+            state.take_profit_price = None
+            state.strategy_snapshot = None
         elif old_quantity * state.quantity < 0:
             remaining_ratio = (fill_abs - closing_quantity) / fill_abs
             state.average_price = event.price
