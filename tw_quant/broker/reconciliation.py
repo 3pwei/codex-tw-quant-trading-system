@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Callable, Protocol
+from typing import Callable, Protocol, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .truth import BrokerTruthStore
 
 from .manager import LiveOrderManager
 from .identity import BrokerAccountRef
@@ -107,6 +110,7 @@ class LiveReconciliationService:
         order_manager: LiveOrderManager,
         source: BrokerReconciliationSource,
         recovery_lock: RecoveryLockStore,
+        truth_store: BrokerTruthStore | None = None,
         now: Callable[[], datetime] | None = None,
     ):
         self.account_ref = account_ref
@@ -114,6 +118,7 @@ class LiveReconciliationService:
         self.order_manager = order_manager
         self.source = source
         self.recovery_lock = recovery_lock
+        self.truth_store = truth_store
         self.now = now or (lambda: datetime.now(timezone.utc))
 
     async def reconcile(self) -> ReconciliationReport:
@@ -127,6 +132,8 @@ class LiveReconciliationService:
             await self.order_manager.reconcile_broker_orders(self.account_ref)
             local_orders = self.order_store.orders(target=self.account_ref)
             snapshot = await self.source.reconciliation_snapshot()
+            if self.truth_store is not None and snapshot.account_ref == self.account_ref:
+                self.truth_store.save(self.account_ref, snapshot)
             issues = self._issues(local_orders, snapshot)
         except Exception as exc:
             captured_at = self.now()

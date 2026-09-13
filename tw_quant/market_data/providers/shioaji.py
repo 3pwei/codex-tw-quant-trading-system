@@ -3,8 +3,20 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta, timezone
 
-from ...market import TAIPEI, KBar, TickEvent, classify_tmf_session, minute_floor
-from ..ports import ProviderCapabilities, StatusCallback, TickCallback
+from ...market import (
+    TAIPEI,
+    ExecutionQuote,
+    KBar,
+    TickEvent,
+    classify_tmf_session,
+    minute_floor,
+)
+from ..ports import (
+    ExecutionQuoteCallback,
+    ProviderCapabilities,
+    StatusCallback,
+    TickCallback,
+)
 from .replay import parse_exchange_time
 
 
@@ -36,6 +48,13 @@ class ShioajiMarketDataProvider:
         self._on_tick: TickCallback | None = None
         self._on_status: StatusCallback | None = None
         self._connected = False
+        self._on_execution_quote: ExecutionQuoteCallback | None = None
+        self._last_price: float | None = None
+
+    def set_execution_quote_callback(
+        self, callback: ExecutionQuoteCallback
+    ) -> None:
+        self._on_execution_quote = callback
 
     async def start(self, on_tick: TickCallback, on_status: StatusCallback) -> None:
         self._loop = asyncio.get_running_loop()
@@ -87,6 +106,7 @@ class ShioajiMarketDataProvider:
                     sequence = str(value)
                     break
             try:
+                self._last_price = float(tick.close)
                 event = TickEvent(
                     symbol=self.symbol,
                     contract=tick.code or self.contract,
@@ -101,6 +121,30 @@ class ShioajiMarketDataProvider:
                 return
             self._loop.call_soon_threadsafe(self._on_tick, event)
 
+        def bidask_callback(_exchange, bidask) -> None:
+            # Hot path: extract the top of book, enqueue a memory update, return.
+            if self._loop is None or self._on_execution_quote is None:
+                return
+            exchange_time = bidask.datetime
+            if exchange_time.tzinfo is None:
+                exchange_time = exchange_time.replace(tzinfo=TAIPEI)
+            try:
+                bids = tuple(getattr(bidask, "bid_price", ()) or ())
+                asks = tuple(getattr(bidask, "ask_price", ()) or ())
+                quote = ExecutionQuote(
+                    symbol=self.symbol,
+                    contract=getattr(bidask, "code", None) or self.contract,
+                    best_bid=float(bids[0]) if bids and float(bids[0]) > 0 else None,
+                    best_ask=float(asks[0]) if asks and float(asks[0]) > 0 else None,
+                    last_price=self._last_price,
+                    exchange_time=exchange_time.astimezone(TAIPEI),
+                    received_at=datetime.now(TAIPEI),
+                    source=self.provider_name,
+                )
+            except (AttributeError, TypeError, ValueError):
+                return
+            self._loop.call_soon_threadsafe(self._on_execution_quote, quote)
+
         def event_callback(_resp_code: int, event_code: int, _info: str, _event: str):
             if event_code in {0, 13, 16}:
                 self._emit_status("connected")
@@ -110,10 +154,16 @@ class ShioajiMarketDataProvider:
                 self._emit_status("disconnected")
 
         self.api.quote.set_on_tick_fop_v1_callback(tick_callback)
+        self.api.quote.set_on_bidask_fop_v1_callback(bidask_callback)
         self.api.quote.set_event_callback(event_callback)
         self.api.quote.subscribe(
             contract,
             quote_type=sj.constant.QuoteType.Tick,
+            version=sj.constant.QuoteVersion.v1,
+        )
+        self.api.quote.subscribe(
+            contract,
+            quote_type=sj.constant.QuoteType.BidAsk,
             version=sj.constant.QuoteVersion.v1,
         )
         self._emit_status("connected")

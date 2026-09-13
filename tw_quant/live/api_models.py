@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from ..auth import AccountStatus, Role, TradingMode
 
@@ -17,13 +17,15 @@ class StrategyParametersUpdate(BaseModel):
 
 
 class TradingRuntimeCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     strategy_kind: Literal["atomic", "composite"] = "atomic"
     strategy_id: ShortIdentifier
     strategy_version: int | None = Field(default=None, ge=1)
     symbol: Annotated[str, Field(min_length=1, max_length=32)] = "TMF"
     interval: Annotated[str, Field(min_length=1, max_length=16)] = "1m"
     quantity: int = Field(default=1, ge=1, le=100)
-    mode: Literal["observe", "paper_auto"] = "observe"
+    mode: Literal["observe", "paper_auto", "live_shadow"] = "observe"
+    execution_target_id: Annotated[str, Field(max_length=80)] | None = None
 
 
 class CompositeStrategyUpdate(BaseModel):

@@ -15,6 +15,7 @@ Replay 與 Paper Trading；真實券商下單尚未啟用。架構調整採漸�
 | Paper | `POST /api/paper/orders` | 帳戶風控後，以伺服器行情模擬成交 | 不會連線 |
 | Shioaji Simulation | `ShioajiSimulationExecutionClient` | SDK 整合測試，尚未接 API／Worker | 模擬環境限定 |
 | Live read-only | execution worker + `BrokerRegistry` | Shioaji production account truth；per-account recovery | 只讀連線可明確啟用，寫入停用 |
+| Live Shadow | closed-bar Strategy Runtime | Live Risk + Execution Policy → shadow audit | 不呼叫 BrokerPort，不建立 live outbox |
 
 Strategy Runtime 提供 Observe Mode，以及預設 paused、必須明確 armed 的 Paper Auto
 Mode。Paper Auto entry 由 closed-bar durable Decision 經 market/account/permission/
@@ -180,6 +181,38 @@ callback overflow、未知 callback、stale snapshot 或任何 reconciliation is
 Public FastAPI 不載入 broker SDK 或 credential；它只從 read-only named volume 讀取
 execution worker 原子寫入的 health JSON，並再次 allowlist 欄位。`/settings/` 因此不會
 觸發 broker I/O。
+
+### Live Risk and Shadow Execution
+
+```mermaid
+flowchart TD
+    A["Broker-blind Decision"] --> B["Explicit BrokerAccountRef"]
+    B --> C["Account + Portfolio Risk"]
+    C --> D["ExecutionQuote + InstrumentSpec"]
+    D --> E["Broker-neutral Policy"]
+    E --> F["Shadow Store"]
+    F -. "never" .-> G["Live Outbox / BrokerPort"]
+```
+
+`LiveRiskConfig` 是 server-owned、具內容 hash version 的獨立模型，不沿用 Paper
+`AccountRiskConfig`。Risk 只讀 cached execution health、durable recovery state、最新
+broker reconciliation snapshot 與 live order ledger；不知道 Shioaji SDK。Owner 所有
+已授權 opaque target 都納入 canonical position aggregation，因此相同商品跨券商曝險會
+合併，同一帳戶 limit 仍獨立。任何 stale／unknown truth 都拒絕新增曝險。
+
+Shioaji quote-only adapter 的 Tick 與 BidAsk callback 分開；BidAsk 只正規化成
+`ExecutionQuote` 並更新 O(1) memory cache，缺 bid/ask 時絕不以 last price 偽造。
+`MarketableLimitIOCPolicy` 使用 `InstrumentSpec.tick_size`、spread/slippage limits 與
+target-specific capabilities；不支援 IOC/limit 時拒絕，沒有 order-type fallback。
+
+Shadow sink 與 live sink 在型別及 composition 上分離。`ShadowExecutionService` 以
+owner single-writer lock 加 durable short-lived reservation，避免兩個 Runtime 同時讀到
+舊曝險而都通過。結果與 reservation 存入獨立 shadow tables；runtime stop 清除
+reservation，schema 沒有 live outbox 外鍵或 trigger。Public target allowlist 只保存
+不可逆 `target_id`，不在 market-api env 複製 broker account ID 或 credentials。
+
+Kill Switch 使用 `global / owner / broker_account` scope 及 `HALT_ENTRY /
+CANCEL_WORKING / FLATTEN` action。本 PR 只做 Shadow 語意與 audit；不送撤單或平倉指令。
 
 ## 依賴方向
 

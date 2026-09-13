@@ -9,6 +9,7 @@ from ..market import (
     DEFAULT_CALENDAR,
     TAIPEI,
     ConnectionStatus,
+    ExecutionQuoteCache,
     KBar,
     TickEvent,
     TradingCalendar,
@@ -42,6 +43,7 @@ class LiveMarketService:
         self.history_limit = history_limit
         self.stale_after_seconds = stale_after_seconds
         self.queue: asyncio.Queue[TickEvent] = asyncio.Queue(maxsize=20_000)
+        self.execution_quotes = ExecutionQuoteCache()
         self.hub = BroadcastHub()
         self.aggregator = MinuteBarAggregator(symbol, calendar=calendar)
         self.connection_status: ConnectionStatus = "connecting"
@@ -68,6 +70,11 @@ class LiveMarketService:
         self._heartbeat: asyncio.Task | None = None
         self._running = False
         self._bar_listeners: list[Callable[[KBar], None]] = []
+        quote_registration = getattr(
+            self.market_data_provider, "set_execution_quote_callback", None
+        )
+        if callable(quote_registration):
+            quote_registration(self.execution_quotes.update)
 
     def add_bar_listener(self, listener: Callable[[KBar], None]) -> None:
         if listener not in self._bar_listeners:

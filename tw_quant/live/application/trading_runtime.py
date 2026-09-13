@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 from datetime import timedelta
-from typing import Callable, Mapping
+from typing import Callable, Mapping, Protocol
+
+from ...broker import BrokerAccountRef
 
 from ...market import (
     KBar,
@@ -23,6 +25,14 @@ from ..storage import (
     TradingRuntimeRepository,
 )
 from .errors import InvalidInputError, ResourceNotFoundError
+
+
+class ExecutionTargetCatalog(Protocol):
+    def resolve(self, public_id: str, owner_id: str) -> BrokerAccountRef: ...
+
+
+class RuntimeReservationStore(Protocol):
+    def release_runtime(self, runtime_id: str) -> int: ...
 
 
 def decision_fingerprint(
@@ -63,12 +73,19 @@ class TradingRuntimeApplicationService:
         market_repository: MarketRepository,
         symbol: str,
         history_limit: int = 5000,
+        *,
+        live_shadow_enabled: bool = False,
+        execution_targets: ExecutionTargetCatalog | None = None,
+        reservation_store: RuntimeReservationStore | None = None,
     ):
         self.runtime_repository = runtime_repository
         self.strategy_repository = strategy_repository
         self.market_repository = market_repository
         self.symbol = symbol
         self.history_limit = history_limit
+        self.live_shadow_enabled = live_shadow_enabled
+        self.execution_targets = execution_targets
+        self.reservation_store = reservation_store
         self._decision_listeners: list[
             Callable[[Mapping[str, object], Mapping[str, object], KBar], None]
         ] = []
@@ -89,8 +106,19 @@ class TradingRuntimeApplicationService:
         if kind not in {"atomic", "composite"}:
             raise InvalidInputError("strategy_kind must be atomic or composite")
         mode = str(request.get("mode", "observe")).lower()
-        if mode not in {"observe", "paper_auto"}:
-            raise InvalidInputError("mode must be observe or paper_auto")
+        if mode not in {"observe", "paper_auto", "live_shadow"}:
+            raise InvalidInputError("mode must be observe, paper_auto or live_shadow")
+        target: BrokerAccountRef | None = None
+        if mode == "live_shadow":
+            if not self.live_shadow_enabled or self.execution_targets is None:
+                raise InvalidInputError("live_shadow is disabled")
+            target_id = str(request.get("execution_target_id", "")).strip()
+            if not target_id:
+                raise InvalidInputError("live_shadow requires execution_target_id")
+            try:
+                target = self.execution_targets.resolve(target_id, owner_id)
+            except KeyError as exc:
+                raise InvalidInputError("unknown live shadow execution target") from exc
         symbol = str(request.get("symbol", self.symbol)).upper()
         if symbol != self.symbol:
             raise InvalidInputError("unsupported symbol")
@@ -150,7 +178,7 @@ class TradingRuntimeApplicationService:
             if latest
             else None
         )
-        return self.runtime_repository.create_trading_runtime({
+        stored = self.runtime_repository.create_trading_runtime({
             "owner_user_id": owner_id,
             "strategy_kind": kind,
             "strategy_id": strategy_id,
@@ -160,12 +188,29 @@ class TradingRuntimeApplicationService:
             "interval": interval,
             "quantity": quantity,
             "mode": mode,
+            "broker_name": target.broker_name if target else None,
+            "account_id": target.account_id if target else None,
             "last_evaluated_bar": initial_cursor,
         })
+        return self._public_runtime(stored)
+
+    @staticmethod
+    def _public_runtime(runtime: Mapping[str, object]) -> dict[str, object]:
+        result = dict(runtime)
+        account = result.pop("account_id", None)
+        broker = result.get("broker_name")
+        if account and broker:
+            target = BrokerAccountRef(str(broker), str(account))
+            result["execution_target_id"] = target.public_id
+            result["masked_account_id"] = "****" + target.account_id[-4:]
+        return result
 
     def list(self, owner_id: str) -> dict[str, object]:
         return {
-            "runtimes": self.runtime_repository.trading_runtimes(owner_id)
+            "runtimes": [
+                self._public_runtime(item)
+                for item in self.runtime_repository.trading_runtimes(owner_id)
+            ]
         }
 
     def get(self, runtime_id: str, owner_id: str) -> dict[str, object]:
@@ -174,7 +219,7 @@ class TradingRuntimeApplicationService:
         )
         if runtime is None:
             raise ResourceNotFoundError("trading runtime not found")
-        return runtime
+        return self._public_runtime(runtime)
 
     def stop(self, runtime_id: str, owner_id: str) -> dict[str, object]:
         runtime = self.runtime_repository.stop_trading_runtime(
@@ -182,7 +227,9 @@ class TradingRuntimeApplicationService:
         )
         if runtime is None:
             raise ResourceNotFoundError("trading runtime not found")
-        return runtime
+        if self.reservation_store is not None:
+            self.reservation_store.release_runtime(runtime_id)
+        return self._public_runtime(runtime)
 
     def arm(self, runtime_id: str, owner_id: str) -> dict[str, object]:
         runtime = self.get(runtime_id, owner_id)
@@ -208,7 +255,7 @@ class TradingRuntimeApplicationService:
             runtime_id, owner_id, "armed", str(cursor) if cursor else None
         )
         assert result is not None
-        return result
+        return self._public_runtime(result)
 
     def pause(self, runtime_id: str, owner_id: str) -> dict[str, object]:
         runtime = self.get(runtime_id, owner_id)
@@ -220,7 +267,7 @@ class TradingRuntimeApplicationService:
             runtime_id, owner_id, "paused"
         )
         assert result is not None
-        return result
+        return self._public_runtime(result)
 
     def decisions(
         self, runtime_id: str, owner_id: str, limit: int = 200
@@ -234,6 +281,9 @@ class TradingRuntimeApplicationService:
 
     def health(self) -> dict[str, object]:
         return self.runtime_repository.runtime_metrics()
+
+    def paper_shadow_metrics(self, owner_user_id: str) -> dict[str, int]:
+        return self.runtime_repository.paper_shadow_metrics(owner_user_id)
 
     @staticmethod
     def _completed_interval(bar: KBar, interval: str) -> bool:
@@ -375,7 +425,7 @@ class TradingRuntimeApplicationService:
             "execution_status": (
                 ("skipped" if stale_or_recovered else "pending")
                 if (
-                    runtime["mode"] == "paper_auto"
+                    runtime["mode"] in {"paper_auto", "live_shadow"}
                     and intent["action"] in {"entry", "exit"}
                 )
                 else "not_applicable"
@@ -383,7 +433,7 @@ class TradingRuntimeApplicationService:
             "execution_reason": (
                 "stale_or_recovered_signal"
                 if stale_or_recovered
-                and runtime["mode"] == "paper_auto"
+                and runtime["mode"] in {"paper_auto", "live_shadow"}
                 and intent["action"] in {"entry", "exit"}
                 else None
             ),

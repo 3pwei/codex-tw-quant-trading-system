@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 
 
 _ACCOUNT_HEALTH_FIELDS = frozenset({
-    "broker_name", "masked_account_id", "status", "client_state",
+    "broker_name", "target_id", "masked_account_id", "status", "client_state",
     "broker_connected", "ca_ready", "read_only", "callback_registered",
     "ordering_enabled", "locked",
     "recovery_status", "recovery_generation", "issue_codes", "started_at",

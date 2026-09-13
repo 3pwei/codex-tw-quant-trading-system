@@ -455,6 +455,7 @@ class BrokerAccountWorker:
         )
         return {
             "broker_name": self.account_ref.broker_name,
+            "target_id": self.account_ref.public_id,
             "masked_account_id": "****" + self.account_ref.account_id[-4:],
             "status": self.state,
             "client_state": str(health.get("execution_state") or "disconnected"),

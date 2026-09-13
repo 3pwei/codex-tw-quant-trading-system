@@ -18,11 +18,11 @@
 | 週期 | `1m`、`5m`、`10m`、`15m`、`30m`、`1h`、`1d`、`1w`，共用同一份 1 分 K 資料 |
 | 策略 | 14 套基本策略（含三種共用 Dow Channel 結構的進場邏輯）、多週期 Setup／Entry／Exit／Risk、ALL／ANY、三層組合策略引用 |
 | 版本 | 不可變版本、參數快照、名稱唯一、封存、引用保護及回測追溯 |
-| 執行 | Backtest／Replay／Paper 共用事件語意；Live foundation 提供 durable outbox、callback audit、Recovery Lock、三方對帳與 Execution Worker |
-| 風控 | 帳戶與資料隔離、Paper Auto recovery lock／gap recheck／managed exit、部位與每日限制、連敗冷卻、Kill Switch |
+| 執行 | Backtest／Replay／Paper 共用事件語意；Live foundation 提供 durable outbox、callback audit、Recovery Lock、三方對帳、Execution Worker 與 Live Shadow |
+| 風控 | Paper 與 Live policy 分離；Live Shadow 依 broker truth 做 account／owner portfolio limits、quote／session／expiry／capability gates |
 | 平台 | Cloudflare OTP、FastAPI RBAC、申請與審核、Rate Limit、Request Size Limit、稽核紀錄 |
 | 穩定性 | 重啟復原、SQLite verified backup、Queue／WebSocket／DB／主機監控、五種服務狀態 |
-| UI | `/trade/` 整合 Observe／Manual Paper／Paper Auto、即時圖表與操作控制；Backtest／History／Replay 提供策略診斷；手機具防誤觸控制 |
+| UI | `/trade/` 整合 Observe／Manual Paper／Paper Auto 與只讀 Live Shadow 結果；沒有任何 Live 操作按鈕 |
 | 部署 | Docker、Caddy、AWS Lightsail、GitHub Actions、Python 套件鎖定 |
 
 Level 2 工程能力已實作；每個正式候選版本仍須依 [Level 2 完成標準](docs/level2-definition-of-done.md) 留存四小時 soak 與人工驗收證據。Live execution foundation 已具備可測試的 simulation 與 production read-only 組裝邊界。read-only 模式只在獨立 execution worker 載入 CA、登入、讀取帳戶真相及接收 callback；Registry 只允許 read/refresh，而永久 admission gate 與 client 本身拒絕所有寫入。本平台不宣稱具備可用的實盤下單或 HFT 能力。
@@ -91,6 +91,21 @@ flowchart TD
 不載入 execution CA。獨立 execution worker 可選擇建立 production read-only client，
 但 Registry、admission gate 與 client write methods 都維持 locked；即使 Runtime 顯示
 `PAPER AUTO · ARMED`，所有委託也只會進入平台的 Simulated Broker。
+
+## Live Shadow
+
+`live_shadow` Runtime 保存 immutable strategy snapshot 與明確的 opaque execution target。
+每個 closed-bar decision 只在本機記憶體與 SQLite 上完成：reconciled broker positions、
+working orders、owner 跨券商曝險、server-owned Live limits、真實 BidAsk、合約規格與
+`BrokerCapabilities` 共同決定 marketable-limit IOC request 是否「would submit」。
+
+Live Shadow 與 Live Trading 是不同 code path。`ShadowExecutionService` 只接受
+`ShadowExecutionStore`，composition 不注入 `LiveOrderManager`、`BrokerPort` 或 live
+outbox。結果依 decision、broker/account 與 policy version 冪等保存；UI 只顯示遮罩帳號，
+也沒有 ARM／BUY／SELL／CANCEL／FLATTEN Live 控制。Production 預設
+`LIVE_SHADOW_ENABLED=false`，即使明確啟用，real submit/cancel 與 live outbox 仍為零。
+
+人工驗收見 [Live Shadow Acceptance](docs/live-shadow-acceptance.md)。
 
 Dow Channel 策略共用同一套 confirmed pivot、ATR、HH／HL、LH／LL 與平行軌道偵測；`Dow Channel Pullback` 在邊界測試後收回時順勢進場，`Dow Channel Reversal` 在反向突破趨勢軌道時反向進場，`Dow Channel Momentum` 則沿既有趨勢突破外側軌道。既有 key `linear_channel_breakout` 保留為 Momentum 的 canonical key，確保歷史回測、參數快照及組合策略引用持續有效。
 
