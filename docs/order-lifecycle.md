@@ -1,7 +1,8 @@
 # 訂單生命週期
 
-> Production real order execution is still disabled. Public Application 與
-> Dedicated Execution Service 的 process、secret、network 邊界見
+> Production 預設 real order execution disabled。只有另行啟用並由人工限時 ARM 的
+> Manual Live Canary 能建立一口 allowlisted 真實委託；Strategy Auto Live 仍不存在。
+> Public Application 與 Dedicated Execution Service 的 process、secret、network 邊界見
 > [Live Execution Security Boundary](live-execution-security-boundary.md)。
 
 本文件區分研究訊號、Paper 委託與未來 Live 委託，避免將 signal、order 與 fill
@@ -87,10 +88,10 @@ Simulation client 只會以 `Shioaji(simulation=True)` 登入，支援模擬期�
 `simulation=False` 登入、精確選取 allowlisted account、啟用 CA、讀取 orders/deals/
 positions 並接收 callback，但只提供 broker truth。
 
-正式站仍由 target-scoped locked Registry 與永久拒絕的 admission gate 阻止 dispatch；
-production client 的 `submit`、`cancel`、`replace` 也會在 SDK 呼叫前直接拋出 read-only
-錯誤。Simulation client 是整合測試邊界，production read-only connection 也不代表已
-啟用 Paper 或 Live 自動下單。
+一般正式站仍由 target-scoped locked Registry 與 read-only admission gate 阻止
+dispatch；production client 的 `submit`、`cancel`、`replace` 會在 SDK 呼叫前拒絕。
+只有明確 canary composition 能開啟受限 submit/cancel；Simulation client 是整合測試
+邊界，而 read-only connection 不代表已啟用任何真實下單。
 
 送單前，Live 使用
 `RoutedBrokerOrderRequest(BrokerAccountRef, BrokerOrderRequest)`，避免修改 Paper
@@ -206,8 +207,9 @@ Paper API 保留舊的 `status` 以維持相容，並額外回傳 `lifecycle_sta
    `(broker_name, account_id)` allowlist；Shioaji 是目前唯一 adapter implementation，
    任一缺失都維持 fail closed。
 10. Simulation 與 Production 使用不同 client 組裝路徑；production read-only client
-    已完成 CA、精確交易帳號驗證及 Live Shadow risk/policy，但 submit/cancel 與操作人員
-    解鎖仍未實作，不得因 read-only ready 或 would-submit 而視為可交易。
+    已完成 CA、精確交易帳號驗證及 Live Shadow risk/policy。Manual Canary submit/cancel
+    只在另一個明確 opt-in composition 中存在，不得因 read-only ready 或 would-submit
+    而視為可交易。
 
 ## Live Read-Only Recovery Lifecycle
 
@@ -240,7 +242,7 @@ Timeout 或 disconnect 會建立更新的 locked generation；因此被取消或
 
 ## 尚未完成的實盤能力
 
-- Live Shadow 與 LiveOrderManager Worker 的正式串接（目前刻意不存在）。
+- Strategy Auto Live 與 Strategy Runtime 到 Real Execution Sink 的串接（刻意不存在）。
 - callback audit retention policy 與外部告警通知。
 - 三方對帳的人工 mismatch resolution 介面。
 - 本地 Position Ledger 與券商部位差異的自動停機及人工解除流程。
@@ -249,3 +251,21 @@ Timeout 或 disconnect 會建立更新的 locked generation；因此被取消或
 - 第二家 production broker adapter 與多帳戶排程的 production soak。
 - 可靠的 Live realized-PnL ledger；有真實成交但無可驗證 PnL 時，Shadow entry 會拒絕。
 - UNKNOWN 無 broker order ID 的營運對帳介面；完成前不得自動重送。
+
+## Manual Live Canary lifecycle
+
+```text
+RISK_APPROVED (order + submit outbox committed)
+  -> SUBMITTING -> ACCEPTED -> PARTIALLY_FILLED -> FILLED
+                           \-> CANCEL_PENDING -> CANCELLED
+  -> REJECTED / EXPIRED
+  -> UNKNOWN (ambiguous result; outbox BLOCKED; never auto-retry)
+```
+
+Cancel intent 也必須先 commit 到獨立 cancel outbox。`CANCEL_PENDING` 不是最終 truth；
+cancel/fill race 由 callback、refresh 與 reconciliation 決定，broker truth 為 FILLED 時
+不得被 UI cancel response 覆蓋。沒有 broker order ID 的 UNKNOWN 不使用 side、price、
+quantity 或近似時間猜測。
+
+只有 `source=manual_live_canary` 且 target-scoped ARM 仍有效的 request 可進入真實 sink。
+`live_shadow`、Paper 與 strategy decision 即使 request shape 合法也會被拒絕。

@@ -65,6 +65,15 @@ class LiveSettings:
     live_shadow_expiry_guard_days: int
     live_shadow_max_active_runtimes: int
     live_shadow_owner_targets_json: str
+    live_canary_enabled: bool
+    live_canary_owner_id: str
+    live_canary_target_id: str
+    live_canary_allowed_symbols: frozenset[str]
+    live_canary_allowed_contracts: frozenset[str]
+    live_canary_max_quantity: int
+    live_canary_arm_ttl_seconds: int
+    live_canary_protective_stop_ticks: int
+    live_canary_requests_per_minute: int
 
     def __init__(
         self,
@@ -107,6 +116,15 @@ class LiveSettings:
         live_shadow_expiry_guard_days: int = 2,
         live_shadow_max_active_runtimes: int = 1,
         live_shadow_owner_targets_json: str = "{}",
+        live_canary_enabled: bool = False,
+        live_canary_owner_id: str = "",
+        live_canary_target_id: str = "",
+        live_canary_allowed_symbols: frozenset[str] = frozenset(),
+        live_canary_allowed_contracts: frozenset[str] = frozenset(),
+        live_canary_max_quantity: int = 1,
+        live_canary_arm_ttl_seconds: int = 600,
+        live_canary_protective_stop_ticks: int = 20,
+        live_canary_requests_per_minute: int = 4,
         # Compatibility inputs from the pre-provider settings model.
         mode: str | None = None,
         symbol: str | None = None,
@@ -199,6 +217,15 @@ class LiveSettings:
             ("live_shadow_expiry_guard_days", live_shadow_expiry_guard_days),
             ("live_shadow_max_active_runtimes", live_shadow_max_active_runtimes),
             ("live_shadow_owner_targets_json", live_shadow_owner_targets_json),
+            ("live_canary_enabled", live_canary_enabled),
+            ("live_canary_owner_id", live_canary_owner_id),
+            ("live_canary_target_id", live_canary_target_id),
+            ("live_canary_allowed_symbols", live_canary_allowed_symbols),
+            ("live_canary_allowed_contracts", live_canary_allowed_contracts),
+            ("live_canary_max_quantity", live_canary_max_quantity),
+            ("live_canary_arm_ttl_seconds", live_canary_arm_ttl_seconds),
+            ("live_canary_protective_stop_ticks", live_canary_protective_stop_ticks),
+            ("live_canary_requests_per_minute", live_canary_requests_per_minute),
         ):
             object.__setattr__(self, name, value)
 
@@ -290,6 +317,15 @@ class LiveSettings:
             live_shadow_owner_targets_json=os.getenv(
                 "LIVE_SHADOW_OWNER_TARGETS_JSON", "{}"
             ).strip(),
+            live_canary_enabled=os.getenv("LIVE_CANARY_ENABLED", "false").lower() in {"1", "true", "yes", "on"},
+            live_canary_owner_id=os.getenv("LIVE_CANARY_ALLOWED_OWNER_ID", "").strip(),
+            live_canary_target_id=os.getenv("LIVE_CANARY_TARGET_ID", "").strip(),
+            live_canary_allowed_symbols=split("LIVE_CANARY_ALLOWED_SYMBOLS"),
+            live_canary_allowed_contracts=split("LIVE_CANARY_ALLOWED_CONTRACTS"),
+            live_canary_max_quantity=int(os.getenv("LIVE_CANARY_MAX_QUANTITY", "1")),
+            live_canary_arm_ttl_seconds=int(os.getenv("LIVE_CANARY_ARM_TTL_SECONDS", "600")),
+            live_canary_protective_stop_ticks=int(os.getenv("LIVE_CANARY_PROTECTIVE_STOP_TICKS", "20")),
+            live_canary_requests_per_minute=int(os.getenv("LIVE_ORDER_REQUESTS_PER_MINUTE", "4")),
         )
 
     def validate(self) -> None:
@@ -352,6 +388,29 @@ class LiveSettings:
                 raise ValueError(
                     "LIVE_SHADOW_OWNER_TARGETS_JSON must map owners to opaque target IDs"
                 )
+        if self.live_canary_enabled:
+            if not self.authorization_mode == "enforced":
+                raise ValueError("live canary requires enforced authorization")
+            if not self.live_canary_owner_id:
+                raise ValueError("live canary requires one allowed owner")
+            if not re.fullmatch(r"target:[0-9a-f]{24}", self.live_canary_target_id):
+                raise ValueError("live canary requires one opaque target ID")
+            if (
+                len(self.live_canary_allowed_symbols) != 1
+                or len(self.live_canary_allowed_contracts) != 1
+                or self.live_canary_max_quantity != 1
+            ):
+                raise ValueError(
+                    "live canary requires one symbol, one contract, and max quantity 1"
+                )
+            if not 300 <= self.live_canary_arm_ttl_seconds <= 900:
+                raise ValueError("live canary ARM TTL must be 5-15 minutes")
+            if self.live_canary_protective_stop_ticks < 1:
+                raise ValueError("live canary protective stop ticks must be positive")
+            if not 1 <= self.live_canary_requests_per_minute <= 10:
+                raise ValueError("live canary rate limit must be 1-10")
+            if self.live_shadow_contract_expiry is None:
+                raise ValueError("live canary requires canonical contract expiry")
         if self.access_mode not in {"disabled", "cloudflare"}:
             raise ValueError("MARKET_ACCESS_MODE must be disabled or cloudflare")
         if self.access_mode == "cloudflare" and not (

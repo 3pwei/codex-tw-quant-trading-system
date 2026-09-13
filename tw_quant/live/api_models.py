@@ -86,3 +86,27 @@ class PaperOrderCreate(BaseModel):
 
 class PaperControlRequest(BaseModel):
     reason: Annotated[str, Field(min_length=1, max_length=500)]
+
+
+class LiveCanaryArmRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    confirmation: Annotated[str, Field(min_length=1, max_length=80)]
+
+
+class ManualLiveOrderCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    side: Literal["buy", "sell"]
+    quantity: int = Field(default=1, ge=1, le=1)
+    confirmation: Annotated[str, Field(min_length=1, max_length=120)]
+
+
+class LiveCanaryActionConfirmation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    confirmation: Literal["REAL ORDER"]
+
+
+class LiveCanaryKillSwitchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    action: Literal["halt_entry", "cancel_working"]
+    reason: Annotated[str, Field(min_length=3, max_length=500)]
+    confirmation: Literal["REAL ORDER"]
