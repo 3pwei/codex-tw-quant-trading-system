@@ -39,7 +39,7 @@ services:
       - ${EXECUTION_SECRETS_DIR:-/opt/tw-quant/secrets}:/run/live-secrets:ro
       - execution-health:/run/tw-quant-execution
     networks:
-      - execution-internal
+      - execution-egress
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-m", "tw_quant.execution_service", "healthcheck"]
@@ -74,5 +74,6 @@ volumes:
   execution-health:
 
 networks:
-  execution-internal:
-    internal: true
+  # Dedicated network: outbound broker TLS is allowed, but no public port and
+  # no network is shared with gateway or market-api.
+  execution-egress:

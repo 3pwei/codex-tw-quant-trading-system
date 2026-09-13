@@ -1,8 +1,9 @@
 # Automated Paper Trading Production Acceptance
 
 本程序驗證 `/trade/` 的 Paper Auto 操作與復原可靠性。Automated Paper Trading 不等於
-Live Trading；production 必須保持 Shioaji quote-only、CA 未載入、真實 order client
-未建立，以及 `DisabledExecutionWorker`。
+Live Trading；Public Application 必須保持 Shioaji quote-only。獨立 execution worker
+即使明確啟用 production read-only connection，Registry 與 admission 仍 locked，且
+submit/cancel/replace call count 必須為零。
 
 ## 前置條件
 

@@ -1,8 +1,9 @@
 # Live Execution Security Boundary
 
 Production real order execution is still disabled. This boundary separates the
-public application from future broker credentials and execution I/O; it does not
-authorize, expose, or implement a real-order workflow.
+public application from broker credentials and execution I/O. The isolated worker
+may establish an explicitly enabled Shioaji production read-only connection, but
+it does not authorize or expose a real-order workflow.
 
 ## Process boundary
 
@@ -10,17 +11,18 @@ authorize, expose, or implement a real-order workflow.
 flowchart TD
     A["Public Application<br/>Dashboard · FastAPI · Market Data<br/>Strategy · Backtest · Replay · Paper Auto"]
     A -->|"durable live intent<br/>not exposed in this PR"| B["Shared SQLite + WAL<br/>Live orders · outbox · recovery"]
-    B --> C["Dedicated Execution Service<br/>Locked Disabled Worker"]
+    B --> C["Dedicated Execution Service<br/>Locked / Optional Read-Only"]
     C --> D["BrokerPort"]
-    D -.->|"first adapter; production submit absent"| E["Shioaji"]
+    D -->|"first adapter; read-only"| E["Shioaji"]
     D -.->|"architecture only"| F["Future Broker"]
 ```
 
 The `execution-worker` container has no HTTP server, host port, Compose
 `expose`, Caddy route, Cloudflare route, or browser endpoint. It runs on an
-internal-only Docker network in this phase, so it also has no external broker
-network path. Market tick callbacks and FastAPI's event loop do not run this
-process or its future SDK I/O.
+dedicated Docker network not shared with gateway or market-api. That network permits
+outbound broker TLS required for read-only login but provides no inbound/public
+route. Market tick callbacks and FastAPI's event loop do not run this process or
+its SDK I/O.
 
 ## Secret ownership
 
@@ -53,9 +55,9 @@ application does not. The temporary `CA_CERT_PATH` / `CA_PASSWORD` names from
 the first local revision remain accepted as compatibility aliases, while new
 configuration uses `SJ_CA_CERT_PATH` / `SJ_CA_PASSWORD`.
 
-This release composes one connection only. The health collection model can
-represent more than one connection, but BrokerRegistry, routing, capabilities,
-multi-account scheduling and a second adapter are explicitly deferred.
+This release composes one connection only. The health collection model and
+BrokerRegistry can represent multiple connections, but multi-account scheduling
+and a second production adapter are explicitly deferred.
 
 Account IDs are serialized as `****1234`. API keys, secret keys, CA passwords,
 full CA paths, raw login payloads, and full account credentials must never be
@@ -74,9 +76,9 @@ known secret values before a record is emitted.
 
 The final gate is deliberate for this release. Therefore even a complete
 configuration with `BROKER_PROVIDER=shioaji` and `LIVE_TRADING_ENABLED=true`
-produces zero external order calls. The composition root registers a
-target-scoped `LockedBroker` and uses `DisabledExecutionWorker`; it does not
-construct a production Shioaji client.
+produces zero external order calls. With `LIVE_BROKER_READ_ONLY_ENABLED=true`,
+the composition root may construct a production Shioaji client, but its Registry
+registration stays locked and the client rejects submit/cancel/replace before SDK I/O.
 
 Live activation will require a separate reviewed PR to replace only the final
 gate and disabled adapter after Live Risk, ARM/Kill Switch, protective-order,
@@ -103,17 +105,18 @@ blocked. Restart never substitutes the current default broker.
 
 Registry, capabilities, and instrument mapping remain inside the isolated
 execution boundary. They do not move credentials, SDKs, or routing choices into
-the Public Application. Production continues to register only a locked terminal
-broker runtime and performs zero external order calls.
-Durable Live fill and position projections remain future work with real account
-and callback integration; this PR does not invent them or infer broker state.
+the Public Application. Production continues to register a locked runtime and
+performs zero external write calls. Durable Live fill and position projections
+remain future work; callback evidence does not directly mutate either.
 
 ## Fail-closed outcomes
 
 The service is `disabled` when the provider or feature flag is disabled and
 `locked` for unknown provider, missing/invalid secrets, bad confirmation,
 non-allowlisted account, invalid configuration, Recovery Lock, or the permanent
-`production_submit_not_implemented` gate. Locked is a healthy process state:
+`production_submit_disabled` gate. A read-only connection additionally locks on
+login, account identity, allowlist, CA, callback registration, or normalization
+failure. Locked is a healthy process state:
 container health proves the isolated process is alive, not that ordering is
 enabled.
 
@@ -121,11 +124,17 @@ enabled.
 
 1. Copy `execution.env.example` to
    `/opt/tw-quant/config/execution.env`, mode `0600`.
-2. Create `/opt/tw-quant/secrets`, owned by the deployment administrator. Do
-   not place a CA there for this disabled phase.
+2. Create `/opt/tw-quant/secrets`, owned by the deployment administrator. Keep
+   the CA file mode at `0600`; only the execution container mounts it read-only.
 3. Migrate quote credentials in `market.env` from legacy `SJ_API_KEY` /
    `SJ_SEC_KEY` to `MARKET_SJ_API_KEY` / `MARKET_SJ_SECRET_KEY`.
-4. Keep `BROKER_PROVIDER=disabled` and `LIVE_TRADING_ENABLED=false`.
+4. Keep `LIVE_TRADING_ENABLED=false`. Default remains `BROKER_PROVIDER=disabled`.
+   To opt into reads only, set `BROKER_PROVIDER=shioaji`,
+   `LIVE_BROKER_READ_ONLY_ENABLED=true`, and
+   `LIVE_BROKER_READ_ONLY_CONFIRMATION=I_UNDERSTAND_PRODUCTION_READ_ONLY`.
+   Also provide `LIVE_BROKER_INSTRUMENT_MAP_JSON` as a non-empty JSON list of
+   `{symbol, contract, broker_contract}` records. Missing or invalid mapping locks
+   the connection before SDK login; unknown instruments never use identity fallback.
 5. Deployment builds both image targets, validates the locked execution config,
    starts the worker, checks container health, and rejects any published port.
 

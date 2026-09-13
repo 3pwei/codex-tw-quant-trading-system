@@ -6,7 +6,8 @@
 
 > 本專案僅供研究與工程驗證，不構成投資建議。目前不會向外部券商送出真實委託。
 > Production 已建立獨立的 Live Execution Security Boundary，但 execution service
-> 固定 locked，沒有 production client 或 broker submit path。
+> 固定 locked。Shioaji production read-only connection 可由 execution container 明確
+> 啟用；所有 submit、cancel、replace path 仍由平台拒絕。
 
 ## 核心能力
 
@@ -23,7 +24,7 @@
 | UI | `/trade/` 整合 Observe／Manual Paper／Paper Auto、即時圖表與操作控制；Backtest／History／Replay 提供策略診斷；手機具防誤觸控制 |
 | 部署 | Docker、Caddy、AWS Lightsail、GitHub Actions、Python 套件鎖定 |
 
-Level 2 工程能力已實作；每個正式候選版本仍須依 [Level 2 完成標準](docs/level2-definition-of-done.md) 留存四小時 soak 與人工驗收證據。Live execution foundation 已具備可測試的 simulation 組裝邊界，但 production 固定使用 `DisabledExecutionWorker`，不載入 CA、不建立真實下單 client，也不接受 HTTP 真實委託。本平台不宣稱具備可用的實盤券商整合或 HFT 能力。
+Level 2 工程能力已實作；每個正式候選版本仍須依 [Level 2 完成標準](docs/level2-definition-of-done.md) 留存四小時 soak 與人工驗收證據。Live execution foundation 已具備可測試的 simulation 與 production read-only 組裝邊界。read-only 模式只在獨立 execution worker 載入 CA、登入、讀取帳戶真相及接收 callback；Registry 仍 locked，且 client 本身拒絕所有寫入。本平台不宣稱具備可用的實盤下單或 HFT 能力。
 
 ## 系統架構
 
@@ -40,8 +41,9 @@ flowchart TD
     I --> J["Execution Target<br/>BrokerAccountRef"]
     J --> K["Broker Registry"]
     K --> L["Broker Account Runtime"]
-    L --> M["BrokerPort · Locked"]
-    M -.-> N["Shioaji 或 Future Adapter<br/>No Production Submit"]
+    L --> M["BrokerPort · Registry Locked"]
+    M --> N["Shioaji Production Read-Only<br/>Login · CA · Broker Truth"]
+    M -.-> O["Future Adapter"]
 ```
 
 - 行情 Provider 與 Broker／Order Executor 是獨立邊界；production 行情只讀取
@@ -59,6 +61,10 @@ flowchart TD
   分別宣告 `BrokerCapabilities` 與 `BrokerInstrumentMapper`，Strategy 與 Risk
   不依賴 adapter 類別或券商能力。
 - 券商 orders、fills、positions 全部一致才允許 worker 進入 ready；production 目前保持 disabled／locked。
+- Shioaji production client 與 simulation client 是不同 class 與 lifecycle；read-only
+  SDK I/O 由單一 async lock 序列化後送入 worker thread，health 只讀 cached state。
+- production callback 只保留 allowlisted routing 欄位並投入 bounded queue；滿載時丟棄、
+  記錄 degraded metrics，不能寫 DB 或直接改變 Position。
 
 ## Systematic Paper Trading
 
@@ -77,8 +83,9 @@ flowchart TD
     E --> F["Paper Position"]
 ```
 
-**Automated Paper Trading ≠ Live Trading。** Production 仍為 Shioaji quote-only，不載入
-CA、不建立真實 order client，且固定使用 `DisabledExecutionWorker`；即使 Runtime 顯示
+**Automated Paper Trading ≠ Live Trading。** Public Application 仍為 Shioaji quote-only，
+不載入 execution CA。獨立 execution worker 可選擇建立 production read-only client，
+但 Registry、admission gate 與 client write methods 都維持 locked；即使 Runtime 顯示
 `PAPER AUTO · ARMED`，所有委託也只會進入平台的 Simulated Broker。
 
 Dow Channel 策略共用同一套 confirmed pivot、ATR、HH／HL、LH／LL 與平行軌道偵測；`Dow Channel Pullback` 在邊界測試後收回時順勢進場，`Dow Channel Reversal` 在反向突破趨勢軌道時反向進場，`Dow Channel Momentum` 則沿既有趨勢突破外側軌道。既有 key `linear_channel_breakout` 保留為 Momentum 的 canonical key，確保歷史回測、參數快照及組合策略引用持續有效。
@@ -290,7 +297,7 @@ TMF 研究預設成本：契約乘數每點 NT$10、每邊手續費 NT$10、交�
 
 ## 已知限制與 Roadmap
 
-目前限制：單一 TMF 商品、單機 SQLite、不含完整委託簿與實盤部分成交流程，也不處理漲跌停／暫緩撮合。Multi-Broker routing foundation 已完成，但沒有第二家 production adapter，正式環境仍停用；尚未具備 production Shioaji client、CA／金鑰生命週期、原生保護委託／OCO、人工 mismatch／UNKNOWN 處理介面及完整營運解鎖流程。
+目前限制：單一 TMF 商品、單機 SQLite、不含完整委託簿與實盤部分成交流程，也不處理漲跌停／暫緩撮合。Multi-Broker routing foundation 與第一個 Shioaji production read-only adapter 已完成，但沒有第二家 production adapter；尚未具備 periodic reconciliation、CA／金鑰輪替、原生保護委託／OCO、人工 mismatch／UNKNOWN 處理介面及完整營運解鎖流程。
 
 下一階段優先順序：
 
