@@ -229,6 +229,12 @@ class ExecutionSecurityBoundaryTests(unittest.IsolatedAsyncioTestCase):
                     "enabled",
                     "locked",
                     "recovery_status",
+                    "connected",
+                    "ca_ready",
+                    "read_only",
+                    "callback_registered",
+                    "last_broker_read_time",
+                    "last_callback_time",
                 },
             )
             payload = json.dumps(health)

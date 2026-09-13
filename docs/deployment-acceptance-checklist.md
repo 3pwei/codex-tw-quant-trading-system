@@ -15,11 +15,11 @@
 - [ ] Deploy verify 的完整 Python 測試通過。
 - [ ] Dashboard `npm ci`、lint、build 通過。
 - [ ] `market-api` 與 `execution-worker` 為 healthy，gateway 為 running；execution
-      狀態仍為 disabled/locked。
-- [ ] `execution-worker` 沒有 published port、Caddy route、production Shioaji
-      client 或 external broker call。
+      狀態為 disabled/locked，或明確核准的 `read_only_ready` 且仍 locked。
+- [ ] `execution-worker` 沒有 published port 或 Caddy route；若啟用 Shioaji
+      read-only，只出現 login/read/callback，submit/cancel/replace call count 皆為零。
 - [ ] execution health 只顯示 broker name、masked account、locked/recovery state，
-      未輸出 secret ref、credential 或完整 account ID。
+      cached connection/CA/callback state，未輸出 secret ref、credential、CA path 或完整 account ID。
 - [ ] `market-api`、gateway 均未取得 live broker env 或掛載 CA；execution env 與
       secrets 目錄權限已核對。
 - [ ] 公開 `/healthz` 跟隨轉址後仍是 HTTP 200，本文完全等於 `ok`。

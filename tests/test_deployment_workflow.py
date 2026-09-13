@@ -48,7 +48,7 @@ class DeploymentWorkflowTests(unittest.TestCase):
         )[0]
         self.assertNotIn("ports:", execution)
         self.assertNotIn("expose:", execution)
-        self.assertIn("execution-internal", execution)
+        self.assertIn("execution-egress", execution)
         self.assertNotIn("execution-worker", caddy)
         self.assertIn("--target execution-worker", workflow)
         self.assertIn("tw_quant.execution_service validate", script)

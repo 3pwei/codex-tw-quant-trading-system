@@ -78,16 +78,19 @@ planned stop，或重新估算的單筆風險超限，Order 會在 Fill 前以
 風險核准及圖表顯示。Paper Auto managed exit 是平台內的 closed-bar simulated policy，
 不是外部券商原生 Protective Order／OCO；服務中斷期間不會在券商端獨立保護部位。
 
-### Shioaji Simulation 與 Live
+### Shioaji Simulation 與 Production Read-Only
 
 Live execution foundation 已包含型別化 `BrokerPort`、不可變訂單狀態、SQLite
 order/outbox、`LiveOrderManager`、`ShioajiBrokerAdapter` 與 simulation-only SDK client。
-SDK client 只會以 `Shioaji(simulation=True)` 登入，支援期貨市價／限價送單、撤單、
-委託查詢與部位快照；不載入 CA，也沒有 production 建構路徑。
+Simulation client 只會以 `Shioaji(simulation=True)` 登入，支援模擬期貨市價／限價送單、
+撤單、委託查詢與部位快照；不載入 CA。Production 使用另一個獨立 client，明確以
+`simulation=False` 登入、精確選取 allowlisted account、啟用 CA、讀取 orders/deals/
+positions 並接收 callback，但只提供 broker truth。
 
-這些元件尚未接入 API 或啟用中的背景 Worker，因此正式站仍由 target-scoped
-`LockedBroker` 拒絕所有外部
-送單。Simulation client 是整合測試邊界，不代表正式站已啟用 Paper 或 Live 自動下單。
+正式站仍由 target-scoped locked Registry 與永久拒絕的 admission gate 阻止 dispatch；
+production client 的 `submit`、`cancel`、`replace` 也會在 SDK 呼叫前直接拋出 read-only
+錯誤。Simulation client 是整合測試邊界，production read-only connection 也不代表已
+啟用 Paper 或 Live 自動下單。
 
 送單前，Live 使用
 `RoutedBrokerOrderRequest(BrokerAccountRef, BrokerOrderRequest)`，避免修改 Paper
@@ -128,8 +131,9 @@ Recovery Lock、callback audit、broker-order lookup 與對帳 service 都以
 broker 時仍是不同 identity。Callback 沒有 account identity 時只會進 audit 並標為
 unmatched，不能觸發任何 order refresh。
 
-目前 Recovery Lock、對帳 service 與 Shioaji simulation snapshot 已具備可測試的組裝
-邊界，但正式站尚未啟動 execution worker，因此不會進行外部送單。
+目前 Recovery Lock、對帳 service 與 Shioaji production read-only snapshot 已具備可測試
+的組裝邊界；periodic reconciliation 與 Recovery unlock automation 尚未組裝。execution
+worker 即使連線成功也只會讀取，不會進行外部送單或撤單。
 
 Shioaji 期貨委託目前沒有採用已驗證、可持久化的 client order ID 欄位。因此若送單
 逾時且尚未取得 `broker_order_id`，系統會保持 `UNKNOWN` 並要求人工核對，不會以價格、
@@ -181,9 +185,9 @@ Paper API 保留舊的 `status` 以維持相容，並額外回傳 `lifecycle_sta
 9. 啟用任何 live adapter 必須同時滿足 provider implementation、enable flag、確認字串與
    `(broker_name, account_id)` allowlist；Shioaji 是目前唯一 adapter implementation，
    任一缺失都維持 fail closed。
-10. Simulation 與 Production 使用不同 client 組裝路徑；未來 production client 必須
-    另外完成 CA、交易帳號、權限、Kill Switch 與操作人員解鎖，不得替換 simulation
-    旗標後直接沿用。
+10. Simulation 與 Production 使用不同 client 組裝路徑；production read-only client
+    已完成 CA 與精確交易帳號驗證，但 submit/cancel、Live Risk、Kill Switch 與操作人員
+    解鎖仍未實作，不得因 read-only ready 而視為可交易。
 
 ## 尚未完成的實盤能力
 
@@ -192,8 +196,8 @@ Paper API 保留舊的 `status` 以維持相容，並額外回傳 `lifecycle_sta
 - 三方對帳的正式排程、監控告警與人工 mismatch 處理介面。
 - 本地 Position Ledger 與券商部位差異的自動停機及人工解除流程。
 - 原生保護委託／OCO、部分成交後保護數量調整，以及撤單競態處理。
-- Shioaji production client、CA 憑證生命週期、金鑰輪替與真實帳號 allowlist。
-- BrokerRegistry、ExecutionRouter、capability negotiation、order routing identity、
-  multi-account concurrent scheduling 與第二家 production broker adapter。
+- CA／broker credential 輪替、撤銷、到期告警與人工操作 runbook。
+- periodic production reconciliation、Recovery unlock automation、multi-account concurrent
+  scheduling 與第二家 production broker adapter。
 - 每日額度、單筆額度、最大曝險、行情新鮮度、交易時段與全域 Kill Switch。
 - UNKNOWN 無 broker order ID 的營運對帳介面；完成前不得自動重送。

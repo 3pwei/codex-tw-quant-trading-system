@@ -15,6 +15,12 @@ class BrokerConnectionHealth:
     enabled: bool
     locked: bool
     recovery_status: str
+    connected: bool = False
+    ca_ready: bool = False
+    read_only: bool = False
+    callback_registered: bool = False
+    last_broker_read_time: str | None = None
+    last_callback_time: str | None = None
 
     def to_public_dict(self) -> dict[str, object]:
         return {
@@ -26,6 +32,12 @@ class BrokerConnectionHealth:
             "enabled": self.enabled,
             "locked": self.locked,
             "recovery_status": self.recovery_status,
+            "connected": self.connected,
+            "ca_ready": self.ca_ready,
+            "read_only": self.read_only,
+            "callback_registered": self.callback_registered,
+            "last_broker_read_time": self.last_broker_read_time,
+            "last_callback_time": self.last_callback_time,
         }
 
 
