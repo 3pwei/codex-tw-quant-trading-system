@@ -80,6 +80,9 @@ class BrokerOrderRequest:
     purpose: OrderPurpose = "entry"
     reason: str = "order_request"
     correlation_id: str | None = None
+    causation_id: str | None = None
+    source: str = "unspecified"
+    arm_id: str | None = None
 
     def __post_init__(self) -> None:
         required = (
@@ -105,6 +108,10 @@ class BrokerOrderRequest:
             raise ValueError("unsupported order purpose")
         if not self.reason.strip():
             raise ValueError("order reason is required")
+        if not self.source.strip():
+            raise ValueError("order source is required")
+        if self.source == "manual_live_canary" and not self.arm_id:
+            raise ValueError("manual live canary orders require arm_id")
         if self.reduce_only and self.purpose == "entry":
             raise ValueError("reduce_only orders cannot have entry purpose")
         if not isinstance(self.mode, ExecutionMode):
