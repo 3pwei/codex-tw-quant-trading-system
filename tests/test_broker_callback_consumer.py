@@ -210,7 +210,7 @@ class BrokerCallbackConsumerTests(unittest.IsolatedAsyncioTestCase):
         self.broker.error = TimeoutError("broker unavailable")
         failed = await self.consumer.consume_one(event())
         self.assertEqual(failed.status, BrokerEventAuditStatus.FAILED)
-        self.assertIn("TimeoutError", failed.error)
+        self.assertEqual(failed.error, "broker_refresh_failed")
 
     async def test_run_acknowledges_queue_items_after_processing(self):
         queue: asyncio.Queue[BrokerEvent] = asyncio.Queue()

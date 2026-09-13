@@ -189,15 +189,43 @@ Paper API 保留舊的 `status` 以維持相容，並額外回傳 `lifecycle_sta
     已完成 CA 與精確交易帳號驗證，但 submit/cancel、Live Risk、Kill Switch 與操作人員
     解鎖仍未實作，不得因 read-only ready 而視為可交易。
 
+## Live Read-Only Recovery Lifecycle
+
+每個 `BrokerAccountWorker` 啟動時，先用 `BrokerAccountRef` 寫入新的 durable locked
+generation，才允許 client login。連線、帳號、CA 與 callback 全部 ready 後，既有
+`LiveReconciliationService` 依序 refresh local non-terminal orders、取得 broker
+orders/fills/positions snapshot，最後以 broker truth 比對。完全一致才進入
+`READY_READ_ONLY`；這個狀態仍固定 `ordering_enabled=false`。
+
+Callback 僅保存 `RECEIVED` evidence，再以 broker order ID refresh；不直接採用 callback
+status 或改變 position。`UNMATCHED`／`FAILED` 會 lock，但 event 保留於 audit table，
+45 秒 periodic snapshot 可恢復 missed 或 out-of-order notification。相同 event ID 維持
+idempotent。同一帳戶不重疊 reconciliation，不同帳戶由 supervisor 並行隔離。
+
+以下 issue 全部 lock，且不自動 import、覆寫、flatten 或 resend：
+
+- identity：`broker_mismatch`、`account_mismatch`；
+- orders：`broker_order_without_id`、`duplicate_broker_order`、
+  `local_order_missing_at_broker`、`unknown_broker_order`、
+  `ambiguous_local_order`、`order_status_mismatch`、
+  `order_fill_quantity_mismatch`；
+- fills：`duplicate_broker_fill`、`orphan_broker_fill`、
+  `broker_deal_quantity_mismatch`；
+- positions：`position_mismatch`；
+- operations：`reconciliation_failed`、`reconciliation_timeout`、
+  `broker_disconnected`、`broker_snapshot_stale`、callback delivery errors。
+
+Timeout 或 disconnect 會建立更新的 locked generation；因此被取消或延遲的舊 attempt
+即使之後完成，也不能解除新 recovery attempt 的 lock。
+
 ## 尚未完成的實盤能力
 
 - 持久化 Strategy Runner、帳戶 Risk Gate 與 LiveOrderManager Worker 的正式串接。
-- callback consumer 的正式 Worker 組裝、audit retention 與 callback 漏失監控。
-- 三方對帳的正式排程、監控告警與人工 mismatch 處理介面。
+- callback audit retention policy 與外部告警通知。
+- 三方對帳的人工 mismatch resolution 介面。
 - 本地 Position Ledger 與券商部位差異的自動停機及人工解除流程。
 - 原生保護委託／OCO、部分成交後保護數量調整，以及撤單競態處理。
 - CA／broker credential 輪替、撤銷、到期告警與人工操作 runbook。
-- periodic production reconciliation、Recovery unlock automation、multi-account concurrent
-  scheduling 與第二家 production broker adapter。
+- 第二家 production broker adapter 與多帳戶排程的 production soak。
 - 每日額度、單筆額度、最大曝險、行情新鮮度、交易時段與全域 Kill Switch。
 - UNKNOWN 無 broker order ID 的營運對帳介面；完成前不得自動重送。

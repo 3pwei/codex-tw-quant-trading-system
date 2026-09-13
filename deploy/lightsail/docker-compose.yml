@@ -14,6 +14,8 @@ services:
     volumes:
       - market-data:/data
       - ../../data:/app/data:ro
+      # Cached operational state only; no credentials or broker SDK access.
+      - execution-health:/run/tw-quant-execution:ro
     restart: unless-stopped
     healthcheck:
       test:

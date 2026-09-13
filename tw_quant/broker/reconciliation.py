@@ -130,9 +130,14 @@ class LiveReconciliationService:
             issues = self._issues(local_orders, snapshot)
         except Exception as exc:
             captured_at = self.now()
+            code = getattr(exc, "code", None)
             issues = [ReconciliationIssue(
                 code="reconciliation_failed",
-                detail=f"{type(exc).__name__}: {exc}",
+                detail=(
+                    str(code)
+                    if isinstance(code, str) and code
+                    else "broker reconciliation source failed"
+                ),
             )]
             state = self.recovery_lock.complete(
                 self.account_ref.broker_name,

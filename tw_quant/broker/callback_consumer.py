@@ -50,11 +50,16 @@ class BrokerCallbackConsumer:
                 event.account_ref, event.broker_order_id
             )
         except Exception as exc:
+            code = getattr(exc, "code", None)
             return self.audit_store.mark(
                 event.event_id,
                 BrokerEventAuditStatus.FAILED,
                 updated_at=self.now(),
-                error=f"{type(exc).__name__}: {exc}",
+                error=(
+                    str(code)
+                    if isinstance(code, str) and code
+                    else "broker_refresh_failed"
+                ),
             )
         if order is None:
             return self.audit_store.mark(

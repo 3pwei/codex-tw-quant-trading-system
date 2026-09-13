@@ -13,7 +13,6 @@ from ..auth import (
     DisabledAccessValidator,
     SQLiteAuthRepository,
 )
-from ..broker import DisabledExecutionWorker
 from ..market import TradingCalendar
 from ..market_data import HistoricalMarketDataProvider, LiveMarketDataProvider, build_market_data_provider
 from ..paper import PaperTradingService, SQLitePaperRepository
@@ -54,7 +53,7 @@ from .api_security import (
     install_authorization_middleware,
     rate_limit_scope as _rate_limit_scope,
 )
-from .monitoring import HostResourceMonitor
+from .monitoring import ExecutionHealthFileMonitor, HostResourceMonitor
 from .rate_limit import RateLimitRule, SlidingWindowRateLimiter
 from .request_limit import RequestBodyLimitMiddleware
 from .service import LiveMarketService
@@ -164,7 +163,7 @@ def create_app(
     service.add_bar_listener(paper.on_bar)
     service.add_bar_listener(paper_auto.after_bar)
     service.add_bar_listener(runtime_app.on_bar)
-    execution_worker = DisabledExecutionWorker()
+    execution_worker = ExecutionHealthFileMonitor(config.execution_health_path)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):

@@ -34,6 +34,29 @@ type HostHealth = {
   disk_total_bytes: number;
   disk_percent: number | null;
 };
+type LiveBrokerAccountHealth = {
+  broker_name: string;
+  masked_account_id: string | null;
+  status: string;
+  broker_connected: boolean;
+  ca_ready: boolean;
+  recovery_status: string;
+  issue_codes: string[];
+  last_reconciliation_success_at: string | null;
+  broker_snapshot_age_seconds: number | null;
+  callbacks_received_total: number;
+  callbacks_dropped_total: number;
+  callbacks_failed_total: number;
+  callback_queue_size: number;
+  callback_queue_capacity: number;
+  ordering_enabled: false;
+};
+type LiveExecutionHealth = {
+  state: string;
+  ordering_enabled: false;
+  locked: true;
+  broker_accounts: LiveBrokerAccountHealth[];
+};
 type SystemHealth = {
   system_status: "healthy" | "degraded" | "market_stale" | "provider_disconnected" | "trading_halted";
   service_status: "healthy" | "degraded" | "market_stale" | "provider_disconnected";
@@ -58,6 +81,7 @@ type SystemHealth = {
   websocket_dropped_messages: number;
   paper_trading: PaperHealth;
   host: HostHealth;
+  live_execution: LiveExecutionHealth;
 };
 
 const numeric = new Intl.NumberFormat("zh-TW", { maximumFractionDigits: 3 });
@@ -75,6 +99,17 @@ const statusLabel: Record<SystemHealth["system_status"], string> = {
   provider_disconnected: "PROVIDER OFFLINE",
   trading_halted: "TRADING HALTED",
 };
+const issueLabel: Record<string, string> = {
+  position_mismatch: "POSITION MISMATCH",
+  unknown_broker_order: "UNKNOWN BROKER ORDER",
+  ambiguous_local_order: "AMBIGUOUS ORDER",
+  reconciliation_failed: "RECONCILIATION FAILED",
+  reconciliation_timeout: "RECONCILIATION TIMEOUT",
+  broker_snapshot_stale: "BROKER SNAPSHOT STALE",
+  broker_disconnected: "BROKER DISCONNECTED",
+  unmatched_broker_callback: "UNMATCHED CALLBACK",
+};
+const brokerLabel = (broker: string) => broker === "shioaji" ? "Shioaji" : broker;
 
 export default function SystemHealthPanel() {
   const [health, setHealth] = useState<SystemHealth | null>(null);
@@ -106,6 +141,27 @@ export default function SystemHealthPanel() {
     </div>
     {error && <p className="system-health-error">{error}</p>}
     {health && <>
+      <div className="panel-head live-execution-head">
+        <div><span>LIVE EXECUTION</span><h3>正式券商營運狀態</h3></div>
+        <strong className={health.live_execution.state === "ready_read_only" ? "profit" : "loss"}>
+          {health.live_execution.state === "ready_read_only" ? "READ ONLY" : "LOCKED"}
+        </strong>
+      </div>
+      <div className="system-health-grid">
+        {health.live_execution.broker_accounts.length === 0 &&
+          <article><span>Live Execution</span><b>DISABLED</b><small>未連接正式券商</small></article>}
+        {health.live_execution.broker_accounts.map((account) => <article key={`${account.broker_name}:${account.masked_account_id}`}>
+          <span>{brokerLabel(account.broker_name)} / {account.masked_account_id ?? "未設定"}</span>
+          <b>{account.status === "ready_read_only" ? "READ ONLY · READY" : "LOCKED"}</b>
+          <small>
+            {account.broker_connected ? "CONNECTED" : "DISCONNECTED"} · Recovery {account.recovery_status.toUpperCase()}
+            <br />Last reconciliation {clock(account.last_reconciliation_success_at)}
+            <br />Callbacks {account.callbacks_received_total} · dropped {account.callbacks_dropped_total} · failed {account.callbacks_failed_total}
+            {account.issue_codes.length > 0 && <><br />{account.issue_codes.map((code) => issueLabel[code] ?? code.toUpperCase().replaceAll("_", " ")).join(" · ")}</>}
+          </small>
+        </article>)}
+      </div>
+      <p className="system-health-note">此區只顯示 cached operational state；不會從瀏覽器觸發券商讀取，也不提供 ARM、下單、撤單或平倉操作。</p>
       <div className="system-health-grid">
         <article><span>最新 Tick／K 棒</span><b>{clock(health.last_tick_time)}</b><small>K 棒 {clock(health.last_bar_time)}</small></article>
         <article><span>行情連線</span><b>{health.connection_status}</b><small>Tick age {value(health.tick_age_ms, " ms")}</small></article>

@@ -39,6 +39,15 @@ class RecoveryLockStore(Protocol):
         self, broker_name: str, account_id: str, *, updated_at: datetime
     ) -> RecoveryState: ...
 
+    def force_lock(
+        self,
+        broker_name: str,
+        account_id: str,
+        issue_codes: Sequence[str],
+        *,
+        updated_at: datetime,
+    ) -> RecoveryState: ...
+
     def complete(
         self,
         broker_name: str,
@@ -162,6 +171,51 @@ class SQLiteRecoveryLockRepository:
                     updated_at.isoformat(timespec="microseconds"),
                     RecoveryStatus.RECONCILING.value,
                     json.dumps(["reconciliation_in_progress"]),
+                    updated_at.isoformat(timespec="microseconds"),
+                ),
+            )
+            row = self.connection.execute(
+                "SELECT * FROM live_recovery_lock "
+                "WHERE broker_name=? AND account_id=?",
+                (broker_name, account_id),
+            ).fetchone()
+            self.connection.commit()
+        assert row is not None
+        return self._record(row)
+
+    def force_lock(
+        self,
+        broker_name: str,
+        account_id: str,
+        issue_codes: Sequence[str],
+        *,
+        updated_at: datetime,
+    ) -> RecoveryState:
+        """Persist a new locked generation before or after unsafe broker I/O.
+
+        Incrementing the generation invalidates any older reconciliation that
+        may still be completing after a timeout or disconnect.
+        """
+
+        self._validate_identity(broker_name, account_id)
+        self._validate_time(updated_at)
+        unique_codes = tuple(dict.fromkeys(issue_codes)) or (
+            "reconciliation_required",
+        )
+        with self.lock:
+            self.connection.execute(
+                "INSERT INTO live_recovery_lock VALUES (?, ?, ?, ?, ?, 1) "
+                "ON CONFLICT(broker_name, account_id) DO UPDATE SET "
+                "status=?, issue_codes_json=?, updated_at=?, "
+                "generation=live_recovery_lock.generation+1",
+                (
+                    broker_name,
+                    account_id,
+                    RecoveryStatus.LOCKED.value,
+                    json.dumps(unique_codes),
+                    updated_at.isoformat(timespec="microseconds"),
+                    RecoveryStatus.LOCKED.value,
+                    json.dumps(unique_codes),
                     updated_at.isoformat(timespec="microseconds"),
                 ),
             )

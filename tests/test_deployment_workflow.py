@@ -49,6 +49,13 @@ class DeploymentWorkflowTests(unittest.TestCase):
         self.assertNotIn("ports:", execution)
         self.assertNotIn("expose:", execution)
         self.assertIn("execution-egress", execution)
+        market = compose.split("  market-api:", 1)[1].split(
+            "\n  execution-worker:", 1
+        )[0]
+        self.assertIn(
+            "execution-health:/run/tw-quant-execution:ro", market
+        )
+        self.assertNotIn("live-secrets", market)
         self.assertNotIn("execution-worker", caddy)
         self.assertIn("--target execution-worker", workflow)
         self.assertIn("tw_quant.execution_service validate", script)

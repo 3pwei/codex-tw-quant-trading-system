@@ -1,9 +1,118 @@
 from __future__ import annotations
 
 import os
+import json
 from pathlib import Path
 from threading import Lock
 from typing import Callable
+from datetime import datetime, timezone
+
+
+_ACCOUNT_HEALTH_FIELDS = frozenset({
+    "broker_name", "masked_account_id", "status", "client_state",
+    "broker_connected", "ca_ready", "read_only", "callback_registered",
+    "ordering_enabled", "locked",
+    "recovery_status", "recovery_generation", "issue_codes", "started_at",
+    "heartbeat_at", "last_reconciliation_started_at",
+    "last_reconciliation_success_at", "last_reconciliation_failure_at",
+    "last_reconciliation_duration_ms", "broker_snapshot_age_seconds",
+    "last_broker_read_time", "last_local_order_count", "last_broker_order_count",
+    "last_broker_fill_count", "last_broker_position_count",
+    "callback_queue_size", "callback_queue_capacity",
+    "callback_queue_high_watermark", "callbacks_received_total",
+    "callbacks_dropped_total", "callback_normalization_failed_total",
+    "callbacks_reconciled_total", "callbacks_unmatched_total",
+    "callbacks_failed_total", "callback_shutdown_abandoned_total",
+    "last_callback_time", "reconciliation_started_total",
+    "reconciliation_success_total", "reconciliation_failure_total",
+    "reconciliation_skipped_overlap_total", "average_reconciliation_ms",
+    "max_reconciliation_ms", "last_error_code", "dispatches",
+    "external_order_calls", "external_cancel_calls",
+})
+
+
+class ExecutionHealthFileMonitor:
+    """Read the isolated worker's cached, sanitized health document only."""
+
+    def __init__(
+        self,
+        path: str | Path,
+        *,
+        max_age_seconds: float = 30.0,
+        now: Callable[[], datetime] | None = None,
+    ):
+        if max_age_seconds <= 0:
+            raise ValueError("execution health max age must be positive")
+        self.path = Path(path)
+        self.max_age_seconds = max_age_seconds
+        self.now = now or (lambda: datetime.now(timezone.utc))
+
+    async def start(self) -> None:
+        return None
+
+    async def stop(self) -> None:
+        return None
+
+    def snapshot(self) -> dict[str, object]:
+        disabled = {
+            "state": "disabled",
+            "ordering_enabled": False,
+            "locked": True,
+            "recovery_status": "locked",
+            "broker_accounts": [],
+            "dispatches": 0,
+            "external_order_calls": 0,
+            "external_cancel_calls": 0,
+        }
+        try:
+            document = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            return disabled
+        raw_accounts = document.get("broker_accounts", [])
+        if not isinstance(raw_accounts, list):
+            return disabled
+        accounts = [
+            {key: value for key, value in item.items() if key in _ACCOUNT_HEALTH_FIELDS}
+            for item in raw_accounts
+            if isinstance(item, dict)
+        ]
+        try:
+            heartbeat = datetime.fromisoformat(str(document["heartbeat_at"]))
+            stale = (self.now() - heartbeat).total_seconds() > self.max_age_seconds
+        except (KeyError, TypeError, ValueError):
+            stale = True
+        if stale:
+            accounts = [
+                {
+                    **item,
+                    "status": "locked",
+                    "broker_connected": False,
+                    "recovery_status": "locked",
+                    "issue_codes": list(dict.fromkeys((
+                        *(
+                            item.get("issue_codes", [])
+                            if isinstance(item.get("issue_codes"), list)
+                            else []
+                        ),
+                        "execution_health_stale",
+                    ))),
+                }
+                for item in accounts
+            ]
+        return {
+            "state": (
+                "locked" if stale else str(document.get("execution_state") or "locked")
+            ),
+            "ordering_enabled": False,
+            "locked": True,
+            "recovery_status": (
+                "locked" if stale else str(document.get("recovery_status") or "locked")
+            ),
+            "broker_accounts": accounts,
+            "dispatches": 0,
+            "external_order_calls": 0,
+            "external_cancel_calls": 0,
+        }
 
 
 class HostResourceMonitor:

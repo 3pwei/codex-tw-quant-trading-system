@@ -21,9 +21,10 @@ def _healthcheck(settings: ExecutionServiceSettings) -> int:
     safe_state = (
         document.get("locked") is True
         and document.get("execution_state") in {
-            "disabled", "locked", "read_only_ready", "degraded"
+            "disabled", "locked", "read_only_ready", "ready_read_only", "degraded"
         }
         and document.get("external_order_calls") == 0
+        and document.get("external_cancel_calls") == 0
     )
     return 0 if safe_state and age <= max(30.0, settings.heartbeat_seconds * 4) else 1
 

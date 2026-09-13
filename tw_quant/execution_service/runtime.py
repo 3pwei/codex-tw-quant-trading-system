@@ -10,6 +10,8 @@ from typing import Callable, Mapping, Protocol
 
 from ..broker import (
     BrokerAccountSafety,
+    BrokerAccountWorker,
+    BrokerCallbackConsumer,
     BrokerCapabilities,
     BrokerConnectionSettings,
     BrokerRegistration,
@@ -19,17 +21,20 @@ from ..broker import (
     BrokerSecretProvider,
     CompositeOrderAdmissionGate,
     DisabledExecutionWorker,
+    ExecutionSupervisor,
+    ExecutionWorkerSettings,
     LockedBroker,
     LockedInstrumentMapper,
     LiveOrderManager,
+    LiveReconciliationService,
     LIVE_TRADING_CONFIRMATION,
     LockedOrderAdmissionGate,
     SQLiteLiveOrderRepository,
+    SQLiteBrokerEventAuditRepository,
     SQLiteRecoveryLockRepository,
     SHIOAJI_READ_ONLY_CAPABILITIES,
     ShioajiBrokerAdapter,
     ShioajiInstrumentMapper,
-    ShioajiProductionError,
     ShioajiProductionExecutionClient,
     LiveTradingSafety,
 )
@@ -47,24 +52,7 @@ LOGGER = logging.getLogger("tw_quant.execution_service")
 class ServiceWorker(Protocol):
     async def start(self) -> None: ...
     async def stop(self) -> None: ...
-
-
-class ShioajiReadOnlyMonitor:
-    """Own the production read lifecycle without dispatching orders."""
-
-    def __init__(self, client: ShioajiProductionExecutionClient):
-        self.client = client
-        self.issue_code: str | None = None
-
-    async def start(self) -> None:
-        try:
-            await self.client.start()
-        except ShioajiProductionError as exc:
-            self.issue_code = exc.code
-            LOGGER.error("Shioaji read-only connection locked code=%s", exc.code)
-
-    async def stop(self) -> None:
-        await self.client.close()
+    def snapshot(self) -> dict[str, object]: ...
 
 
 @dataclass
@@ -80,12 +68,16 @@ class ExecutionServiceRuntime:
     recovery_repository: SQLiteRecoveryLockRepository | None = field(
         default=None, repr=False
     )
+    audit_repository: SQLiteBrokerEventAuditRepository | None = field(
+        default=None, repr=False
+    )
     broker_registry: BrokerRegistry | None = field(default=None, repr=False)
     redaction_filter: SecretRedactionFilter | None = field(default=None, repr=False)
     read_only_client: ShioajiProductionExecutionClient | None = field(
         default=None, repr=False
     )
     _stop_event: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
+    _started: bool = field(default=False, repr=False)
 
     @property
     def locked(self) -> bool:
@@ -93,12 +85,19 @@ class ExecutionServiceRuntime:
 
     def public_health(self) -> dict[str, object]:
         account = self.connection.account_ref if self.connection is not None else None
+        worker_health = self.worker.snapshot()
+        account_health = (
+            worker_health["broker_accounts"][0]
+            if isinstance(worker_health.get("broker_accounts"), list)
+            and worker_health["broker_accounts"]
+            else None
+        )
         client_health = (
             self.read_only_client.health_state()
             if self.read_only_client is not None
             else {}
         )
-        return BrokerConnectionHealth(
+        summary = BrokerConnectionHealth(
             connection_id=(
                 self.connection.connection_id
                 if self.connection is not None
@@ -110,7 +109,9 @@ class ExecutionServiceRuntime:
                 else self.settings.broker_name
             ),
             account=account,
-            execution_state=str(client_health.get("execution_state") or (
+            execution_state=str(
+                (account_health or {}).get("status")
+                or client_health.get("execution_state") or (
                 "locked"
                 if (
                     self.settings.live_trading_enabled
@@ -123,9 +124,13 @@ class ExecutionServiceRuntime:
                 or self.settings.production_read_only_enabled
             ),
             locked=True,
-            recovery_status="locked",
-            connected=bool(client_health.get("connected", False)),
-            ca_ready=bool(client_health.get("ca_ready", False)),
+            recovery_status=str(
+                (account_health or {}).get("recovery_status") or "locked"
+            ),
+            connected=bool(
+                (account_health or {}).get("broker_connected", False)
+            ),
+            ca_ready=bool((account_health or {}).get("ca_ready", False)),
             read_only=bool(client_health.get("read_only", False)),
             callback_registered=bool(
                 client_health.get("callback_registered", False)
@@ -135,20 +140,19 @@ class ExecutionServiceRuntime:
             ),
             last_callback_time=client_health.get("last_callback_time"),  # type: ignore[arg-type]
         ).to_public_dict()
+        return {
+            **summary,
+            "ordering_enabled": False,
+            "broker_accounts": worker_health.get("broker_accounts", []),
+        }
 
     def state_document(self) -> dict[str, object]:
         return {
             **self.public_health(),
             "heartbeat_at": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
-            "issue_codes": list(dict.fromkeys(
-                (*self.issues, *(
-                    (self.worker.issue_code,)
-                    if isinstance(self.worker, ShioajiReadOnlyMonitor)
-                    and self.worker.issue_code
-                    else ()
-                ))
-            )),
+            "issue_codes": list(dict.fromkeys(self.issues)),
             "external_order_calls": 0,
+            "external_cancel_calls": 0,
         }
 
     def write_health(self) -> None:
@@ -163,6 +167,7 @@ class ExecutionServiceRuntime:
     async def start(self) -> None:
         await self.worker.start()
         self._stop_event.clear()
+        self._started = True
         self.write_health()
 
     async def serve(self) -> None:
@@ -183,8 +188,13 @@ class ExecutionServiceRuntime:
     async def close(self) -> None:
         self._stop_event.set()
         await self.worker.stop()
+        if self._started:
+            self.write_health()
+            self._started = False
         if self.recovery_repository is not None:
             self.recovery_repository.close()
+        if self.audit_repository is not None:
+            self.audit_repository.close()
         if self.order_repository is not None:
             self.order_repository.close()
         if self.redaction_filter is not None:
@@ -238,6 +248,7 @@ def build_execution_service(
     manager = None
     orders = None
     recovery = None
+    audit = None
     registry = None
     redactor = None
     read_only_client = None
@@ -249,6 +260,7 @@ def build_execution_service(
         )
         LOGGER.addFilter(redactor)
         orders = SQLiteLiveOrderRepository(config.database_path)
+        audit = SQLiteBrokerEventAuditRepository(config.database_path)
         recovery = SQLiteRecoveryLockRepository(config.database_path)
         registry = BrokerRegistry()
         port = LockedBroker(account.broker_name)
@@ -270,19 +282,26 @@ def build_execution_service(
                 allowed_accounts=config.allowed_accounts,
                 secret_material=material,
                 instrument_mapper=mapper,
+                callback_queue_size=config.callback_queue_size,
             )
             port = ShioajiBrokerAdapter(
                 read_only_client,
                 LiveTradingSafety(account_id=account.account_id, enabled=False),
             )
             capabilities = SHIOAJI_READ_ONLY_CAPABILITIES
-            worker = ShioajiReadOnlyMonitor(read_only_client)
         registry.register(BrokerRegistration(
             account_ref=account,
             port=port,
             capabilities=capabilities,
             instrument_mapper=mapper,
-            state=BrokerRuntimeState.LOCKED,
+            # READY means available for read/refresh. Order creation remains
+            # blocked by the permanent admission gate below and the adapter's
+            # read-only safety guard.
+            state=(
+                BrokerRuntimeState.READY
+                if read_only_client is not None
+                else BrokerRuntimeState.LOCKED
+            ),
         ))
         registry.freeze()
         admission = CompositeOrderAdmissionGate((
@@ -296,6 +315,35 @@ def build_execution_service(
             LockedOrderAdmissionGate(),
         ))
         manager = LiveOrderManager(orders, registry, {account: admission})
+        if read_only_client is not None and audit is not None:
+            reconciliation = LiveReconciliationService(
+                account_ref=account,
+                order_store=orders,
+                order_manager=manager,
+                source=read_only_client,
+                recovery_lock=recovery,
+            )
+            consumer = BrokerCallbackConsumer(audit, manager)
+            account_worker = BrokerAccountWorker(
+                account_ref=account,
+                client=read_only_client,
+                reconciliation=reconciliation,
+                callback_consumer=consumer,
+                recovery_lock=recovery,
+                settings=ExecutionWorkerSettings(
+                    reconciliation_interval_seconds=(
+                        config.reconciliation_interval_seconds
+                    ),
+                    reconciliation_timeout_seconds=(
+                        config.reconciliation_timeout_seconds
+                    ),
+                    snapshot_stale_seconds=config.reconciliation_stale_seconds,
+                    heartbeat_seconds=config.heartbeat_seconds,
+                    callback_queue_size=config.callback_queue_size,
+                    shutdown_drain_seconds=config.shutdown_drain_seconds,
+                ),
+            )
+            worker = ExecutionSupervisor((account_worker,))
 
     issues.append("production_submit_disabled")
     return ExecutionServiceRuntime(
@@ -306,6 +354,7 @@ def build_execution_service(
         manager=manager,
         order_repository=orders,
         recovery_repository=recovery,
+        audit_repository=audit,
         broker_registry=registry,
         redaction_filter=redactor,
         read_only_client=read_only_client,
