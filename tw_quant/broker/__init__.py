@@ -93,7 +93,9 @@ from .shioaji_production import (
     normalize_production_callback,
 )
 from .worker import (
+    BrokerAccountWorker,
     DisabledExecutionWorker,
+    ExecutionSupervisor,
     ExecutionRuntime,
     ExecutionWorker,
     ExecutionWorkerMonitor,
@@ -107,6 +109,7 @@ __all__ = [
     "BrokerAccountRef",
     "BrokerAccountSafety",
     "BrokerAccountSnapshot",
+    "BrokerAccountWorker",
     "BrokerCapabilities",
     "BrokerCallbackConsumer",
     "BrokerEvent",
@@ -136,6 +139,7 @@ __all__ = [
     "DisabledExecutionWorker",
     "ExecutionMode",
     "ExecutionRuntime",
+    "ExecutionSupervisor",
     "ExecutionWorker",
     "ExecutionWorkerMonitor",
     "ExecutionWorkerSettings",

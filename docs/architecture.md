@@ -14,7 +14,7 @@ Replay 與 Paper Trading；真實券商下單尚未啟用。架構調整採漸�
 | Replay | `/api/replay/sessions/*` | 隔離帳戶中的手動模擬市價單 | 不會連線 |
 | Paper | `POST /api/paper/orders` | 帳戶風控後，以伺服器行情模擬成交 | 不會連線 |
 | Shioaji Simulation | `ShioajiSimulationExecutionClient` | SDK 整合測試，尚未接 API／Worker | 模擬環境限定 |
-| Live read-only | execution worker + `BrokerRegistry` | Shioaji production account truth；Registry locked | 只讀連線可明確啟用，寫入停用 |
+| Live read-only | execution worker + `BrokerRegistry` | Shioaji production account truth；per-account recovery | 只讀連線可明確啟用，寫入停用 |
 
 Strategy Runtime 提供 Observe Mode，以及預設 paused、必須明確 armed 的 Paper Auto
 Mode。Paper Auto entry 由 closed-bar durable Decision 經 market/account/permission/
@@ -152,6 +152,35 @@ event ID 並用 `put_nowait` 投遞 bounded queue。它不寫 DB、不執行策�
 SDK；queue full 只增加 dropped/degraded 指標，後續 periodic reconciliation 才是復原來源。
 health 使用 cached connection state，不因查詢 health 而呼叫券商。
 
+### Live Recovery and Reconciliation Runtime
+
+```mermaid
+flowchart TD
+    A["ExecutionSupervisor"] --> B["BrokerAccountWorker A"]
+    A -.-> C["Future Account Worker B"]
+    B --> D["Callback Audit Consumer"]
+    B --> E["Periodic Broker Snapshot"]
+    D --> F["LiveReconciliationService"]
+    E --> F
+    F --> G["Durable Recovery Lock"]
+```
+
+每個 worker 只持有一個 `BrokerAccountRef`、client、bounded callback queue、consumer、
+reconciliation service、Recovery Lock 與 cached health。不同帳戶可並行，但同一帳戶以
+async lock 保證最多一輪 reconciliation。Worker 不含 dispatch task；Registry 的
+`READY` 只表示 adapter 可供 read/refresh，永久 `LockedOrderAdmissionGate` 與 read-only
+client 仍拒絕所有寫入。
+
+啟動順序固定為 `STARTING → LOCKED → BROKER_CONNECTING →
+BROKER_READ_ONLY_READY → RECONCILING → READY_READ_ONLY`。第一個可觀察 side effect 是
+持久化新的 locked generation，因此 process restart 不會沿用舊 READY。timeout、斷線、
+callback overflow、未知 callback、stale snapshot 或任何 reconciliation issue 都會寫入
+新的 locked generation，使較舊的晚到結果無法解鎖。
+
+Public FastAPI 不載入 broker SDK 或 credential；它只從 read-only named volume 讀取
+execution worker 原子寫入的 health JSON，並再次 allowlist 欄位。`/settings/` 因此不會
+觸發 broker I/O。
+
 ## 依賴方向
 
 核心事件與交易模型不得 import FastAPI、SQLite、Dashboard 或 Shioaji。外部 adapter
@@ -241,20 +270,19 @@ Recovery Lock 為 `ready` 才能通過。對帳失敗只回報 issue code，不�
 調整 Position Ledger、撤單或平倉。
 
 `ShioajiBrokerAdapter` 不得直接由 HTTP handler 建立。Production read-only client
-由 execution service composition 建立；仍需 callback consumer／週期性三方對帳、
-監控告警與營運解鎖流程。Production client 是明確的新組裝路徑，simulation client
+由 execution service composition 建立；仍需外部告警與人工營運解鎖流程。
+Production client 是明確的新組裝路徑，simulation client
 永遠不接受 `simulation=False`。
 
-`ExecutionWorker` 統一管理啟動對帳、durable outbox dispatch、callback audit consumer、
-定期三方對帳及 heartbeat。啟動時 Recovery Lock 未達 `ready`，或任一輪對帳失敗，
-worker 都不得 dispatch；callback queue 必須有界且 overflow／處理失敗需出現在監控。
-Shioaji callback bridge 組裝時必須使用 `worker.enqueue_callback` 作為 sink，讓 queue
-overflow 進入同一套監控與鎖單路徑，不得直接繞過 worker 寫入 queue。
+`BrokerAccountWorker` 統一管理啟動對帳、callback audit consumer、定期三方對帳及
+heartbeat，但刻意沒有 durable outbox dispatch task。啟動時 Recovery Lock 未達
+`ready`，或任一輪對帳失敗，worker 都保持 locked；callback queue 必須有界且
+overflow／處理失敗需出現在監控。
 `build_execution_runtime()` 只接受外部已建立的 BrokerPort 與 reconciliation source，
 本身不得讀取憑證、載入 CA 或建立 SDK client。Production composition 預設掛載
-`DisabledExecutionWorker`；明確啟用 read-only 時改由 lifecycle monitor 擁有 production
-client，但不啟動 outbox dispatch。健康資訊顯示 disabled/locked/read_only_ready/degraded、
-Recovery Lock 固定 locked，external order calls 固定為 0。
+`DisabledExecutionWorker`；明確啟用 read-only 時改由 `ExecutionSupervisor` 擁有 account
+worker。健康資訊顯示 disabled/locked/ready_read_only/degraded、ordering 固定 disabled，
+external submit/cancel calls 固定為 0。
 
 Paper HTTP handler 使用 `BrokerOrderRequest` 呼叫 `PaperTradingService.submit_request()`；
 service 保留帳戶風控與事件持久化責任，`PaperBrokerAdapter` 則提供相同的 `BrokerPort`

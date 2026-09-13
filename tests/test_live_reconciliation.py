@@ -245,6 +245,84 @@ class LiveReconciliationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("orphan_broker_fill", codes)
         self.assertEqual(report.state.status, RecoveryStatus.LOCKED)
 
+    async def test_order_identity_and_state_mismatches_all_fail_closed(self):
+        self.save_filled_order()
+        cases = {
+            "broker_order_without_id": BrokerReconciliationSnapshot(
+                "shioaji", "sim-1", NOW,
+                (BrokerOrderSnapshot(None, BrokerOrderStatus.FILLED, 0),), (),
+                (BrokerPositionSnapshot("TMF202609", 1),),
+            ),
+            "duplicate_broker_order": BrokerReconciliationSnapshot(
+                "shioaji", "sim-1", NOW,
+                (
+                    BrokerOrderSnapshot("broker-1", BrokerOrderStatus.FILLED, 1),
+                    BrokerOrderSnapshot("broker-1", BrokerOrderStatus.FILLED, 1),
+                ),
+                (BrokerFillSnapshot(
+                    "fill-1", "broker-1", "TMF202609", "buy", 1, 20_000, NOW
+                ),),
+                (BrokerPositionSnapshot("TMF202609", 1),),
+            ),
+            "order_status_mismatch": BrokerReconciliationSnapshot(
+                "shioaji", "sim-1", NOW,
+                (BrokerOrderSnapshot(
+                    "broker-1", BrokerOrderStatus.CANCELLED, 1
+                ),),
+                (BrokerFillSnapshot(
+                    "fill-1", "broker-1", "TMF202609", "buy", 1, 20_000, NOW
+                ),),
+                (BrokerPositionSnapshot("TMF202609", 1),),
+            ),
+            "order_fill_quantity_mismatch": BrokerReconciliationSnapshot(
+                "shioaji", "sim-1", NOW,
+                (BrokerOrderSnapshot("broker-1", BrokerOrderStatus.FILLED, 2),),
+                (BrokerFillSnapshot(
+                    "fill-1", "broker-1", "TMF202609", "buy", 2, 20_000, NOW
+                ),),
+                (BrokerPositionSnapshot("TMF202609", 1),),
+            ),
+            "duplicate_broker_fill": BrokerReconciliationSnapshot(
+                "shioaji", "sim-1", NOW,
+                (BrokerOrderSnapshot("broker-1", BrokerOrderStatus.FILLED, 2),),
+                (
+                    BrokerFillSnapshot(
+                        "fill-1", "broker-1", "TMF202609", "buy", 1, 20_000, NOW
+                    ),
+                    BrokerFillSnapshot(
+                        "fill-1", "broker-1", "TMF202609", "buy", 1, 20_000, NOW
+                    ),
+                ),
+                (BrokerPositionSnapshot("TMF202609", 1),),
+            ),
+            "broker_deal_quantity_mismatch": BrokerReconciliationSnapshot(
+                "shioaji", "sim-1", NOW,
+                (BrokerOrderSnapshot("broker-1", BrokerOrderStatus.FILLED, 1),),
+                (), (BrokerPositionSnapshot("TMF202609", 1),),
+            ),
+        }
+        for expected, snapshot in cases.items():
+            with self.subTest(expected=expected):
+                report = await self.service(StaticSource(snapshot)).reconcile()
+                self.assertIn(expected, report.state.issue_codes)
+                self.assertEqual(report.state.status, RecoveryStatus.LOCKED)
+
+    async def test_local_nonterminal_order_missing_at_broker_locks(self):
+        order_request = request()
+        reserved, _ = self.orders.reserve(routed(order_request), occurred_at=NOW)
+        self.assertIsNotNone(self.orders.claim_next(TARGET))
+        self.orders.finish_dispatch(BrokerOrder(
+            request=reserved.request,
+            status=BrokerOrderStatus.ACCEPTED,
+            updated_at=NOW,
+            broker_order_id="broker-1",
+        ))
+        empty = BrokerReconciliationSnapshot(
+            "shioaji", "sim-1", NOW, (), (), ()
+        )
+        report = await self.service(StaticSource(empty)).reconcile()
+        self.assertIn("local_order_missing_at_broker", report.state.issue_codes)
+
     async def test_ambiguous_local_order_without_broker_id_stays_locked(self):
         order_request = request()
         reserved, _created = self.orders.reserve(

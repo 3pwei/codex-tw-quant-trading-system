@@ -18,7 +18,7 @@ from tw_quant.live.settings import LiveSettings
 from tw_quant.live.storage import SQLiteBarRepository
 from tw_quant.market import KBar
 from tw_quant.paper import SQLitePaperRepository
-from tw_quant.broker import DisabledExecutionWorker
+from tw_quant.live.monitoring import ExecutionHealthFileMonitor
 from tw_quant.strategy import (
     analyze_strategies,
     evaluate_composite_intents,
@@ -491,8 +491,8 @@ class TradingRuntimeApiTests(unittest.TestCase):
                 self.assertEqual(armed.json()["status"], "armed")
                 self.assertIsInstance(
                     app.state.api_dependencies.execution_worker,
-                    DisabledExecutionWorker,
-                    "an armed Paper Auto runtime must not enable a real broker worker",
+                    ExecutionHealthFileMonitor,
+                    "Paper Auto may only read cached execution health",
                 )
                 stopped = client.post(
                     f"/api/trading-runtimes/{runtime_id}/stop",

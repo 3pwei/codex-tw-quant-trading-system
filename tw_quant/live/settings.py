@@ -42,6 +42,7 @@ class LiveSettings:
     rate_limit_replay_prepares_per_minute: int
     rate_limit_orders_per_minute: int
     max_request_body_bytes: int
+    execution_health_path: str
 
     def __init__(
         self,
@@ -63,6 +64,7 @@ class LiveSettings:
         rate_limit_replay_prepares_per_minute: int = 10,
         rate_limit_orders_per_minute: int = 30,
         max_request_body_bytes: int = 256 * 1024,
+        execution_health_path: str = "/run/tw-quant-execution/health.json",
         # Compatibility inputs from the pre-provider settings model.
         mode: str | None = None,
         symbol: str | None = None,
@@ -133,6 +135,7 @@ class LiveSettings:
         object.__setattr__(
             self, "max_request_body_bytes", max_request_body_bytes
         )
+        object.__setattr__(self, "execution_health_path", execution_health_path)
 
     @classmethod
     def from_env(cls) -> "LiveSettings":
@@ -186,6 +189,10 @@ class LiveSettings:
             max_request_body_bytes=int(
                 os.getenv("API_MAX_REQUEST_BODY_BYTES", str(256 * 1024))
             ),
+            execution_health_path=os.getenv(
+                "LIVE_EXECUTION_HEALTH_PATH",
+                "/run/tw-quant-execution/health.json",
+            ).strip(),
         )
 
     def validate(self) -> None:
@@ -219,6 +226,8 @@ class LiveSettings:
             raise ValueError(
                 "API_MAX_REQUEST_BODY_BYTES must be between 1024 and 1048576"
             )
+        if not self.execution_health_path:
+            raise ValueError("LIVE_EXECUTION_HEALTH_PATH is required")
         if self.access_mode not in {"disabled", "cloudflare"}:
             raise ValueError("MARKET_ACCESS_MODE must be disabled or cloudflare")
         if self.access_mode == "cloudflare" and not (

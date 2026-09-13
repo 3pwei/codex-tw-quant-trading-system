@@ -55,9 +55,9 @@ application does not. The temporary `CA_CERT_PATH` / `CA_PASSWORD` names from
 the first local revision remain accepted as compatibility aliases, while new
 configuration uses `SJ_CA_CERT_PATH` / `SJ_CA_PASSWORD`.
 
-This release composes one connection only. The health collection model and
-BrokerRegistry can represent multiple connections, but multi-account scheduling
-and a second production adapter are explicitly deferred.
+This release composes one connection in production. `ExecutionSupervisor`, the
+health collection model and BrokerRegistry can represent isolated account workers;
+a second production adapter and multi-account production soak remain deferred.
 
 Account IDs are serialized as `****1234`. API keys, secret keys, CA passwords,
 full CA paths, raw login payloads, and full account credentials must never be
@@ -77,8 +77,9 @@ known secret values before a record is emitted.
 The final gate is deliberate for this release. Therefore even a complete
 configuration with `BROKER_PROVIDER=shioaji` and `LIVE_TRADING_ENABLED=true`
 produces zero external order calls. With `LIVE_BROKER_READ_ONLY_ENABLED=true`,
-the composition root may construct a production Shioaji client, but its Registry
-registration stays locked and the client rejects submit/cancel/replace before SDK I/O.
+the composition root may construct a production Shioaji client. Its Registry
+registration is available only for read/refresh; the permanent admission gate,
+zero-dispatch recovery worker and client reject submit/cancel/replace before SDK I/O.
 
 Live activation will require a separate reviewed PR to replace only the final
 gate and disabled adapter after Live Risk, ARM/Kill Switch, protective-order,
@@ -105,8 +106,8 @@ blocked. Restart never substitutes the current default broker.
 
 Registry, capabilities, and instrument mapping remain inside the isolated
 execution boundary. They do not move credentials, SDKs, or routing choices into
-the Public Application. Production continues to register a locked runtime and
-performs zero external write calls. Durable Live fill and position projections
+the Public Application. Production only reaches `READY_READ_ONLY` after an initial
+broker-truth reconciliation and performs zero external write calls. Durable Live fill and position projections
 remain future work; callback evidence does not directly mutate either.
 
 ## Fail-closed outcomes

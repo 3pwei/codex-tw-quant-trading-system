@@ -6,8 +6,9 @@
 
 > 本專案僅供研究與工程驗證，不構成投資建議。目前不會向外部券商送出真實委託。
 > Production 已建立獨立的 Live Execution Security Boundary，但 execution service
-> 固定 locked。Shioaji production read-only connection 可由 execution container 明確
-> 啟用；所有 submit、cancel、replace path 仍由平台拒絕。
+> 固定禁止下單。Shioaji production read-only connection 可由 execution container 明確
+> 啟用；per-account worker 會先完成初始對帳，再執行 callback audit 與週期對帳。
+> 所有 submit、cancel、replace path 仍由平台拒絕。
 
 ## 核心能力
 
@@ -24,7 +25,7 @@
 | UI | `/trade/` 整合 Observe／Manual Paper／Paper Auto、即時圖表與操作控制；Backtest／History／Replay 提供策略診斷；手機具防誤觸控制 |
 | 部署 | Docker、Caddy、AWS Lightsail、GitHub Actions、Python 套件鎖定 |
 
-Level 2 工程能力已實作；每個正式候選版本仍須依 [Level 2 完成標準](docs/level2-definition-of-done.md) 留存四小時 soak 與人工驗收證據。Live execution foundation 已具備可測試的 simulation 與 production read-only 組裝邊界。read-only 模式只在獨立 execution worker 載入 CA、登入、讀取帳戶真相及接收 callback；Registry 仍 locked，且 client 本身拒絕所有寫入。本平台不宣稱具備可用的實盤下單或 HFT 能力。
+Level 2 工程能力已實作；每個正式候選版本仍須依 [Level 2 完成標準](docs/level2-definition-of-done.md) 留存四小時 soak 與人工驗收證據。Live execution foundation 已具備可測試的 simulation 與 production read-only 組裝邊界。read-only 模式只在獨立 execution worker 載入 CA、登入、讀取帳戶真相及接收 callback；Registry 只允許 read/refresh，而永久 admission gate 與 client 本身拒絕所有寫入。本平台不宣稱具備可用的實盤下單或 HFT 能力。
 
 ## 系統架構
 
@@ -60,7 +61,10 @@ flowchart TD
 - `BrokerRegistry` 以 O(1) lookup 解析長生命週期 account runtime；每個 registration
   分別宣告 `BrokerCapabilities` 與 `BrokerInstrumentMapper`，Strategy 與 Risk
   不依賴 adapter 類別或券商能力。
-- 券商 orders、fills、positions 全部一致才允許 worker 進入 ready；production 目前保持 disabled／locked。
+- `ExecutionSupervisor` 分別管理每個 `BrokerAccountWorker`；啟動先鎖定、連線後立即
+  對帳，只有券商 orders、fills、positions 全部一致才進入 `READY_READ_ONLY`。
+- Callback 只是低延遲通知：先保存稽核證據，再 refresh broker truth；45 秒週期 snapshot
+  負責 missed/out-of-order callback 的 eventual recovery，同帳戶禁止重疊對帳。
 - Shioaji production client 與 simulation client 是不同 class 與 lifecycle；read-only
   SDK I/O 由單一 async lock 序列化後送入 worker thread，health 只讀 cached state。
 - production callback 只保留 allowlisted routing 欄位並投入 bounded queue；滿載時丟棄、
@@ -257,6 +261,7 @@ API_MAX_REQUEST_BODY_BYTES=262144
 - [訂單生命週期與 Live 安全規則](docs/order-lifecycle.md)
 - [Live Execution Security Boundary](docs/live-execution-security-boundary.md)
 - [Multi-Broker Execution Architecture](docs/architecture.md#multi-broker-execution-architecture)
+- [Live Read-Only Recovery 驗收與 Soak](docs/live-read-only-acceptance.md)
 
 ## API 概覽
 
@@ -297,7 +302,7 @@ TMF 研究預設成本：契約乘數每點 NT$10、每邊手續費 NT$10、交�
 
 ## 已知限制與 Roadmap
 
-目前限制：單一 TMF 商品、單機 SQLite、不含完整委託簿與實盤部分成交流程，也不處理漲跌停／暫緩撮合。Multi-Broker routing foundation 與第一個 Shioaji production read-only adapter 已完成，但沒有第二家 production adapter；尚未具備 periodic reconciliation、CA／金鑰輪替、原生保護委託／OCO、人工 mismatch／UNKNOWN 處理介面及完整營運解鎖流程。
+目前限制：單一 TMF 商品、單機 SQLite、不含完整委託簿與實盤部分成交流程，也不處理漲跌停／暫緩撮合。Multi-Broker routing、Shioaji production read-only adapter 與 per-account periodic reconciliation 已完成，但沒有第二家 production adapter；尚未具備 CA／金鑰輪替、原生保護委託／OCO、人工 mismatch／UNKNOWN 處理介面及完整營運解鎖流程。
 
 下一階段優先順序：
 

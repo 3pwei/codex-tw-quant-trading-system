@@ -363,7 +363,7 @@ class ProductionReadOnlyTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("place_order", self.api.calls)
         self.assertNotIn("cancel_order", self.api.calls)
 
-    async def test_execution_composition_registers_read_only_but_stays_locked(self):
+    async def test_execution_composition_registers_read_only_and_ordering_stays_locked(self):
         env = {
             "BROKER_PROVIDER": "shioaji",
             "LIVE_TRADING_ENABLED": "false",
@@ -392,11 +392,13 @@ class ProductionReadOnlyTests(unittest.IsolatedAsyncioTestCase):
                 self.target
             )
             health = runtime.public_health()
-            self.assertEqual(registration.state.value, "locked")
+            self.assertEqual(registration.state.value, "ready")
             self.assertFalse(registration.capabilities.supports_market_orders)
-            self.assertEqual(health["execution_state"], "read_only_ready")
+            self.assertEqual(health["execution_state"], "ready_read_only")
             self.assertTrue(health["read_only"])
             self.assertTrue(health["locked"])
+            self.assertFalse(health["ordering_enabled"])
+            self.assertEqual(health["recovery_status"], "ready")
             self.assertEqual(runtime.state_document()["external_order_calls"], 0)
         finally:
             await runtime.close()

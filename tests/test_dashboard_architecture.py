@@ -42,6 +42,15 @@ class DashboardArchitectureTests(unittest.TestCase):
         self.assertIn("npm test", workflow)
         self.assertIn('"test":', package)
 
+    def test_settings_shows_broker_neutral_read_only_health_without_actions(self):
+        source = self.source("settings/system-health.tsx")
+        self.assertIn("broker_accounts", source)
+        self.assertIn("READY_READ_ONLY", source.replace("ready_read_only", "READY_READ_ONLY"))
+        self.assertIn("POSITION MISMATCH", source)
+        self.assertIn("UNKNOWN BROKER ORDER", source)
+        for action in ("ARM LIVE", "BUY LIVE", "SELL LIVE", "CANCEL LIVE", "FLATTEN"):
+            self.assertNotIn(action, source)
+
 
 if __name__ == "__main__":
     unittest.main()

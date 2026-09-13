@@ -47,6 +47,7 @@
 | Paper | 委託、成交、拒絕、行情阻擋、Kill Switch | 只顯示彙總，不揭露帳戶資料 |
 | Paper | submission average/max ms | 只統計本次程序啟動後的 API 處理 |
 | Host | CPU、記憶體、SQLite 所在磁碟 | 用來定位 502 是否與主機資源壓力相關 |
+| Live read-only | per-account connection、Recovery、callback、snapshot age | 只讀 execution health cache，不呼叫 broker |
 
 頂層 `system_status` 使用以下狀態，並以行情安全為最高優先：
 
@@ -92,5 +93,7 @@ Cloudflare Zero Trust 必須為 `/healthz` 建立比 Dashboard 更精確的 Bypa
 - [ ] 200 筆連續 Paper API 測試符合 CI 寬鬆預算：平均小於 100 ms、最大小於 1 秒。
 - [ ] 部署前 SQLite 備份存在且可由 SQLite 開啟。
 - [ ] CI、部署 verify、容器 health 與公開 healthz 全部成功。
+- [ ] 若啟用 production read-only，依 [Live Read-Only Recovery 驗收與 Soak](live-read-only-acceptance.md)
+      完成日盤與夜盤，real submit/cancel/replace 計數均為零。
 
 測試門檻是避免明顯效能退化，不代表外部券商 SLA，也不應用於 HFT 延遲宣稱。

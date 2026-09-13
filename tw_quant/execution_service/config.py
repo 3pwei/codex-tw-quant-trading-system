@@ -29,6 +29,11 @@ class ExecutionServiceSettings:
     database_path: str = "/data/live_market.sqlite3"
     health_path: str = "/run/tw-quant-execution/health.json"
     heartbeat_seconds: float = 5.0
+    reconciliation_interval_seconds: float = 45.0
+    reconciliation_timeout_seconds: float = 20.0
+    reconciliation_stale_seconds: float = 120.0
+    callback_queue_size: int = 1024
+    shutdown_drain_seconds: float = 5.0
 
     @classmethod
     def from_env(
@@ -70,6 +75,21 @@ class ExecutionServiceSettings:
             ).strip(),
             heartbeat_seconds=float(
                 values.get("LIVE_EXECUTION_HEARTBEAT_SECONDS", "5")
+            ),
+            reconciliation_interval_seconds=float(
+                values.get("LIVE_RECONCILIATION_INTERVAL_SECONDS", "45")
+            ),
+            reconciliation_timeout_seconds=float(
+                values.get("LIVE_RECONCILIATION_TIMEOUT_SECONDS", "20")
+            ),
+            reconciliation_stale_seconds=float(
+                values.get("LIVE_RECONCILIATION_STALE_SECONDS", "120")
+            ),
+            callback_queue_size=int(
+                values.get("LIVE_CALLBACK_QUEUE_SIZE", "1024")
+            ),
+            shutdown_drain_seconds=float(
+                values.get("LIVE_CALLBACK_SHUTDOWN_DRAIN_SECONDS", "5")
             ),
         )
 
@@ -136,4 +156,14 @@ class ExecutionServiceSettings:
             issues.append("missing_execution_health_path")
         if self.heartbeat_seconds <= 0:
             issues.append("invalid_execution_heartbeat")
+        if not 30 <= self.reconciliation_interval_seconds <= 3600:
+            issues.append("invalid_reconciliation_interval")
+        if not 1 <= self.reconciliation_timeout_seconds < self.reconciliation_interval_seconds:
+            issues.append("invalid_reconciliation_timeout")
+        if self.reconciliation_stale_seconds < self.reconciliation_interval_seconds * 2:
+            issues.append("invalid_reconciliation_stale_threshold")
+        if not 1 <= self.callback_queue_size <= 100_000:
+            issues.append("invalid_callback_queue_size")
+        if not 0.1 <= self.shutdown_drain_seconds <= 60:
+            issues.append("invalid_callback_shutdown_drain")
         return tuple(issues)

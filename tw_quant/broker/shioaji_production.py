@@ -505,6 +505,14 @@ class ShioajiProductionExecutionClient:
                 metrics.last_callback_time.isoformat()
                 if metrics and metrics.last_callback_time else None
             ),
+            "callbacks_received_total": metrics.received if metrics else 0,
+            "callbacks_dropped_total": metrics.dropped if metrics else 0,
+            "callback_normalization_failed_total": (
+                metrics.normalization_failed if metrics else 0
+            ),
+            "callback_queue_high_watermark": (
+                metrics.queue_high_watermark if metrics else 0
+            ),
         }
 
     def _require_ready(self) -> tuple[object, object]:

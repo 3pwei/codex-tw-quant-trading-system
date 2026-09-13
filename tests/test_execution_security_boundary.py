@@ -23,6 +23,8 @@ from tw_quant.broker import (
     SQLiteRecoveryLockRepository,
 )
 from tw_quant.execution_service import build_execution_service
+from tw_quant.execution_service.__main__ import _healthcheck
+from tw_quant.execution_service.config import ExecutionServiceSettings
 from tw_quant.execution_service.health import (
     BrokerConnectionHealth,
     ExecutionServiceHealth,
@@ -134,6 +136,29 @@ class ExecutionSecurityBoundaryTests(unittest.IsolatedAsyncioTestCase):
                 finally:
                     await runtime.close()
 
+    async def test_reconciliation_settings_validate_fail_closed(self):
+        cases = {
+            "invalid_reconciliation_interval": {
+                "LIVE_RECONCILIATION_INTERVAL_SECONDS": "1"
+            },
+            "invalid_reconciliation_timeout": {
+                "LIVE_RECONCILIATION_TIMEOUT_SECONDS": "60"
+            },
+            "invalid_reconciliation_stale_threshold": {
+                "LIVE_RECONCILIATION_STALE_SECONDS": "45"
+            },
+            "invalid_callback_queue_size": {"LIVE_CALLBACK_QUEUE_SIZE": "0"},
+        }
+        for expected, change in cases.items():
+            with self.subTest(expected=expected):
+                runtime = build_execution_service(env=self.environment(**change))
+                try:
+                    self.assertIn(expected, runtime.issues)
+                    self.assertIsNone(runtime.read_only_client)
+                    self.assertEqual(runtime.worker.snapshot()["dispatches"], 0)
+                finally:
+                    await runtime.close()
+
     async def test_open_ca_permissions_fail_closed(self):
         self.ca.chmod(0o644)
         runtime = build_execution_service(env=self.environment())
@@ -235,6 +260,8 @@ class ExecutionSecurityBoundaryTests(unittest.IsolatedAsyncioTestCase):
                     "callback_registered",
                     "last_broker_read_time",
                     "last_callback_time",
+                    "ordering_enabled",
+                    "broker_accounts",
                 },
             )
             payload = json.dumps(health)
@@ -247,6 +274,22 @@ class ExecutionSecurityBoundaryTests(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn(value, payload)
         finally:
             await runtime.close()
+
+    async def test_container_health_accepts_read_only_ready_only_with_zero_writes(self):
+        path = self.root / "container-health.json"
+        path.write_text(json.dumps({
+            "heartbeat_at": datetime.now(timezone.utc).isoformat(),
+            "locked": True,
+            "execution_state": "ready_read_only",
+            "external_order_calls": 0,
+            "external_cancel_calls": 0,
+        }), encoding="utf-8")
+        settings = ExecutionServiceSettings(health_path=str(path))
+        self.assertEqual(_healthcheck(settings), 0)
+        document = json.loads(path.read_text(encoding="utf-8"))
+        document["external_cancel_calls"] = 1
+        path.write_text(json.dumps(document), encoding="utf-8")
+        self.assertEqual(_healthcheck(settings), 1)
 
     async def test_fake_broker_secret_lookup_is_isolated_by_full_identity(self):
         first = BrokerAccountRef("broker-a", "account-1")
@@ -344,7 +387,7 @@ class BoundaryArchitectureTests(unittest.TestCase):
 
     def test_public_application_does_not_construct_production_execution(self):
         source = (ROOT / "tw_quant/live/api.py").read_text(encoding="utf-8")
-        self.assertIn("DisabledExecutionWorker()", source)
+        self.assertIn("ExecutionHealthFileMonitor", source)
         self.assertNotIn("ShioajiBrokerAdapter", source)
         self.assertNotIn("execution_service", source)
         self.assertNotIn("CA_CERT_PATH", source)
@@ -421,6 +464,18 @@ class BoundaryArchitectureTests(unittest.TestCase):
             self.assertNotIn("broker.shioaji", source, path.name)
             self.assertNotIn("SJ_API_KEY", source, path.name)
             self.assertNotIn("SJ_SECRET_KEY", source, path.name)
+
+    def test_production_recovery_worker_has_no_dispatch_or_write_call(self):
+        source = (ROOT / "tw_quant/broker/worker.py").read_text(encoding="utf-8")
+        read_only_worker = source.split("class BrokerAccountWorker:", 1)[1].split(
+            "class ExecutionSupervisor:", 1
+        )[0]
+        for forbidden in ("dispatch_once", "submit_order", "cancel_order", "replace"):
+            self.assertNotIn(forbidden, read_only_worker)
+        composition = (ROOT / "tw_quant/execution_service/runtime.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("dispatch_once", composition)
 
 
 if __name__ == "__main__":
