@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 import tempfile
 import time
 import unittest
+from types import SimpleNamespace
 
 from tw_quant.broker import (
     BrokerAccountRef,
@@ -48,6 +50,29 @@ class FakeApi:
         self.slow_reads = False
         self.login_error: Exception | None = None
         self.callback_error: Exception | None = None
+        self.Contracts = SimpleNamespace(Futures={"TMFU6": {"code": "TMFU6"}})
+        self.placed_orders: list[object] = []
+        self.cancelled_orders: list[object] = []
+
+    def Order(self, **values: object) -> object:
+        return SimpleNamespace(**values)
+
+    def place_order(self, contract: object, order: object) -> object:
+        self.calls.append("place_order")
+        self.placed_orders.append(order)
+        trade = {
+            "contract": contract,
+            "order": {"account_id": "account-1", "action": getattr(order, "action")},
+            "status": {"id": "broker-canary-1", "status": "Submitted", "deals": []},
+        }
+        self.trades.append(trade)
+        return trade
+
+    def cancel_order(self, trade: object) -> object:
+        self.calls.append("cancel_order")
+        self.cancelled_orders.append(trade)
+        trade["status"]["status"] = "Cancelled"
+        return trade
 
     def _enter(self, name: str) -> None:
         self.calls.append(name)
@@ -108,6 +133,12 @@ class FakeSdk:
     def __init__(self, api: FakeApi):
         self.api = api
         self.simulation_values: list[bool] = []
+        self.constant = SimpleNamespace(
+            Action=SimpleNamespace(Buy="Buy", Sell="Sell"),
+            FuturesPriceType=SimpleNamespace(LMT="LMT"),
+            OrderType=SimpleNamespace(IOC="IOC"),
+            FuturesOCType=SimpleNamespace(Auto="Auto"),
+        )
 
     def Shioaji(self, *, simulation: bool) -> FakeApi:
         self.simulation_values.append(simulation)
@@ -362,6 +393,25 @@ class ProductionReadOnlyTests(unittest.IsolatedAsyncioTestCase):
                 await call
         self.assertNotIn("place_order", self.api.calls)
         self.assertNotIn("cancel_order", self.api.calls)
+
+    async def test_canary_mode_allows_only_one_verified_limit_ioc_and_cancel(self):
+        client = self.client(effective_mode="canary")
+        await client.start()
+        request = BrokerOrderRequest(
+            "canary:1", "owner-1", "manual-live-canary", 1,
+            "TMF", "TMF-202609", "buy", 1, ExecutionMode.LIVE,
+            order_type="limit", time_in_force="ioc", limit_price=100,
+            source="manual_live_canary", arm_id="arm:1",
+        )
+        report = await client.submit(request)
+        self.assertEqual(report.broker_order_id, "broker-canary-1")
+        self.assertEqual(client.health_state()["external_order_calls"], 1)
+        cancelled = await client.cancel("broker-canary-1")
+        self.assertEqual(cancelled.status, "cancelled")
+        self.assertEqual(client.health_state()["external_cancel_calls"], 1)
+        with self.assertRaises(ShioajiProductionError):
+            await client.submit(replace(request, quantity=2))
+        self.assertEqual(client.health_state()["external_order_calls"], 1)
 
     async def test_execution_composition_registers_read_only_and_ordering_stays_locked(self):
         env = {

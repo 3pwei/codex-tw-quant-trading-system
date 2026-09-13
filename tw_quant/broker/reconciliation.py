@@ -135,6 +135,12 @@ class LiveReconciliationService:
             if self.truth_store is not None and snapshot.account_ref == self.account_ref:
                 self.truth_store.save(self.account_ref, snapshot)
             issues = self._issues(local_orders, snapshot)
+            if not issues:
+                persist_snapshot = getattr(
+                    self.order_store, "apply_reconciled_snapshot", None
+                )
+                if callable(persist_snapshot):
+                    persist_snapshot(self.account_ref, snapshot)
         except Exception as exc:
             captured_at = self.now()
             code = getattr(exc, "code", None)

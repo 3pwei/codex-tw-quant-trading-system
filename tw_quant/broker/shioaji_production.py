@@ -9,7 +9,8 @@ from functools import partial
 import json
 from pathlib import Path
 import threading
-from typing import Any, Callable, Mapping
+from time import perf_counter
+from typing import Any, Callable, Literal, Mapping
 
 from .capabilities import BrokerCapabilities
 from .events import BrokerEvent, broker_event_id
@@ -40,6 +41,15 @@ SHIOAJI_TECHNICAL_CAPABILITIES = BrokerCapabilities(
 # Runtime capabilities, not theoretical SDK features. No write capability is
 # advertised until a later, separately reviewed production-order PR.
 SHIOAJI_READ_ONLY_CAPABILITIES = BrokerCapabilities(
+    supports_order_callback=True,
+    supports_fill_callback=True,
+    supports_partial_fills=True,
+)
+
+SHIOAJI_CANARY_CAPABILITIES = BrokerCapabilities(
+    supports_limit_orders=True,
+    supports_ioc=True,
+    supports_cancel=True,
     supports_order_callback=True,
     supports_fill_callback=True,
     supports_partial_fills=True,
@@ -340,6 +350,7 @@ class ShioajiProductionExecutionClient:
         instrument_mapper: ShioajiInstrumentMapper,
         sdk: object | None = None,
         callback_queue_size: int = 1024,
+        effective_mode: Literal["read_only", "canary"] = "read_only",
         now: Callable[[], datetime] | None = None,
     ):
         if account_ref.broker_name != "shioaji":
@@ -352,6 +363,7 @@ class ShioajiProductionExecutionClient:
         self.instrument_mapper = instrument_mapper
         self.sdk = sdk
         self.now = now or (lambda: datetime.now(timezone.utc))
+        self.effective_mode = effective_mode
         self.api: object | None = None
         self.account: object | None = None
         self.callback_queue: asyncio.Queue[BrokerEvent] = asyncio.Queue(callback_queue_size)
@@ -360,6 +372,11 @@ class ShioajiProductionExecutionClient:
         self._state = "disconnected"
         self._connected = self._ca_ready = self._callback_registered = False
         self._last_broker_read_time: datetime | None = None
+        self._trades: dict[str, object] = {}
+        self._external_order_calls = 0
+        self._external_cancel_calls = 0
+        self._broker_response_total_ms = 0.0
+        self._broker_response_max_ms = 0.0
 
     @property
     def state(self) -> str:
@@ -378,7 +395,8 @@ class ShioajiProductionExecutionClient:
             return await asyncio.to_thread(partial(function, *args, **kwargs))
 
     async def start(self) -> None:
-        if self._state == "read_only_ready":
+        ready_state = "canary_ready" if self.effective_mode == "canary" else "read_only_ready"
+        if self._state == ready_state:
             return
         self._state = "connecting"
         try:
@@ -448,7 +466,7 @@ class ShioajiProductionExecutionClient:
             except Exception as exc:
                 raise ShioajiProductionError("callback_registration_failed") from exc
             self._callback_registered = True
-            self._state = "read_only_ready"
+            self._state = ready_state
         except ShioajiProductionError:
             self._state = "locked"
             await self._logout_after_failed_start()
@@ -459,7 +477,7 @@ class ShioajiProductionExecutionClient:
             raise ShioajiProductionError("broker_login_failed") from exc
 
     def _mark_degraded(self) -> None:
-        if self._state == "read_only_ready":
+        if self._state in {"read_only_ready", "canary_ready"}:
             self._state = "degraded"
 
     async def _logout_after_failed_start(self) -> None:
@@ -487,7 +505,8 @@ class ShioajiProductionExecutionClient:
             "account_id": self.account_ref.account_id,
             "connected": self._connected,
             "ca_ready": self._ca_ready,
-            "read_only": True,
+            "read_only": self.effective_mode == "read_only",
+            "canary": self.effective_mode == "canary",
         }
 
     def health_state(self) -> Mapping[str, object]:
@@ -496,7 +515,8 @@ class ShioajiProductionExecutionClient:
             "execution_state": self._state,
             "connected": self._connected,
             "ca_ready": self._ca_ready,
-            "read_only": True,
+            "read_only": self.effective_mode == "read_only",
+            "canary": self.effective_mode == "canary",
             "callback_registered": self._callback_registered,
             "last_broker_read_time": (
                 self._last_broker_read_time.isoformat() if self._last_broker_read_time else None
@@ -513,11 +533,19 @@ class ShioajiProductionExecutionClient:
             "callback_queue_high_watermark": (
                 metrics.queue_high_watermark if metrics else 0
             ),
+            "external_order_calls": self._external_order_calls,
+            "external_cancel_calls": self._external_cancel_calls,
+            "average_broker_response_ms": (
+                self._broker_response_total_ms
+                / (self._external_order_calls + self._external_cancel_calls)
+                if self._external_order_calls + self._external_cancel_calls else None
+            ),
+            "max_broker_response_ms": self._broker_response_max_ms,
         }
 
     def _require_ready(self) -> tuple[object, object]:
         if (
-            self._state not in {"read_only_ready", "degraded"}
+            self._state not in {"read_only_ready", "canary_ready", "degraded"}
             or self.api is None
             or self.account is None
         ):
@@ -621,7 +649,9 @@ class ShioajiProductionExecutionClient:
             self._state = "degraded"
             raise ShioajiProductionError("broker_read_failed") from exc
         self._last_broker_read_time = captured_at
-        self._state = "read_only_ready"
+        self._state = (
+            "canary_ready" if self.effective_mode == "canary" else "read_only_ready"
+        )
         return snapshot
 
     async def positions(self) -> list[Mapping[str, object]]:
@@ -663,12 +693,133 @@ class ShioajiProductionExecutionClient:
         return None
 
     async def submit(self, request: BrokerOrderRequest) -> ExternalOrderReport:
-        raise RuntimeError(READ_ONLY_ERROR)
+        if self.effective_mode != "canary":
+            raise RuntimeError(READ_ONLY_ERROR)
+        if request.source != "manual_live_canary" or not request.arm_id:
+            raise ShioajiProductionError("live_canary_source_not_allowed")
+        api, account = self._require_ready()
+        if request.order_type != "limit" or request.time_in_force != "ioc":
+            raise ShioajiProductionError("live_canary_policy_not_allowed")
+        if request.quantity != 1 or request.limit_price is None:
+            raise ShioajiProductionError("live_canary_quantity_not_allowed")
+        broker_code = self.instrument_mapper.to_broker_contract(
+            CanonicalInstrument(request.symbol, request.contract)
+        )
+        contract = self._contract(api, broker_code)
+        try:
+            order_factory = getattr(api, "Order", None)
+            if not callable(order_factory):
+                order_factory = getattr(getattr(self.sdk, "order", None), "Order", None)
+            if not callable(order_factory):
+                raise ShioajiProductionError("broker_order_factory_unavailable")
+            order = order_factory(
+                action=self._constant("Action", "Buy" if request.side == "buy" else "Sell"),
+                price=request.limit_price,
+                quantity=request.quantity,
+                price_type=self._constant("FuturesPriceType", "LMT"),
+                order_type=self._constant("OrderType", "IOC"),
+                octype=self._constant("FuturesOCType", "Auto"),
+                account=account,
+            )
+            self._external_order_calls += 1
+            started = perf_counter()
+            try:
+                trade = await self._call(api.place_order, contract, order)
+            finally:
+                elapsed = (perf_counter() - started) * 1_000
+                self._broker_response_total_ms += elapsed
+                self._broker_response_max_ms = max(self._broker_response_max_ms, elapsed)
+            report = self._trade_report(trade)
+        except ShioajiProductionError:
+            raise
+        except Exception as exc:
+            raise ShioajiProductionError("broker_submit_result_unknown") from exc
+        if report.broker_order_id:
+            self._trades[report.broker_order_id] = trade
+        return report
 
     async def cancel(self, broker_order_id: str) -> ExternalOrderReport:
-        raise RuntimeError(READ_ONLY_ERROR)
+        if self.effective_mode != "canary":
+            raise RuntimeError(READ_ONLY_ERROR)
+        api, _account = self._require_ready()
+        trade = self._trades.get(broker_order_id)
+        if trade is None:
+            try:
+                trades, _ = await self._call(self._raw_snapshot)
+                trade = next(
+                    (item for item in trades if _order_id(item) == broker_order_id),
+                    None,
+                )
+            except Exception as exc:
+                raise ShioajiProductionError("broker_cancel_result_unknown") from exc
+        if trade is None:
+            raise ShioajiProductionError("broker_order_not_found")
+        try:
+            self._external_cancel_calls += 1
+            started = perf_counter()
+            try:
+                returned = await self._call(api.cancel_order, trade)
+            finally:
+                elapsed = (perf_counter() - started) * 1_000
+                self._broker_response_total_ms += elapsed
+                self._broker_response_max_ms = max(self._broker_response_max_ms, elapsed)
+            if returned is not None:
+                trade = returned
+            else:
+                await self._call(api.update_status, self.account)
+            return self._trade_report(trade)
+        except ShioajiProductionError:
+            raise
+        except Exception as exc:
+            raise ShioajiProductionError("broker_cancel_result_unknown") from exc
 
     async def replace(
         self, broker_order_id: str, request: BrokerOrderRequest
     ) -> ExternalOrderReport:
         raise RuntimeError(READ_ONLY_ERROR)
+
+    def _constant(self, group: str, name: str) -> object:
+        constants = getattr(self.sdk, "constant")
+        return getattr(getattr(constants, group), name)
+
+    @staticmethod
+    def _contract(api: object, code: str) -> object:
+        contracts = getattr(api, "Contracts", getattr(api, "contracts", None))
+        futures = getattr(contracts, "Futures", contracts)
+        getter = getattr(futures, "get", None)
+        contract = getter(code) if callable(getter) else None
+        if contract is None:
+            try:
+                contract = futures[code]
+            except (KeyError, TypeError):
+                contract = None
+        if contract is None:
+            raise ShioajiProductionError("broker_instrument_unavailable")
+        return contract
+
+    def _trade_report(self, trade: object) -> ExternalOrderReport:
+        broker_order_id = _order_id(trade)
+        if not broker_order_id:
+            raise ShioajiProductionError("broker_submit_result_unknown")
+        status = _status(trade)
+        deals = _field(_field(trade, "status", {}), "deals", ()) or ()
+        quantity = sum(
+            int(_field(item, "quantity", _field(item, "qty", 0)) or 0)
+            for item in deals
+        )
+        average = (
+            sum(
+                float(_field(item, "price", 0) or 0)
+                * int(_field(item, "quantity", _field(item, "qty", 0)) or 0)
+                for item in deals
+            ) / quantity
+            if quantity else None
+        )
+        return ExternalOrderReport(
+            broker_order_id=broker_order_id,
+            status=status.value,  # type: ignore[arg-type]
+            occurred_at=self.now(),
+            filled_quantity=quantity,
+            average_fill_price=average,
+            reason="shioaji_broker_response",
+        )

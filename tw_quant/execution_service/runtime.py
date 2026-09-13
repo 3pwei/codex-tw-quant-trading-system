@@ -11,6 +11,8 @@ from typing import Callable, Mapping, Protocol
 from ..broker import (
     BrokerAccountSafety,
     BrokerAccountWorker,
+    CanaryBrokerAccountWorker,
+    CanaryOrderAdmissionGate,
     BrokerCallbackConsumer,
     BrokerCapabilities,
     BrokerConnectionSettings,
@@ -29,11 +31,13 @@ from ..broker import (
     LiveReconciliationService,
     LIVE_TRADING_CONFIRMATION,
     LockedOrderAdmissionGate,
+    SQLiteCanaryArmRepository,
     SQLiteLiveOrderRepository,
     SQLiteBrokerEventAuditRepository,
     SQLiteRecoveryLockRepository,
     SQLiteBrokerTruthRepository,
     SHIOAJI_READ_ONLY_CAPABILITIES,
+    SHIOAJI_CANARY_CAPABILITIES,
     ShioajiBrokerAdapter,
     ShioajiInstrumentMapper,
     ShioajiProductionExecutionClient,
@@ -45,6 +49,8 @@ from .config import ExecutionServiceSettings
 from .health import BrokerConnectionHealth
 from .redaction import SecretRedactionFilter, mask_account
 from .secrets import SecretConfigurationError
+from ..live.shadow_store import SQLiteShadowExecutionRepository
+from ..risk.live import LiveKillSwitchAction, LiveKillSwitchScope
 
 
 LOGGER = logging.getLogger("tw_quant.execution_service")
@@ -75,6 +81,8 @@ class ExecutionServiceRuntime:
     truth_repository: SQLiteBrokerTruthRepository | None = field(
         default=None, repr=False
     )
+    canary_arm_repository: SQLiteCanaryArmRepository | None = field(default=None, repr=False)
+    kill_switch_repository: SQLiteShadowExecutionRepository | None = field(default=None, repr=False)
     broker_registry: BrokerRegistry | None = field(default=None, repr=False)
     redaction_filter: SecretRedactionFilter | None = field(default=None, repr=False)
     read_only_client: ShioajiProductionExecutionClient | None = field(
@@ -85,7 +93,7 @@ class ExecutionServiceRuntime:
 
     @property
     def locked(self) -> bool:
-        return True
+        return bool(self.public_health()["locked"])
 
     def public_health(self) -> dict[str, object]:
         account = self.connection.account_ref if self.connection is not None else None
@@ -100,6 +108,29 @@ class ExecutionServiceRuntime:
             self.read_only_client.health_state()
             if self.read_only_client is not None
             else {}
+        )
+        recovery_status = str(
+            (account_health or {}).get("recovery_status") or "locked"
+        )
+        connected = bool((account_health or {}).get("broker_connected", False))
+        ca_ready = bool((account_health or {}).get("ca_ready", False))
+        arm_active = False
+        if (
+            self.settings.live_canary_enabled
+            and self.canary_arm_repository is not None
+            and account is not None
+            and len(self.settings.live_canary_allowed_owner_ids) == 1
+        ):
+            owner_id = next(iter(self.settings.live_canary_allowed_owner_ids))
+            arm_active = self.canary_arm_repository.active(
+                owner_id, account, datetime.now(timezone.utc)
+            ) is not None
+        ordering_enabled = bool(
+            self.settings.live_canary_enabled
+            and arm_active
+            and recovery_status == "ready"
+            and connected
+            and ca_ready
         )
         summary = BrokerConnectionHealth(
             connection_id=(
@@ -127,14 +158,10 @@ class ExecutionServiceRuntime:
                 self.settings.live_trading_enabled
                 or self.settings.production_read_only_enabled
             ),
-            locked=True,
-            recovery_status=str(
-                (account_health or {}).get("recovery_status") or "locked"
-            ),
-            connected=bool(
-                (account_health or {}).get("broker_connected", False)
-            ),
-            ca_ready=bool((account_health or {}).get("ca_ready", False)),
+            locked=not ordering_enabled,
+            recovery_status=recovery_status,
+            connected=connected,
+            ca_ready=ca_ready,
             read_only=bool(client_health.get("read_only", False)),
             callback_registered=bool(
                 client_health.get("callback_registered", False)
@@ -146,17 +173,18 @@ class ExecutionServiceRuntime:
         ).to_public_dict()
         return {
             **summary,
-            "ordering_enabled": False,
+            "ordering_enabled": ordering_enabled,
             "broker_accounts": worker_health.get("broker_accounts", []),
         }
 
     def state_document(self) -> dict[str, object]:
+        worker_health = self.worker.snapshot()
         return {
             **self.public_health(),
             "heartbeat_at": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
             "issue_codes": list(dict.fromkeys(self.issues)),
-            "external_order_calls": 0,
-            "external_cancel_calls": 0,
+            "external_order_calls": int(worker_health.get("external_order_calls", 0) or 0),
+            "external_cancel_calls": int(worker_health.get("external_cancel_calls", 0) or 0),
         }
 
     def write_health(self) -> None:
@@ -203,6 +231,10 @@ class ExecutionServiceRuntime:
             self.order_repository.close()
         if self.truth_repository is not None:
             self.truth_repository.close()
+        if self.canary_arm_repository is not None:
+            self.canary_arm_repository.close()
+        if self.kill_switch_repository is not None:
+            self.kill_switch_repository.close()
         if self.redaction_filter is not None:
             LOGGER.removeFilter(self.redaction_filter)
 
@@ -256,6 +288,8 @@ def build_execution_service(
     recovery = None
     audit = None
     truth = None
+    canary_arms = None
+    kill_switches = None
     registry = None
     redactor = None
     read_only_client = None
@@ -274,7 +308,7 @@ def build_execution_service(
         port = LockedBroker(account.broker_name)
         capabilities = BrokerCapabilities()
         mapper = LockedInstrumentMapper()
-        if config.production_read_only_enabled:
+        if config.production_read_only_enabled or config.live_canary_enabled:
             try:
                 mapper = ShioajiInstrumentMapper.from_json(
                     config.instrument_map_json
@@ -284,19 +318,29 @@ def build_execution_service(
                 mapper = LockedInstrumentMapper()
             if isinstance(mapper, LockedInstrumentMapper):
                 material = None
-        if config.production_read_only_enabled and material is not None:
+        if (config.production_read_only_enabled or config.live_canary_enabled) and material is not None:
             read_only_client = production_client_factory(
                 account_ref=account,
                 allowed_accounts=config.allowed_accounts,
                 secret_material=material,
                 instrument_mapper=mapper,
                 callback_queue_size=config.callback_queue_size,
+                effective_mode="canary" if config.live_canary_enabled else "read_only",
             )
             port = ShioajiBrokerAdapter(
                 read_only_client,
-                LiveTradingSafety(account_id=account.account_id, enabled=False),
+                LiveTradingSafety(
+                    account_id=account.account_id,
+                    enabled=config.live_canary_enabled,
+                    confirmation=config.confirmation,
+                    allowed_account_ids=config.allowed_account_ids,
+                ),
             )
-            capabilities = SHIOAJI_READ_ONLY_CAPABILITIES
+            capabilities = (
+                SHIOAJI_CANARY_CAPABILITIES
+                if config.live_canary_enabled
+                else SHIOAJI_READ_ONLY_CAPABILITIES
+            )
         registry.register(BrokerRegistration(
             account_ref=account,
             port=port,
@@ -312,7 +356,7 @@ def build_execution_service(
             ),
         ))
         registry.freeze()
-        admission = CompositeOrderAdmissionGate((
+        gates = [
             RecoveryOrderGate(recovery, account),
             BrokerAccountSafety(
                 account=account,
@@ -320,8 +364,46 @@ def build_execution_service(
                 confirmation=config.confirmation,
                 allowed_accounts=config.allowed_accounts,
             ),
-            LockedOrderAdmissionGate(),
-        ))
+        ]
+        if config.live_canary_enabled and read_only_client is not None:
+            canary_arms = SQLiteCanaryArmRepository(config.database_path)
+            kill_switches = SQLiteShadowExecutionRepository(config.database_path)
+            canary_config = config.canary_config
+            def kill_switch_blocks(owner_id: str, reduce_only: bool) -> bool:
+                account_scope = f"{account.broker_name}:{account.account_id}"
+                states = kill_switches.kill_switches({
+                    (LiveKillSwitchScope.GLOBAL.value, "global"),
+                    (LiveKillSwitchScope.OWNER.value, owner_id),
+                    (LiveKillSwitchScope.BROKER_ACCOUNT.value, account_scope),
+                })
+                return any(
+                    state.action in {LiveKillSwitchAction.CANCEL_WORKING, LiveKillSwitchAction.FLATTEN}
+                    or (state.action is LiveKillSwitchAction.HALT_ENTRY and not reduce_only)
+                    for state in states
+                )
+            gates.append(CanaryOrderAdmissionGate(
+                config=canary_config,
+                arms=canary_arms,
+                target=account,
+                assert_recovery_ready=lambda: recovery.assert_ready(
+                    account.broker_name, account.account_id
+                ),
+                readiness=lambda: {
+                    **dict(read_only_client.health_state()),
+                    "unknown_orders": sum(
+                        order.status.value == "unknown"
+                        for order in orders.orders(target=account)
+                    ),
+                },
+                kill_switch_blocks=kill_switch_blocks,
+                now=lambda: datetime.now(timezone.utc),
+            ))
+            orders.block_pending_dispatches(
+                account, "restart_requires_operator_rearm_and_new_request"
+            )
+        else:
+            gates.append(LockedOrderAdmissionGate())
+        admission = CompositeOrderAdmissionGate(tuple(gates))
         manager = LiveOrderManager(orders, registry, {account: admission})
         if read_only_client is not None and audit is not None:
             reconciliation = LiveReconciliationService(
@@ -333,7 +415,15 @@ def build_execution_service(
                 truth_store=truth,
             )
             consumer = BrokerCallbackConsumer(audit, manager)
-            account_worker = BrokerAccountWorker(
+            worker_type = (
+                CanaryBrokerAccountWorker
+                if config.live_canary_enabled
+                else BrokerAccountWorker
+            )
+            worker_kwargs = (
+                {"order_manager": manager} if config.live_canary_enabled else {}
+            )
+            account_worker = worker_type(
                 account_ref=account,
                 client=read_only_client,
                 reconciliation=reconciliation,
@@ -351,10 +441,15 @@ def build_execution_service(
                     callback_queue_size=config.callback_queue_size,
                     shutdown_drain_seconds=config.shutdown_drain_seconds,
                 ),
+                **worker_kwargs,
             )
             worker = ExecutionSupervisor((account_worker,))
 
-    issues.append("production_submit_disabled")
+    issues.append(
+        "strategy_auto_live_disabled"
+        if config.live_canary_enabled
+        else "production_submit_disabled"
+    )
     return ExecutionServiceRuntime(
         settings=config,
         connection=connection,
@@ -365,6 +460,8 @@ def build_execution_service(
         recovery_repository=recovery,
         audit_repository=audit,
         truth_repository=truth,
+        canary_arm_repository=canary_arms,
+        kill_switch_repository=kill_switches,
         broker_registry=registry,
         redaction_filter=redactor,
         read_only_client=read_only_client,
