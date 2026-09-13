@@ -55,6 +55,18 @@ class CompositeOrderAdmissionGate:
         for gate in self.gates:
             gate.assert_ordering_allowed()
 
+    def assert_order_allowed(self, routed_order: object) -> None:
+        for gate in self.gates:
+            method = getattr(gate, "assert_order_allowed", None)
+            if callable(method):
+                method(routed_order)
+
+    def assert_cancel_allowed(self, routed_order: object) -> None:
+        for gate in self.gates:
+            method = getattr(gate, "assert_cancel_allowed", None)
+            if callable(method):
+                method(routed_order)
+
 
 @dataclass(frozen=True)
 class LockedOrderAdmissionGate:

@@ -35,10 +35,27 @@ class LiveOrderManager:
                 ) from exc
             gate.assert_ordering_allowed()
 
+    def _gate(self, target: BrokerAccountRef) -> OrderAdmissionGate | None:
+        return self.admission_gates.get(target) if self.admission_gates else None
+
+    def _assert_order_admitted(self, routed: object, *, cancel: bool = False) -> None:
+        target = routed.target  # type: ignore[attr-defined]
+        gate = self._gate(target)
+        if gate is None:
+            return
+        method = getattr(
+            gate,
+            "assert_cancel_allowed" if cancel else "assert_order_allowed",
+            None,
+        )
+        if callable(method):
+            method(routed)
+
     def create(
         self, routed_request: RoutedBrokerOrderRequest
     ) -> tuple[BrokerOrder, bool]:
         self._assert_admitted(routed_request.target)
+        self._assert_order_admitted(routed_request)
         return self.repository.reserve(routed_request)
 
     async def dispatch_once(self, target: BrokerAccountRef) -> BrokerOrder | None:

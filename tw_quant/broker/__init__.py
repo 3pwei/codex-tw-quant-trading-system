@@ -7,6 +7,15 @@ from .audit import (
     SQLiteBrokerEventAuditRepository,
 )
 from .callback_consumer import BrokerCallbackConsumer
+from .canary import (
+    LIVE_CANARY_CONFIRMATION,
+    CanaryArmSession,
+    CanaryArmStore,
+    CanaryOrderAdmissionGate,
+    LiveCanaryConfig,
+    arm_expiry,
+)
+from .canary_repository import SQLiteCanaryArmRepository
 from .capabilities import BrokerCapabilities
 from .disabled import DisabledBroker, LockedBroker
 from .events import BrokerEvent, broker_event_id
@@ -148,6 +157,8 @@ __all__ = [
     "ExternalOrderReport",
     "InvalidOrderTransition",
     "LiveTradingSafety",
+    "LiveCanaryConfig",
+    "LIVE_CANARY_CONFIRMATION",
     "LIVE_TRADING_CONFIRMATION",
     "LiveOrderManager",
     "LiveOrderStore",
@@ -192,6 +203,7 @@ __all__ = [
     "build_broker",
     "build_execution_runtime",
     "broker_event_id",
+    "arm_expiry",
     "BrokerTruthStore",
     "SQLiteBrokerTruthRepository",
 ]
