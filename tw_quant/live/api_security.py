@@ -32,6 +32,18 @@ def required_permission(method: str, path: str) -> str | None:
         return "backtest.run"
     if path.startswith("/api/live-shadow"):
         return "strategy.read.own" if method == "GET" else "__deny_unknown_api__"
+    if path == "/api/live/canary" and method == "GET":
+        return "orders.live.read"
+    if path == "/api/live/canary/arm":
+        return "orders.live.arm"
+    if path == "/api/live/canary/kill-switch" and method == "POST":
+        return "orders.live.cancel"
+    if path == "/api/live/orders" and method == "POST":
+        return "orders.live.manual"
+    if path.startswith("/api/live/orders/") and path.endswith("/cancel"):
+        return "orders.live.cancel" if method == "POST" else "__deny_unknown_api__"
+    if path == "/api/live/position/close" and method == "POST":
+        return "orders.live.close"
     if path.startswith("/api/trading-runtimes"):
         if method == "POST" and path.endswith("/arm"):
             return "orders.paper"
@@ -78,6 +90,8 @@ def rate_limit_scope(method: str, path: str) -> str | None:
         or (path.startswith("/api/replay/sessions/") and path.endswith("/orders"))
     ):
         return "orders"
+    if path.startswith("/api/live/") and method in {"POST", "DELETE"}:
+        return "live_orders"
     return None
 
 

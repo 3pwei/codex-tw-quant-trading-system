@@ -1,8 +1,8 @@
 # 程式架構與依賴規則
 
 本文件是新進維護者理解系統的入口。現階段平台提供行情、策略研究、歷史回測、
-Replay 與 Paper Trading；真實券商下單尚未啟用。架構調整採漸進式遷移，既有 API
-在替代實作完成前不得直接移除。
+Replay、Paper Trading 與預設停用的 Manual Live Canary；Strategy Auto Live 尚未
+啟用。架構調整採漸進式遷移，既有 API 在替代實作完成前不得直接移除。
 
 ## 執行路徑
 
@@ -16,6 +16,7 @@ Replay 與 Paper Trading；真實券商下單尚未啟用。架構調整採漸�
 | Shioaji Simulation | `ShioajiSimulationExecutionClient` | SDK 整合測試，尚未接 API／Worker | 模擬環境限定 |
 | Live read-only | execution worker + `BrokerRegistry` | Shioaji production account truth；per-account recovery | 只讀連線可明確啟用，寫入停用 |
 | Live Shadow | closed-bar Strategy Runtime | Live Risk + Execution Policy → shadow audit | 不呼叫 BrokerPort，不建立 live outbox |
+| Manual Live Canary | authenticated human + ephemeral ARM | durable order/outbox → isolated worker | 預設停用；一口 allowlisted submit/cancel only |
 
 Strategy Runtime 提供 Observe Mode，以及預設 paused、必須明確 armed 的 Paper Auto
 Mode。Paper Auto entry 由 closed-bar durable Decision 經 market/account/permission/
@@ -44,7 +45,7 @@ Fill 前會再以 executable open（含滑價）與 preliminary stop 執行 gap-
 | `paper` | Paper use case、BrokerPort adapter、持久化與復原 | 真實券商送單 |
 | `broker` | 訂單契約、生命週期、durable outbox、Broker port 與 adapter | 行情供應、策略規則 |
 | `live` | API、WebSocket、組裝服務與監控 | 交易領域規則 |
-| `execution_service` | 隔離 process composition、secret/CA、production read-only lifecycle、locked health | HTTP、策略、production SDK submit/cancel |
+| `execution_service` | 隔離 process、secret/CA、read/recovery；明確 opt-in Canary dispatch | HTTP、策略、未經 admission 的 SDK write |
 
 ## Live Execution Security Boundary
 
@@ -52,8 +53,8 @@ Public Application 與 Execution Service 是不同 process/container。前者不
 broker credentials 或 CA，也不建構任何 production broker client。後者無 HTTP
 port、Caddy route 或 browser endpoint，並透過既有 SQLite live outbox/recovery 邊界與
 application 解耦。預設仍組裝 `DisabledExecutionWorker`；明確啟用 read-only connection
-時則註冊 Shioaji adapter 讀取 broker truth，但 registration 與 admission gate 保持
-locked，client 也拒絕 submit/cancel/replace，因此真實委託仍為零。
+時只註冊 Shioaji adapter 讀取 broker truth，client 拒絕 submit/cancel/replace。只有
+另一組預設關閉的 Canary config 加上 ephemeral ARM，才會掛載受限 dispatch worker。
 
 ### Broker-neutral Execution Boundary
 
@@ -168,9 +169,9 @@ flowchart TD
 
 每個 worker 只持有一個 `BrokerAccountRef`、client、bounded callback queue、consumer、
 reconciliation service、Recovery Lock 與 cached health。不同帳戶可並行，但同一帳戶以
-async lock 保證最多一輪 reconciliation。Worker 不含 dispatch task；Registry 的
-`READY` 只表示 adapter 可供 read/refresh，永久 `LockedOrderAdmissionGate` 與 read-only
-client 仍拒絕所有寫入。
+async lock 保證最多一輪 reconciliation。Read-only worker 不含 dispatch task；Registry
+的 `READY` 只表示 adapter 可供 read/refresh，`LockedOrderAdmissionGate` 與 read-only
+client 仍拒絕所有寫入。Canary 使用獨立 worker subtype，不改變此預設。
 
 啟動順序固定為 `STARTING → LOCKED → BROKER_CONNECTING →
 BROKER_READ_ONLY_READY → RECONCILING → READY_READ_ONLY`。第一個可觀察 side effect 是
@@ -302,20 +303,20 @@ callback 內容是喚醒 reconciliation 的提示，不是訂單與部位的真�
 Recovery Lock 為 `ready` 才能通過。對帳失敗只回報 issue code，不會自行建立成交、
 調整 Position Ledger、撤單或平倉。
 
-`ShioajiBrokerAdapter` 不得直接由 HTTP handler 建立。Production read-only client
-由 execution service composition 建立；仍需外部告警與人工營運解鎖流程。
+`ShioajiBrokerAdapter` 不得直接由 HTTP handler 建立。Production client 由 execution
+service composition 建立；Canary 仍需外部告警與第一次人工 readiness review。
 Production client 是明確的新組裝路徑，simulation client
 永遠不接受 `simulation=False`。
 
 `BrokerAccountWorker` 統一管理啟動對帳、callback audit consumer、定期三方對帳及
-heartbeat，但刻意沒有 durable outbox dispatch task。啟動時 Recovery Lock 未達
+heartbeat，read-only variant 刻意沒有 durable outbox dispatch task。啟動時 Recovery Lock 未達
 `ready`，或任一輪對帳失敗，worker 都保持 locked；callback queue 必須有界且
 overflow／處理失敗需出現在監控。
 `build_execution_runtime()` 只接受外部已建立的 BrokerPort 與 reconciliation source，
 本身不得讀取憑證、載入 CA 或建立 SDK client。Production composition 預設掛載
 `DisabledExecutionWorker`；明確啟用 read-only 時改由 `ExecutionSupervisor` 擁有 account
-worker。健康資訊顯示 disabled/locked/ready_read_only/degraded、ordering 固定 disabled，
-external submit/cancel calls 固定為 0。
+worker。Read-only 健康資訊顯示 disabled/locked/ready_read_only/degraded，ordering 固定
+disabled；只有 canary config 才顯示可 ARM 的受限 write capability。
 
 Paper HTTP handler 使用 `BrokerOrderRequest` 呼叫 `PaperTradingService.submit_request()`；
 service 保留帳戶風控與事件持久化責任，`PaperBrokerAdapter` 則提供相同的 `BrokerPort`
@@ -358,3 +359,27 @@ Broker refresh 只能使用具 owner index 的 read model，不得反覆掃描�
 - 新設定集中於 config，不在 handler 或 UI 散落魔法數字。
 - 行為變更包含單元測試、事件整合測試與失敗路徑。
 - 更新本文件、`order-lifecycle.md` 或對應操作手冊。
+
+## Manual Live Canary boundary
+
+```mermaid
+flowchart TD
+    H["Authenticated human"] --> A["Ephemeral ARM"]
+    A --> R["Live Risk + Execution Policy"]
+    R --> D["Durable order + outbox commit"]
+    D --> W["Isolated execution-worker"]
+    W --> B["BrokerPort adapter"]
+```
+
+Public FastAPI 只持有 ARM/API orchestration 與 shared persistence，不持有 CA、broker
+credential、production SDK 或 client。`CanaryBrokerAccountWorker` 是既有 read/recovery
+worker 上的明確 opt-in；read-only composition 仍不存在 dispatch path。
+
+Target 由 opaque ID 精確解析為 `BrokerAccountRef(broker_name, account_id)`，不允許
+default account、broker fallback、smart routing 或跨 owner 操作。Worker claim 後會重做
+contextual admission。重啟會清除 ARM、封鎖尚未送出的 pending work，並將 crash 時仍
+在 processing 的 work 標成 `UNKNOWN`。
+
+Live positions 與 Paper ledger 分離，而且只由 deterministic reconciled broker fills
+推導；broker accepted 或 HTTP success 都不能改變 position。External order/position
+仍使 Recovery LOCKED。

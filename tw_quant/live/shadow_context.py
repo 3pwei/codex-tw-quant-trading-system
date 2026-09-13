@@ -13,7 +13,12 @@ from ..broker import (
     RecoveryLockStore,
 )
 from ..execution.live_models import InstrumentSpec, LiveExecutionCandidate
-from ..risk.live import LiveKillSwitchScope, LiveRiskContext
+from ..risk.live import (
+    LiveKillSwitchAction,
+    LiveKillSwitchScope,
+    LiveKillSwitchState,
+    LiveRiskContext,
+)
 from .shadow_store import SQLiteShadowExecutionRepository
 from .storage import TradingRuntimeRepository
 
@@ -224,3 +229,83 @@ class LiveShadowRiskContextProvider:
             portfolio_reservation_quantity=portfolio_reservation,
             kill_switches=kill_switches,
         )
+
+
+class ConfiguredManualCanaryContext:
+    """Canary view over cached health and reconciled persistence only."""
+
+    def __init__(self, *, owner_id, target_id, targets, instruments,
+                 capabilities, risk_context, truth, recovery, health):
+        self.owner_id = owner_id
+        self.target_id = target_id
+        self.targets = targets
+        self.instruments = instruments
+        self.capability_view = capabilities
+        self.risk_provider = risk_context
+        self.shadow_store = risk_context.shadow_store
+        self.truth = truth
+        self.recovery = recovery
+        self.health = health
+
+    def target(self, owner_id: str) -> BrokerAccountRef:
+        if owner_id != self.owner_id:
+            raise RuntimeError("live_canary_owner_not_allowed")
+        try:
+            return self.targets.resolve(self.target_id, owner_id)
+        except KeyError as exc:
+            raise RuntimeError("live_canary_target_unavailable") from exc
+
+    def instrument(self, symbol: str, contract: str) -> InstrumentSpec:
+        return self.instruments.resolve(symbol, contract)
+
+    def risk_context(self, candidate: LiveExecutionCandidate) -> LiveRiskContext:
+        return self.risk_provider.context(candidate, 0, 0)
+
+    def capabilities(self, target: BrokerAccountRef) -> BrokerCapabilities:
+        candidate = type("TargetCandidate", (), {"target": target})()
+        return self.capability_view.capabilities(candidate)
+
+    def broker_position(self, target: BrokerAccountRef, contract: str) -> int | None:
+        snapshot = self.truth.get(target)
+        if snapshot is None:
+            return None
+        return sum(item.quantity for item in snapshot.positions if item.contract == contract)
+
+    def _account_health(self, target: BrokerAccountRef) -> Mapping[str, object] | None:
+        for item in self.health.snapshot().get("broker_accounts", []):
+            if isinstance(item, Mapping) and item.get("target_id") == target.public_id:
+                return item
+        return None
+
+    def assert_arm_ready(self, target: BrokerAccountRef) -> None:
+        self.recovery.assert_ready(target.broker_name, target.account_id)
+        health = self._account_health(target)
+        if health is None or health.get("broker_connected") is not True:
+            raise RuntimeError("live_canary_broker_disconnected")
+        if health.get("ca_ready") is not True:
+            raise RuntimeError("live_canary_ca_not_ready")
+
+    def public_status(self, owner_id: str) -> dict[str, object]:
+        target = self.target(owner_id)
+        recovery = self.recovery.state(target.broker_name, target.account_id)
+        health = self._account_health(target) or {}
+        return {
+            "enabled": True,
+            "broker_name": target.broker_name,
+            "masked_account_id": "****" + target.account_id[-4:],
+            "target_id": target.public_id,
+            "broker_connected": health.get("broker_connected", False),
+            "ca_ready": health.get("ca_ready", False),
+            "recovery_status": recovery.status.value,
+            "recovery_issues": list(recovery.issue_codes),
+            "ordering_enabled": False,
+        }
+
+    def activate_kill_switch(self, owner_id, target, action, reason, now) -> None:
+        self.shadow_store.activate_kill_switch(LiveKillSwitchState(
+            action=action,
+            scope=LiveKillSwitchScope.BROKER_ACCOUNT,
+            scope_key=f"{target.broker_name}:{target.account_id}",
+            reason=reason,
+            activated_at=now,
+        ))

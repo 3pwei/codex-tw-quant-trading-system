@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 
 _ACCOUNT_HEALTH_FIELDS = frozenset({
     "broker_name", "target_id", "masked_account_id", "status", "client_state",
-    "broker_connected", "ca_ready", "read_only", "callback_registered",
+    "broker_connected", "ca_ready", "read_only", "canary", "callback_registered",
     "ordering_enabled", "locked",
     "recovery_status", "recovery_generation", "issue_codes", "started_at",
     "heartbeat_at", "last_reconciliation_started_at",
@@ -27,7 +27,8 @@ _ACCOUNT_HEALTH_FIELDS = frozenset({
     "reconciliation_success_total", "reconciliation_failure_total",
     "reconciliation_skipped_overlap_total", "average_reconciliation_ms",
     "max_reconciliation_ms", "last_error_code", "dispatches",
-    "external_order_calls", "external_cancel_calls",
+    "external_order_calls", "external_cancel_calls", "cancel_requests_total",
+    "average_broker_response_ms", "max_broker_response_ms",
 })
 
 
@@ -103,15 +104,15 @@ class ExecutionHealthFileMonitor:
             "state": (
                 "locked" if stale else str(document.get("execution_state") or "locked")
             ),
-            "ordering_enabled": False,
-            "locked": True,
+            "ordering_enabled": bool(document.get("ordering_enabled", False)) and not stale,
+            "locked": bool(document.get("locked", True)) or stale,
             "recovery_status": (
                 "locked" if stale else str(document.get("recovery_status") or "locked")
             ),
             "broker_accounts": accounts,
-            "dispatches": 0,
-            "external_order_calls": 0,
-            "external_cancel_calls": 0,
+            "dispatches": sum(int(item.get("dispatches", 0) or 0) for item in accounts),
+            "external_order_calls": sum(int(item.get("external_order_calls", 0) or 0) for item in accounts),
+            "external_cancel_calls": sum(int(item.get("external_cancel_calls", 0) or 0) for item in accounts),
         }
 
 

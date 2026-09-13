@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 import json
 
@@ -16,15 +17,28 @@ from ..auth import (
 )
 from ..market import TradingCalendar
 from ..broker import (
+    BrokerRegistration,
+    BrokerRegistry,
+    BrokerRuntimeState,
+    CanaryOrderAdmissionGate,
+    CompositeOrderAdmissionGate,
+    LiveCanaryConfig,
+    LiveOrderManager,
+    LockedBroker,
+    LockedInstrumentMapper,
     SHIOAJI_TECHNICAL_CAPABILITIES,
+    SHIOAJI_CANARY_CAPABILITIES,
+    SQLiteCanaryArmRepository,
     SQLiteBrokerTruthRepository,
     SQLiteLiveOrderRepository,
     SQLiteRecoveryLockRepository,
 )
 from ..execution.live_models import InstrumentSpec
 from ..execution.live_policy import MarketableLimitIOCPolicy
+from ..execution.canary import LiveExecutionSink
 from ..execution.shadow import ShadowExecutionService
 from ..risk import LiveRiskConfig, LiveRiskService
+from ..risk.live import LiveKillSwitchAction, LiveKillSwitchScope
 from ..market_data import HistoricalMarketDataProvider, LiveMarketDataProvider, build_market_data_provider
 from ..paper import PaperTradingService, SQLitePaperRepository
 from ..replay import ReplayTradingSessionRegistry
@@ -36,6 +50,7 @@ from .application import (
     StrategyApplicationService,
     TradingRuntimeApplicationService,
     LiveShadowExecutionController,
+    ManualLiveCanaryService,
 )
 from .api_models import (
     AdminUserCreate,
@@ -59,6 +74,7 @@ from .api_routes import (
     build_strategy_router,
     build_system_router,
     build_trading_runtime_router,
+    build_live_canary_router,
 )
 from .api_routes.admin import system_status
 from .api_security import (
@@ -72,6 +88,7 @@ from .service import LiveMarketService
 from .settings import LiveSettings
 from .shadow_context import (
     ConfiguredBrokerCapabilityView,
+    ConfiguredManualCanaryContext,
     LiveExecutionTargetCatalog,
     LiveShadowRiskContextProvider,
     StaticInstrumentSpecCatalog,
@@ -116,6 +133,9 @@ def _build_rate_limiter(config: LiveSettings) -> SlidingWindowRateLimiter:
             ),
             "orders": RateLimitRule(
                 config.rate_limit_orders_per_minute, 60
+            ),
+            "live_orders": RateLimitRule(
+                config.live_canary_requests_per_minute, 60
             ),
         }
     )
@@ -174,6 +194,10 @@ def create_app(
         }
     except (AttributeError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
         raise ValueError("LIVE_SHADOW_OWNER_TARGETS_JSON is invalid") from exc
+    if config.live_canary_enabled:
+        existing = set(owner_targets.get(config.live_canary_owner_id, frozenset()))
+        existing.add(config.live_canary_target_id)
+        owner_targets[config.live_canary_owner_id] = frozenset(existing)
     shadow_targets = LiveExecutionTargetCatalog(broker_truth, owner_targets)
     live_risk_config = LiveRiskConfig(
         allowed_symbols=config.live_shadow_allowed_symbols,
@@ -227,6 +251,103 @@ def create_app(
         context=shadow_context,
         store=shadow_store,
     )
+    canary_arms = None
+    live_canary = None
+    if config.live_canary_enabled:
+        try:
+            canary_target = shadow_targets.resolve(
+                config.live_canary_target_id, config.live_canary_owner_id
+            )
+        except KeyError:
+            canary_target = None
+        if canary_target is not None:
+            canary_config = LiveCanaryConfig(
+                enabled=True,
+                allowed_owner_ids=frozenset({config.live_canary_owner_id}),
+                allowed_broker_accounts=frozenset({canary_target}),
+                allowed_symbols=config.live_canary_allowed_symbols,
+                allowed_contracts=config.live_canary_allowed_contracts,
+                max_quantity=config.live_canary_max_quantity,
+                arm_ttl_seconds=config.live_canary_arm_ttl_seconds,
+                protective_stop_ticks=config.live_canary_protective_stop_ticks,
+                requests_per_minute=config.live_canary_requests_per_minute,
+            )
+            canary_arms = SQLiteCanaryArmRepository(config.db_path)
+            canary_registry = BrokerRegistry()
+            canary_registry.register(BrokerRegistration(
+                account_ref=canary_target,
+                port=LockedBroker(canary_target.broker_name),
+                capabilities=SHIOAJI_CANARY_CAPABILITIES,
+                instrument_mapper=LockedInstrumentMapper(),
+                state=BrokerRuntimeState.READY,
+            ))
+            canary_registry.freeze()
+            def canary_readiness():
+                for item in execution_worker.snapshot().get("broker_accounts", []):
+                    if isinstance(item, dict) and item.get("target_id") == canary_target.public_id:
+                        return {
+                            "connected": item.get("broker_connected", False),
+                            "ca_ready": item.get("ca_ready", False),
+                            "unknown_orders": sum(
+                                order.status.value == "unknown"
+                                for order in live_orders.orders(target=canary_target)
+                            ),
+                        }
+                return {"connected": False, "ca_ready": False}
+            def kill_switch_blocks(owner_id: str, reduce_only: bool) -> bool:
+                account_scope = f"{canary_target.broker_name}:{canary_target.account_id}"
+                states = shadow_store.kill_switches({
+                    (LiveKillSwitchScope.GLOBAL.value, "global"),
+                    (LiveKillSwitchScope.OWNER.value, owner_id),
+                    (LiveKillSwitchScope.BROKER_ACCOUNT.value, account_scope),
+                })
+                return any(
+                    state.action in {LiveKillSwitchAction.CANCEL_WORKING, LiveKillSwitchAction.FLATTEN}
+                    or (state.action is LiveKillSwitchAction.HALT_ENTRY and not reduce_only)
+                    for state in states
+                )
+            gate = CanaryOrderAdmissionGate(
+                config=canary_config,
+                arms=canary_arms,
+                target=canary_target,
+                assert_recovery_ready=lambda: recovery.assert_ready(
+                    canary_target.broker_name, canary_target.account_id
+                ),
+                readiness=canary_readiness,
+                kill_switch_blocks=kill_switch_blocks,
+                now=lambda: datetime.now(timezone.utc),
+            )
+            canary_manager = LiveOrderManager(
+                live_orders,
+                canary_registry,
+                {canary_target: CompositeOrderAdmissionGate((gate,))},
+                recover_interrupted=False,
+            )
+            canary_context = ConfiguredManualCanaryContext(
+                owner_id=config.live_canary_owner_id,
+                target_id=config.live_canary_target_id,
+                targets=shadow_targets,
+                instruments=instrument_catalog,
+                capabilities=ConfiguredBrokerCapabilityView({
+                    "shioaji": SHIOAJI_CANARY_CAPABILITIES,
+                }),
+                risk_context=shadow_context,
+                truth=broker_truth,
+                recovery=recovery,
+                health=execution_worker,
+            )
+            live_canary = ManualLiveCanaryService(
+                config=canary_config,
+                arms=canary_arms,
+                sink=LiveExecutionSink(canary_manager),
+                quotes=service.execution_quotes,
+                risk=LiveRiskService(live_risk_config),
+                policy=MarketableLimitIOCPolicy(
+                    live_risk_config.max_slippage_ticks,
+                    live_risk_config.max_spread_ticks,
+                ),
+                context=canary_context,
+            )
     paper = PaperTradingService(SQLitePaperRepository(config.db_path))
     replay_trading = ReplayTradingSessionRegistry()
     limiter = rate_limiter or _build_rate_limiter(config)
@@ -277,6 +398,8 @@ def create_app(
             replay_trading.close()
             paper.close()
             shadow_store.close()
+            if canary_arms is not None:
+                canary_arms.close()
             broker_truth.close()
             recovery.close()
             live_orders.close()
@@ -309,6 +432,7 @@ def create_app(
         shadow_store=shadow_store,
         shadow_targets=shadow_targets,
         shadow_service=shadow_service,
+        live_canary=live_canary,
     )
     app.state.api_dependencies = deps
     app.state.market_service = service
@@ -322,6 +446,7 @@ def create_app(
     app.state.trading_runtime = runtime_app
     app.state.paper_auto_entry = paper_auto
     app.state.live_shadow = shadow_service
+    app.state.live_canary = live_canary
 
     app.add_middleware(
         CORSMiddleware,
@@ -339,6 +464,7 @@ def create_app(
         build_strategy_router(deps),
         build_research_router(deps),
         build_trading_runtime_router(deps),
+        build_live_canary_router(deps),
     ):
         app.include_router(router)
 

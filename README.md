@@ -4,11 +4,10 @@
 
 以微型臺指期貨（TMF）為核心的研究與 Paper Trading 平台，整合 Shioaji 即時行情、歷史回測、動態回放、多週期策略、事件驅動模擬成交、帳戶風控及監控。正式環境部署於 AWS Lightsail，使用 Cloudflare Access 保護入口。
 
-> 本專案僅供研究與工程驗證，不構成投資建議。目前不會向外部券商送出真實委託。
-> Production 已建立獨立的 Live Execution Security Boundary，但 execution service
-> 固定禁止下單。Shioaji production read-only connection 可由 execution container 明確
-> 啟用；per-account worker 會先完成初始對帳，再執行 callback audit 與週期對帳。
-> 所有 submit、cancel、replace path 仍由平台拒絕。
+> 本專案僅供研究與工程驗證，不構成投資建議。Production 預設不會向外部券商送出
+> 真實委託。只有另行啟用、通過 readiness review 且由操作人員限時 ARM 的 Manual
+> Live Canary 可送出一口 allowlisted 委託；Strategy、Paper 與 Live Shadow 永遠不能
+> 抵達這條路徑。一般部署、重啟與 read-only 模式仍拒絕所有 broker write。
 
 ## 核心能力
 
@@ -22,10 +21,10 @@
 | 風控 | Paper 與 Live policy 分離；Live Shadow 依 broker truth 做 account／owner portfolio limits、quote／session／expiry／capability gates |
 | 平台 | Cloudflare OTP、FastAPI RBAC、申請與審核、Rate Limit、Request Size Limit、稽核紀錄 |
 | 穩定性 | 重啟復原、SQLite verified backup、Queue／WebSocket／DB／主機監控、五種服務狀態 |
-| UI | `/trade/` 整合 Observe／Manual Paper／Paper Auto 與只讀 Live Shadow 結果；沒有任何 Live 操作按鈕 |
+| UI | `/trade/` 整合 Observe／Paper／Live Shadow；Canary 明確標示 REAL MONEY，預設停用且無 Strategy Auto Live |
 | 部署 | Docker、Caddy、AWS Lightsail、GitHub Actions、Python 套件鎖定 |
 
-Level 2 工程能力已實作；每個正式候選版本仍須依 [Level 2 完成標準](docs/level2-definition-of-done.md) 留存四小時 soak 與人工驗收證據。Live execution foundation 已具備可測試的 simulation 與 production read-only 組裝邊界。read-only 模式只在獨立 execution worker 載入 CA、登入、讀取帳戶真相及接收 callback；Registry 只允許 read/refresh，而永久 admission gate 與 client 本身拒絕所有寫入。本平台不宣稱具備可用的實盤下單或 HFT 能力。
+Level 2 工程能力已實作；每個正式候選版本仍須依 [Level 2 完成標準](docs/level2-definition-of-done.md) 留存四小時 soak 與人工驗收證據。Live execution foundation 已具備 simulation、production read-only 與 Manual Live Canary 組裝邊界。Canary 是預設停用、單一 owner／account／contract／一口且人工 ARM 的受限能力，不代表 Strategy Auto Live 或一般實盤能力。
 
 ## 系統架構
 
@@ -324,5 +323,20 @@ TMF 研究預設成本：契約乘數每點 NT$10、每邊手續費 NT$10、交�
 1. 接入合法授權的歷史資料，建立 Parquet 資料層與資料品質報告。
 2. 加入多標的、風險預算、walk-forward 與樣本外驗證。
 3. 增加外部告警與長時間正式環境監控證據。
-4. 實盤前評估 PostgreSQL，完成 Shioaji production client、CA 安全保存與輪替、完整帳戶風控、保護委託、人工覆核及法規／授權確認。
+4. 實盤擴大前評估 PostgreSQL，完成 CA 安全輪替、保護委託、UNKNOWN／mismatch 人工覆核及法規／授權確認。
 5. 資料品質與研究流程成熟後，再評估 Regime Detection、Feature Store 與 ML 策略。
+
+## Manual Live Order Canary
+
+Manual Live Canary 是唯一可抵達真實券商 write API 的路徑，但 Production 預設仍為
+`LIVE_CANARY_ENABLED=false`。它只允許一個 server-side allowlisted owner、一個
+opaque execution target、一個商品／契約、單筆一口，以及經驗證的
+`MarketableLimitIOCPolicy`。策略 runtime、Paper Auto 與 `live_shadow` 無法取得
+`LiveExecutionSink`。
+
+真實動作需要部署設定與 5–15 分鐘、重啟即清除的人工 ARM。Public API 先在同一
+SQLite transaction 建立 canonical Live order 與 outbox；隔離的 execution-worker
+commit 後才 claim，並在 SDK call 前重新檢查 ARM、Recovery、broker/CA readiness 與
+kill switch。Ambiguous submit/cancel 進入 `UNKNOWN` 且永不自動 retry。合併或部署
+不代表 Canary 已啟用，也不得取代第一次人工 readiness review。操作方式見
+`docs/live-canary-runbook.md`。

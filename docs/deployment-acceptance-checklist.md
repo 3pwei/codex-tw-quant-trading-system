@@ -8,6 +8,8 @@
 - [ ] 變更已審查，部署 commit 是 `master` 的 ancestor。
 - [ ] 已確認 Lightsail CPU、記憶體、磁碟有足夠空間。
 - [ ] 已避開重要持倉操作時段，並通知測試帳號。
+- [ ] `LIVE_CANARY_ENABLED=false`；一般 deploy/restart 後 ARM 必須為 OFF。第一次
+      enable 另行完成 `live-canary-runbook.md` readiness review。
 - [ ] 自動備份檔名與預期 commit 一致，SQLite integrity check 為 `ok`。
 
 ## 自動部署
@@ -18,6 +20,8 @@
       狀態為 disabled/locked，或明確核准的 `ready_read_only` 且 ordering 仍 locked。
 - [ ] `execution-worker` 沒有 published port 或 Caddy route；若啟用 Shioaji
       read-only，只出現 login/read/callback，submit/cancel/replace call count 皆為零。
+- [ ] 若經人工核准啟用 Canary，submit/cancel counters 與 durable audit 一致；否則
+      counters 必須為零，且任何 pending/processing restart work 都沒有被重送。
 - [ ] execution health 只顯示 broker name、masked account、locked/recovery state，
       cached connection/CA/callback state，未輸出 secret ref、credential、CA path 或完整 account ID。
 - [ ] 每個 broker account 都先完成 initial reconciliation；generation、issue codes、
@@ -41,7 +45,8 @@
 - [ ] Kill Switch 阻止新倉，最新報價有效時允許 reduce-only 平倉。
 - [ ] Provider 中斷時禁止新倉，恢復後沒有補送委託。
 - [ ] Paper Recovery 為 healthy，重啟前後持倉與風控狀態一致。
-- [ ] `/trade/` 只顯示 Observe／Manual Paper／Paper Auto，沒有可操作的 Live 按鈕。
+- [ ] `/trade/` 的 Live Canary 僅對特定 Live Trader 顯示；沒有 Strategy Auto Live
+      或 FLATTEN，其他使用者仍只看到 Observe／Paper／Shadow。
 - [ ] Shioaji 行情使用 `MARKET_SJ_API_KEY`／`MARKET_SJ_SECRET_KEY`，未將 live
       `SJ_API_KEY`／`SJ_SECRET_KEY` 放入 `market.env`。
 - [ ] Paper Auto ARM 需再次確認；Pause 阻止 Entry 但 managed exit 可用。
