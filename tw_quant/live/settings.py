@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import os
+import re
 from dataclasses import dataclass, replace
 from datetime import date
 
@@ -43,6 +45,26 @@ class LiveSettings:
     rate_limit_orders_per_minute: int
     max_request_body_bytes: int
     execution_health_path: str
+    live_shadow_enabled: bool
+    live_shadow_allowed_symbols: frozenset[str]
+    live_shadow_allowed_contracts: frozenset[str]
+    live_shadow_contract_expiry: date | None
+    live_shadow_tick_size: float
+    live_shadow_multiplier: float
+    live_shadow_max_order_quantity: int
+    live_shadow_max_account_position: int
+    live_shadow_max_portfolio_position: int
+    live_shadow_max_risk_per_trade: float
+    live_shadow_max_daily_loss: float
+    live_shadow_max_daily_trades: int
+    live_shadow_max_pending_orders: int
+    live_shadow_max_quote_age_seconds: float
+    live_shadow_max_slippage_ticks: int
+    live_shadow_max_spread_ticks: int
+    live_shadow_allowed_sessions: frozenset[str]
+    live_shadow_expiry_guard_days: int
+    live_shadow_max_active_runtimes: int
+    live_shadow_owner_targets_json: str
 
     def __init__(
         self,
@@ -65,6 +87,26 @@ class LiveSettings:
         rate_limit_orders_per_minute: int = 30,
         max_request_body_bytes: int = 256 * 1024,
         execution_health_path: str = "/run/tw-quant-execution/health.json",
+        live_shadow_enabled: bool = False,
+        live_shadow_allowed_symbols: frozenset[str] = frozenset({"TMF"}),
+        live_shadow_allowed_contracts: frozenset[str] = frozenset(),
+        live_shadow_contract_expiry: date | None = None,
+        live_shadow_tick_size: float = 1.0,
+        live_shadow_multiplier: float = 10.0,
+        live_shadow_max_order_quantity: int = 1,
+        live_shadow_max_account_position: int = 1,
+        live_shadow_max_portfolio_position: int = 1,
+        live_shadow_max_risk_per_trade: float = 5_000.0,
+        live_shadow_max_daily_loss: float = 10_000.0,
+        live_shadow_max_daily_trades: int = 10,
+        live_shadow_max_pending_orders: int = 1,
+        live_shadow_max_quote_age_seconds: float = 2.0,
+        live_shadow_max_slippage_ticks: int = 2,
+        live_shadow_max_spread_ticks: int = 4,
+        live_shadow_allowed_sessions: frozenset[str] = frozenset({"day", "night"}),
+        live_shadow_expiry_guard_days: int = 2,
+        live_shadow_max_active_runtimes: int = 1,
+        live_shadow_owner_targets_json: str = "{}",
         # Compatibility inputs from the pre-provider settings model.
         mode: str | None = None,
         symbol: str | None = None,
@@ -136,6 +178,29 @@ class LiveSettings:
             self, "max_request_body_bytes", max_request_body_bytes
         )
         object.__setattr__(self, "execution_health_path", execution_health_path)
+        for name, value in (
+            ("live_shadow_enabled", live_shadow_enabled),
+            ("live_shadow_allowed_symbols", live_shadow_allowed_symbols),
+            ("live_shadow_allowed_contracts", live_shadow_allowed_contracts),
+            ("live_shadow_contract_expiry", live_shadow_contract_expiry),
+            ("live_shadow_tick_size", live_shadow_tick_size),
+            ("live_shadow_multiplier", live_shadow_multiplier),
+            ("live_shadow_max_order_quantity", live_shadow_max_order_quantity),
+            ("live_shadow_max_account_position", live_shadow_max_account_position),
+            ("live_shadow_max_portfolio_position", live_shadow_max_portfolio_position),
+            ("live_shadow_max_risk_per_trade", live_shadow_max_risk_per_trade),
+            ("live_shadow_max_daily_loss", live_shadow_max_daily_loss),
+            ("live_shadow_max_daily_trades", live_shadow_max_daily_trades),
+            ("live_shadow_max_pending_orders", live_shadow_max_pending_orders),
+            ("live_shadow_max_quote_age_seconds", live_shadow_max_quote_age_seconds),
+            ("live_shadow_max_slippage_ticks", live_shadow_max_slippage_ticks),
+            ("live_shadow_max_spread_ticks", live_shadow_max_spread_ticks),
+            ("live_shadow_allowed_sessions", live_shadow_allowed_sessions),
+            ("live_shadow_expiry_guard_days", live_shadow_expiry_guard_days),
+            ("live_shadow_max_active_runtimes", live_shadow_max_active_runtimes),
+            ("live_shadow_owner_targets_json", live_shadow_owner_targets_json),
+        ):
+            object.__setattr__(self, name, value)
 
     @classmethod
     def from_env(cls) -> "LiveSettings":
@@ -146,6 +211,11 @@ class LiveSettings:
         except ImportError:
             pass
         access_mode = os.getenv("MARKET_ACCESS_MODE", "disabled").lower().strip()
+        expiry = os.getenv("LIVE_SHADOW_CONTRACT_EXPIRY", "").strip()
+        split = lambda name, default="": frozenset(
+            item.strip().upper() for item in os.getenv(name, default).split(",")
+            if item.strip()
+        )
         return cls(
             market_data=MarketDataSettings.from_env(),
             db_path=os.getenv("MARKET_DB_PATH", "output/live_market.sqlite3"),
@@ -193,6 +263,33 @@ class LiveSettings:
                 "LIVE_EXECUTION_HEALTH_PATH",
                 "/run/tw-quant-execution/health.json",
             ).strip(),
+            live_shadow_enabled=os.getenv("LIVE_SHADOW_ENABLED", "false").lower() in {"1", "true", "yes", "on"},
+            live_shadow_allowed_symbols=split("LIVE_SHADOW_ALLOWED_SYMBOLS", "TMF"),
+            live_shadow_allowed_contracts=split("LIVE_SHADOW_ALLOWED_CONTRACTS"),
+            live_shadow_contract_expiry=date.fromisoformat(expiry) if expiry else None,
+            live_shadow_tick_size=float(os.getenv("LIVE_SHADOW_TICK_SIZE", "1")),
+            live_shadow_multiplier=float(os.getenv("LIVE_SHADOW_MULTIPLIER", "10")),
+            live_shadow_max_order_quantity=int(os.getenv("LIVE_SHADOW_MAX_ORDER_QUANTITY", "1")),
+            live_shadow_max_account_position=int(os.getenv("LIVE_SHADOW_MAX_ACCOUNT_POSITION", "1")),
+            live_shadow_max_portfolio_position=int(os.getenv("LIVE_SHADOW_MAX_PORTFOLIO_POSITION", "1")),
+            live_shadow_max_risk_per_trade=float(os.getenv("LIVE_SHADOW_MAX_RISK_PER_TRADE", "5000")),
+            live_shadow_max_daily_loss=float(os.getenv("LIVE_SHADOW_MAX_DAILY_LOSS", "10000")),
+            live_shadow_max_daily_trades=int(os.getenv("LIVE_SHADOW_MAX_DAILY_TRADES", "10")),
+            live_shadow_max_pending_orders=int(os.getenv("LIVE_SHADOW_MAX_PENDING_ORDERS", "1")),
+            live_shadow_max_quote_age_seconds=float(os.getenv("LIVE_SHADOW_MAX_QUOTE_AGE_SECONDS", "2")),
+            live_shadow_max_slippage_ticks=int(os.getenv("LIVE_SHADOW_MAX_SLIPPAGE_TICKS", "2")),
+            live_shadow_max_spread_ticks=int(os.getenv("LIVE_SHADOW_MAX_SPREAD_TICKS", "4")),
+            live_shadow_allowed_sessions=frozenset(
+                item.strip().lower()
+                for item in os.getenv(
+                    "LIVE_SHADOW_ALLOWED_SESSIONS", "day,night"
+                ).split(",") if item.strip()
+            ),
+            live_shadow_expiry_guard_days=int(os.getenv("LIVE_SHADOW_EXPIRY_GUARD_DAYS", "2")),
+            live_shadow_max_active_runtimes=int(os.getenv("LIVE_SHADOW_MAX_ACTIVE_RUNTIMES", "1")),
+            live_shadow_owner_targets_json=os.getenv(
+                "LIVE_SHADOW_OWNER_TARGETS_JSON", "{}"
+            ).strip(),
         )
 
     def validate(self) -> None:
@@ -228,6 +325,33 @@ class LiveSettings:
             )
         if not self.execution_health_path:
             raise ValueError("LIVE_EXECUTION_HEALTH_PATH is required")
+        if self.live_shadow_enabled and (
+            not self.live_shadow_allowed_contracts
+            or self.live_shadow_contract_expiry is None
+        ):
+            raise ValueError(
+                "live shadow requires contract allowlist and expiry metadata"
+            )
+        if self.live_shadow_enabled:
+            try:
+                assignments = json.loads(self.live_shadow_owner_targets_json)
+            except json.JSONDecodeError as exc:
+                raise ValueError("LIVE_SHADOW_OWNER_TARGETS_JSON is invalid") from exc
+            valid = isinstance(assignments, dict) and all(
+                isinstance(owner, str)
+                and owner.strip()
+                and isinstance(values, list)
+                and all(
+                    isinstance(value, str)
+                    and re.fullmatch(r"target:[0-9a-f]{24}", value)
+                    for value in values
+                )
+                for owner, values in assignments.items()
+            )
+            if not valid:
+                raise ValueError(
+                    "LIVE_SHADOW_OWNER_TARGETS_JSON must map owners to opaque target IDs"
+                )
         if self.access_mode not in {"disabled", "cloudflare"}:
             raise ValueError("MARKET_ACCESS_MODE must be disabled or cloudflare")
         if self.access_mode == "cloudflare" and not (

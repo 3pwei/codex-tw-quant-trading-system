@@ -32,6 +32,7 @@ from ..broker import (
     SQLiteLiveOrderRepository,
     SQLiteBrokerEventAuditRepository,
     SQLiteRecoveryLockRepository,
+    SQLiteBrokerTruthRepository,
     SHIOAJI_READ_ONLY_CAPABILITIES,
     ShioajiBrokerAdapter,
     ShioajiInstrumentMapper,
@@ -69,6 +70,9 @@ class ExecutionServiceRuntime:
         default=None, repr=False
     )
     audit_repository: SQLiteBrokerEventAuditRepository | None = field(
+        default=None, repr=False
+    )
+    truth_repository: SQLiteBrokerTruthRepository | None = field(
         default=None, repr=False
     )
     broker_registry: BrokerRegistry | None = field(default=None, repr=False)
@@ -197,6 +201,8 @@ class ExecutionServiceRuntime:
             self.audit_repository.close()
         if self.order_repository is not None:
             self.order_repository.close()
+        if self.truth_repository is not None:
+            self.truth_repository.close()
         if self.redaction_filter is not None:
             LOGGER.removeFilter(self.redaction_filter)
 
@@ -249,6 +255,7 @@ def build_execution_service(
     orders = None
     recovery = None
     audit = None
+    truth = None
     registry = None
     redactor = None
     read_only_client = None
@@ -262,6 +269,7 @@ def build_execution_service(
         orders = SQLiteLiveOrderRepository(config.database_path)
         audit = SQLiteBrokerEventAuditRepository(config.database_path)
         recovery = SQLiteRecoveryLockRepository(config.database_path)
+        truth = SQLiteBrokerTruthRepository(config.database_path)
         registry = BrokerRegistry()
         port = LockedBroker(account.broker_name)
         capabilities = BrokerCapabilities()
@@ -322,6 +330,7 @@ def build_execution_service(
                 order_manager=manager,
                 source=read_only_client,
                 recovery_lock=recovery,
+                truth_store=truth,
             )
             consumer = BrokerCallbackConsumer(audit, manager)
             account_worker = BrokerAccountWorker(
@@ -355,6 +364,7 @@ def build_execution_service(
         order_repository=orders,
         recovery_repository=recovery,
         audit_repository=audit,
+        truth_repository=truth,
         broker_registry=registry,
         redaction_filter=redactor,
         read_only_client=read_only_client,

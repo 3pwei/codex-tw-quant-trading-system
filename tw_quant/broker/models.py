@@ -9,6 +9,7 @@ from typing import Literal
 OrderSide = Literal["buy", "sell"]
 OrderType = Literal["market", "limit", "stop"]
 OrderPurpose = Literal["entry", "exit", "liquidation"]
+TimeInForce = Literal["rod", "ioc", "fok"]
 
 
 class ExecutionMode(str, Enum):
@@ -70,6 +71,7 @@ class BrokerOrderRequest:
     quantity: int
     mode: ExecutionMode
     order_type: OrderType = "market"
+    time_in_force: TimeInForce = "rod"
     limit_price: float | None = None
     stop_price: float | None = None
     reference_price: float | None = None
@@ -97,6 +99,8 @@ class BrokerOrderRequest:
             raise ValueError("side must be buy or sell")
         if self.order_type not in {"market", "limit", "stop"}:
             raise ValueError("unsupported order_type")
+        if self.time_in_force not in {"rod", "ioc", "fok"}:
+            raise ValueError("unsupported time_in_force")
         if self.purpose not in {"entry", "exit", "liquidation"}:
             raise ValueError("unsupported order purpose")
         if not self.reason.strip():

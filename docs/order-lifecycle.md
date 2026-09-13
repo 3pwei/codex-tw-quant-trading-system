@@ -131,9 +131,29 @@ Recovery Lock、callback audit、broker-order lookup 與對帳 service 都以
 broker 時仍是不同 identity。Callback 沒有 account identity 時只會進 audit 並標為
 unmatched，不能觸發任何 order refresh。
 
-目前 Recovery Lock、對帳 service 與 Shioaji production read-only snapshot 已具備可測試
-的組裝邊界；periodic reconciliation 與 Recovery unlock automation 尚未組裝。execution
-worker 即使連線成功也只會讀取，不會進行外部送單或撤單。
+Recovery Lock、對帳 service 與 Shioaji production read-only snapshot 已組裝為
+per-account initial／periodic reconciliation worker。只有 truth 一致才進入
+`READY_READ_ONLY`；execution worker 即使連線成功也只會讀取，不會外部送單或撤單。
+
+### Live Shadow（實盤前推演）
+
+```text
+Closed K → broker-blind TradingDecision → explicit BrokerAccountRef
+         → reconciled broker/account + owner portfolio truth
+         → LiveRiskDecision → ExecutionQuote + InstrumentSpec
+         → broker-neutral ExecutionPolicy → ShadowResult
+         → STOP（no LiveOrderManager / outbox / BrokerPort）
+```
+
+Entry 必須通過 recovery、connection、market health、truth freshness、contract/session/
+expiry、protective stop、working orders、daily loss/trades、account/portfolio position 及
+capability gates。任何數值 unknown 都 fail closed。Risk-approved request 使用
+`mode=LIVE` 的 canonical shape 供稽核，但只序列化至 shadow table；永不交給 live order
+manager。相同 decision、target 與 policy version 重試只回傳同一結果。
+
+Exit 會標成 `reduce_only`，不被 daily-loss 或 expiry entry gate 阻擋，但仍要求 broker
+position 能證明只減少曝險。Kill Switch 的 CANCEL_WORKING／FLATTEN 只代表「would」
+動作，不呼叫 cancel 或 submit。
 
 Shioaji 期貨委託目前沒有採用已驗證、可持久化的 client order ID 欄位。因此若送單
 逾時且尚未取得 `broker_order_id`，系統會保持 `UNKNOWN` 並要求人工核對，不會以價格、
@@ -186,8 +206,8 @@ Paper API 保留舊的 `status` 以維持相容，並額外回傳 `lifecycle_sta
    `(broker_name, account_id)` allowlist；Shioaji 是目前唯一 adapter implementation，
    任一缺失都維持 fail closed。
 10. Simulation 與 Production 使用不同 client 組裝路徑；production read-only client
-    已完成 CA 與精確交易帳號驗證，但 submit/cancel、Live Risk、Kill Switch 與操作人員
-    解鎖仍未實作，不得因 read-only ready 而視為可交易。
+    已完成 CA、精確交易帳號驗證及 Live Shadow risk/policy，但 submit/cancel 與操作人員
+    解鎖仍未實作，不得因 read-only ready 或 would-submit 而視為可交易。
 
 ## Live Read-Only Recovery Lifecycle
 
@@ -220,12 +240,12 @@ Timeout 或 disconnect 會建立更新的 locked generation；因此被取消或
 
 ## 尚未完成的實盤能力
 
-- 持久化 Strategy Runner、帳戶 Risk Gate 與 LiveOrderManager Worker 的正式串接。
+- Live Shadow 與 LiveOrderManager Worker 的正式串接（目前刻意不存在）。
 - callback audit retention policy 與外部告警通知。
 - 三方對帳的人工 mismatch resolution 介面。
 - 本地 Position Ledger 與券商部位差異的自動停機及人工解除流程。
 - 原生保護委託／OCO、部分成交後保護數量調整，以及撤單競態處理。
 - CA／broker credential 輪替、撤銷、到期告警與人工操作 runbook。
 - 第二家 production broker adapter 與多帳戶排程的 production soak。
-- 每日額度、單筆額度、最大曝險、行情新鮮度、交易時段與全域 Kill Switch。
+- 可靠的 Live realized-PnL ledger；有真實成交但無可驗證 PnL 時，Shadow entry 會拒絕。
 - UNKNOWN 無 broker order ID 的營運對帳介面；完成前不得自動重送。

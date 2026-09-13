@@ -151,6 +151,7 @@ class TradingRuntimeRepository(Protocol):
         self, decision_id: str, owner_user_id: str
     ) -> dict[str, object] | None: ...
     def runtime_metrics(self) -> dict[str, object]: ...
+    def paper_shadow_metrics(self, owner_user_id: str) -> dict[str, int]: ...
     def stop_trading_runtime(
         self, runtime_id: str, owner_user_id: str
     ) -> dict[str, object] | None: ...
@@ -514,6 +515,8 @@ class SQLiteBarRepository:
                 interval TEXT NOT NULL,
                 quantity INTEGER NOT NULL,
                 mode TEXT NOT NULL,
+                broker_name TEXT,
+                account_id TEXT,
                 status TEXT NOT NULL,
                 recovery_issue TEXT,
                 recovery_checked_at TEXT,
@@ -522,10 +525,12 @@ class SQLiteBarRepository:
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 CHECK(strategy_kind IN ('atomic', 'composite')),
-                CHECK(mode IN ('observe', 'paper_auto')),
+                CHECK(mode IN ('observe', 'paper_auto', 'live_shadow')),
                 CHECK(status IN (
                     'active', 'paused', 'armed', 'recovery_locked', 'stopped'
-                ))
+                )),
+                CHECK((mode='live_shadow' AND broker_name IS NOT NULL AND account_id IS NOT NULL)
+                   OR (mode!='live_shadow' AND broker_name IS NULL AND account_id IS NULL))
             );
             CREATE INDEX IF NOT EXISTS idx_strategy_runtimes_owner_updated
                 ON strategy_runtimes(owner_user_id, updated_at DESC);
@@ -575,6 +580,12 @@ class SQLiteBarRepository:
             ).fetchone()[0]
         if "'recovery_locked'" not in runtime_sql:
             self._upgrade_paper_auto_recovery_schema()
+            runtime_sql = self.connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' "
+                "AND name='strategy_runtimes'"
+            ).fetchone()[0]
+        if "'live_shadow'" not in runtime_sql:
+            self._upgrade_live_shadow_runtime_schema()
         decision_columns = {
             row["name"] for row in self.connection.execute(
                 "PRAGMA table_info(trading_decisions)"
@@ -594,6 +605,75 @@ class SQLiteBarRepository:
                     f"ALTER TABLE trading_decisions ADD COLUMN {name} {definition}"
                 )
         self.connection.commit()
+
+    def _upgrade_live_shadow_runtime_schema(self) -> None:
+        """Add live_shadow and immutable target columns without changing Paper rows."""
+        self.connection.execute("PRAGMA foreign_keys=OFF")
+        try:
+            self.connection.executescript(
+                """
+                ALTER TABLE trading_decisions RENAME TO trading_decisions_shadow_legacy;
+                ALTER TABLE strategy_runtimes RENAME TO strategy_runtimes_shadow_legacy;
+                CREATE TABLE strategy_runtimes (
+                    runtime_id TEXT PRIMARY KEY, owner_user_id TEXT NOT NULL,
+                    strategy_kind TEXT NOT NULL, strategy_id TEXT NOT NULL,
+                    strategy_version INTEGER, strategy_snapshot_json TEXT NOT NULL,
+                    symbol TEXT NOT NULL, interval TEXT NOT NULL,
+                    quantity INTEGER NOT NULL, mode TEXT NOT NULL,
+                    broker_name TEXT, account_id TEXT, status TEXT NOT NULL,
+                    recovery_issue TEXT, recovery_checked_at TEXT,
+                    last_evaluated_bar TEXT, last_decision TEXT,
+                    created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                    CHECK(strategy_kind IN ('atomic', 'composite')),
+                    CHECK(mode IN ('observe', 'paper_auto', 'live_shadow')),
+                    CHECK(status IN (
+                        'active', 'paused', 'armed', 'recovery_locked', 'stopped'
+                    )),
+                    CHECK((mode='live_shadow' AND broker_name IS NOT NULL AND account_id IS NOT NULL)
+                       OR (mode!='live_shadow' AND broker_name IS NULL AND account_id IS NULL))
+                );
+                INSERT INTO strategy_runtimes(
+                    runtime_id,owner_user_id,strategy_kind,strategy_id,
+                    strategy_version,strategy_snapshot_json,symbol,interval,
+                    quantity,mode,broker_name,account_id,status,recovery_issue,
+                    recovery_checked_at,last_evaluated_bar,last_decision,
+                    created_at,updated_at
+                ) SELECT runtime_id,owner_user_id,strategy_kind,strategy_id,
+                    strategy_version,strategy_snapshot_json,symbol,interval,
+                    quantity,mode,NULL,NULL,status,recovery_issue,
+                    recovery_checked_at,last_evaluated_bar,last_decision,
+                    created_at,updated_at FROM strategy_runtimes_shadow_legacy;
+                CREATE TABLE trading_decisions (
+                    decision_id TEXT PRIMARY KEY, runtime_id TEXT NOT NULL,
+                    owner_user_id TEXT NOT NULL, strategy_id TEXT NOT NULL,
+                    strategy_version INTEGER, symbol TEXT NOT NULL,
+                    contract TEXT NOT NULL, interval TEXT NOT NULL,
+                    trigger_time TEXT NOT NULL, direction TEXT NOT NULL,
+                    action TEXT NOT NULL, reason TEXT NOT NULL,
+                    context_json TEXT NOT NULL, source_bar_time TEXT NOT NULL,
+                    source_bar_id TEXT,
+                    execution_status TEXT NOT NULL DEFAULT 'not_applicable',
+                    execution_reason TEXT, order_id TEXT, reference_price REAL,
+                    planned_stop_price REAL, actual_fill_price REAL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(runtime_id) REFERENCES strategy_runtimes(runtime_id)
+                        ON DELETE CASCADE,
+                    CHECK(direction IN ('long', 'short')),
+                    CHECK(action IN ('entry', 'exit', 'none'))
+                );
+                INSERT INTO trading_decisions SELECT * FROM trading_decisions_shadow_legacy;
+                DROP TABLE trading_decisions_shadow_legacy;
+                DROP TABLE strategy_runtimes_shadow_legacy;
+                CREATE INDEX idx_strategy_runtimes_owner_updated
+                    ON strategy_runtimes(owner_user_id, updated_at DESC);
+                CREATE INDEX idx_strategy_runtimes_active_symbol
+                    ON strategy_runtimes(status, symbol);
+                CREATE INDEX idx_trading_decisions_runtime_time
+                    ON trading_decisions(runtime_id, trigger_time DESC);
+                """
+            )
+        finally:
+            self.connection.execute("PRAGMA foreign_keys=ON")
 
     def _upgrade_paper_auto_recovery_schema(self) -> None:
         """Add the durable Paper Auto recovery state without losing PR #99 data."""
@@ -764,6 +844,8 @@ class SQLiteBarRepository:
             "interval": row["interval"],
             "quantity": row["quantity"],
             "mode": row["mode"],
+            "broker_name": row["broker_name"],
+            "account_id": row["account_id"],
             "status": row["status"],
             "recovery_issue": row["recovery_issue"],
             "recovery_checked_at": row["recovery_checked_at"],
@@ -810,8 +892,8 @@ class SQLiteBarRepository:
                 "INSERT INTO strategy_runtimes("
                 "runtime_id,owner_user_id,strategy_kind,strategy_id,"
                 "strategy_version,strategy_snapshot_json,symbol,interval,"
-                "quantity,mode,status,last_evaluated_bar,last_decision,"
-                "created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "quantity,mode,broker_name,account_id,status,last_evaluated_bar,last_decision,"
+                "created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     runtime_id, runtime["owner_user_id"],
                     runtime["strategy_kind"], runtime["strategy_id"],
@@ -822,7 +904,8 @@ class SQLiteBarRepository:
                     ),
                     runtime["symbol"], runtime["interval"],
                     runtime["quantity"], runtime["mode"],
-                    "active" if runtime["mode"] == "observe" else "paused",
+                    runtime.get("broker_name"), runtime.get("account_id"),
+                    "active" if runtime["mode"] in {"observe", "live_shadow"} else "paused",
                     runtime.get("last_evaluated_bar"), None, now, now,
                 ),
             )
@@ -860,6 +943,7 @@ class SQLiteBarRepository:
             rows = self.connection.execute(
                 "SELECT * FROM strategy_runtimes WHERE symbol=? AND ("
                 "(status='active' AND mode='observe') OR "
+                "(status='active' AND mode='live_shadow') OR "
                 "(status IN ('armed','paused','recovery_locked') "
                 "AND mode='paper_auto')) ORDER BY created_at",
                 (symbol,),
@@ -1092,6 +1176,28 @@ class SQLiteBarRepository:
             "skipped_decisions": int(decisions["skipped"] or 0),
             "last_runtime_decision_time": decisions["last_decision_time"],
             "duplicate_decisions_blocked": self.duplicate_decisions_blocked,
+        }
+
+    def paper_shadow_metrics(self, owner_user_id: str) -> dict[str, int]:
+        """Compare equivalent decisions without assuming equal execution prices."""
+        with self.lock:
+            rows = self.connection.execute(
+                "SELECT paper.action AS paper_action,paper.direction AS paper_direction,"
+                "shadow.action AS shadow_action,shadow.direction AS shadow_direction "
+                "FROM trading_decisions paper "
+                "JOIN strategy_runtimes paper_runtime ON paper_runtime.runtime_id=paper.runtime_id "
+                "JOIN trading_decisions shadow ON shadow.source_bar_id=paper.source_bar_id "
+                "JOIN strategy_runtimes shadow_runtime ON shadow_runtime.runtime_id=shadow.runtime_id "
+                "WHERE paper.owner_user_id=? AND shadow.owner_user_id=? "
+                "AND paper_runtime.mode='paper_auto' AND shadow_runtime.mode='live_shadow' "
+                "AND paper.strategy_id=shadow.strategy_id AND paper.source_bar_id IS NOT NULL",
+                (owner_user_id, owner_user_id),
+            ).fetchall()
+        return {
+            "paper_shadow_direction_match_total": sum(row["paper_direction"] == row["shadow_direction"] for row in rows),
+            "paper_shadow_direction_mismatch_total": sum(row["paper_direction"] != row["shadow_direction"] for row in rows),
+            "paper_shadow_action_match_total": sum(row["paper_action"] == row["shadow_action"] for row in rows),
+            "paper_shadow_action_mismatch_total": sum(row["paper_action"] != row["shadow_action"] for row in rows),
         }
 
     def update_decision_execution(

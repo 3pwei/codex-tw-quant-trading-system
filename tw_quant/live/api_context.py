@@ -15,6 +15,9 @@ from .application import (
     TradingRuntimeApplicationService,
 )
 from .monitoring import HostResourceMonitor
+from .shadow_context import LiveExecutionTargetCatalog
+from .shadow_store import SQLiteShadowExecutionRepository
+from ..execution.shadow import ShadowExecutionService
 from .rate_limit import SlidingWindowRateLimiter
 from .service import LiveMarketService
 from .settings import LiveSettings
@@ -39,6 +42,9 @@ class ApiDependencies:
     strategy_app: StrategyApplicationService
     runtime_app: TradingRuntimeApplicationService
     execution_worker: ExecutionWorkerMonitor
+    shadow_store: SQLiteShadowExecutionRepository
+    shadow_targets: LiveExecutionTargetCatalog
+    shadow_service: ShadowExecutionService
 
     def identity_from_headers(self, headers) -> AccessIdentity | None:
         token = headers.get("cf-access-jwt-assertion")

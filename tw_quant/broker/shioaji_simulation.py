@@ -298,7 +298,7 @@ class ShioajiSimulationExecutionClient:
             price=price,
             quantity=request.quantity,
             price_type=self._constant("FuturesPriceType", price_type),
-            order_type=self._constant("OrderType", "ROD"),
+            order_type=self._constant("OrderType", request.time_in_force.upper()),
             octype=self._constant("FuturesOCType", "Auto"),
             account=self.account,
         )

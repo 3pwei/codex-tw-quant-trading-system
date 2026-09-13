@@ -25,6 +25,7 @@ from .trading_runtime import (
     TradingRuntimeApplicationService,
     decision_fingerprint,
 )
+from .live_shadow import LiveShadowExecutionController
 
 __all__ = [
     "ApplicationError",
@@ -47,4 +48,5 @@ __all__ = [
     "decision_fingerprint",
     "auto_entry_idempotency_key",
     "auto_exit_idempotency_key",
+    "LiveShadowExecutionController",
 ]

@@ -19,6 +19,7 @@ import { useMarketSocket } from "./use-market-socket";
 import { useTradingChart } from "./use-trading-chart";
 import { closeStrategyMenuWhenOutside } from "./strategy-menu";
 import { createInitialTradeSelection } from "./trade-selection";
+import LiveShadowPanel from "../trade/live-shadow-panel";
 const TIMEFRAME_OPTIONS: { key: Timeframe; name: string }[] = [
   { key: "1m", name: "1 分 K" }, { key: "5m", name: "5 分 K" },
   { key: "10m", name: "10 分 K" }, { key: "15m", name: "15 分 K" },
@@ -314,6 +315,7 @@ export default function TradingWorkspace() {
         {error && <div className="live-error">{error}；系統將以指數退避自動重連。</div>}
       </>}
     />
+    <LiveShadowPanel />
     <footer className="live-footer">行情模式由後端設定。Mock 資料僅供工程驗證；正式 Shioaji 模式僅訂閱行情，不含下單功能。</footer>
   </main>;
 }

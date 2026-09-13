@@ -68,4 +68,27 @@ def build_trading_runtime_router(deps: ApiDependencies) -> APIRouter:
         except ApplicationError as exc:
             raise application_http_error(exc) from exc
 
+    @router.get("/api/live-shadow")
+    def live_shadow(request: Request, limit: int = Query(100, ge=1, le=500)):
+        owner = owner_id(request)
+        return {
+            "mode": "live_shadow",
+            "ordering_enabled": False,
+            "results": deps.shadow_store.list_owner(owner, limit),
+            "metrics": {
+                **deps.shadow_service.metrics(owner),
+                **deps.runtime_app.paper_shadow_metrics(owner),
+            },
+            "kill_switch_preview": deps.shadow_store.public_kill_switch_preview(
+                owner, deps.shadow_targets.targets(owner)
+            ),
+        }
+
+    @router.get("/api/live-shadow/targets")
+    def live_shadow_targets(_request: Request):
+        return {
+            "targets": deps.shadow_targets.public_targets(owner_id(_request)),
+            "ordering_enabled": False,
+        }
+
     return router

@@ -3,11 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, Protocol
 
-from ..market import ConnectionStatus, KBar, TickEvent
+from ..market import ConnectionStatus, ExecutionQuote, KBar, TickEvent
 
 
 TickCallback = Callable[[TickEvent], None]
 StatusCallback = Callable[[ConnectionStatus], None]
+ExecutionQuoteCallback = Callable[[ExecutionQuote], None]
 
 
 @dataclass(frozen=True)
@@ -42,6 +43,13 @@ class HistoricalMarketDataProvider(Protocol):
     async def load_history(self, limit: int) -> list[KBar]: ...
 
 
+class ExecutionQuotePublisher(Protocol):
+    """Optional BidAsk publisher; providers without true depth omit this port."""
+
+    def set_execution_quote_callback(
+        self, callback: ExecutionQuoteCallback
+    ) -> None: ...
+
+
 class MarketDataProvider(LiveMarketDataProvider, HistoricalMarketDataProvider, Protocol):
     """Current application port requiring live ticks and optional backfill."""
-
