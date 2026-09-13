@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
@@ -14,6 +14,7 @@ from .models import (
     ExecutionMode,
 )
 from .identity import BrokerAccountRef
+from .lifecycle import transition_order
 from .routing import RoutedBrokerOrder, RoutedBrokerOrderRequest
 
 
@@ -74,6 +75,38 @@ class SQLiteLiveOrderRepository:
                     FOREIGN KEY(client_order_id)
                         REFERENCES live_orders(client_order_id)
                 );
+                CREATE TABLE IF NOT EXISTS live_cancel_outbox (
+                    client_order_id TEXT PRIMARY KEY,
+                    broker_name TEXT NOT NULL,
+                    account_id TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(client_order_id) REFERENCES live_orders(client_order_id)
+                );
+                CREATE TABLE IF NOT EXISTS live_fills (
+                    broker_name TEXT NOT NULL,
+                    account_id TEXT NOT NULL,
+                    fill_id TEXT NOT NULL,
+                    owner_user_id TEXT NOT NULL,
+                    broker_order_id TEXT NOT NULL,
+                    contract TEXT NOT NULL,
+                    side TEXT NOT NULL,
+                    quantity INTEGER NOT NULL,
+                    price REAL NOT NULL,
+                    occurred_at TEXT NOT NULL,
+                    PRIMARY KEY(broker_name, account_id, fill_id)
+                );
+                CREATE TABLE IF NOT EXISTS live_positions (
+                    owner_user_id TEXT NOT NULL,
+                    broker_name TEXT NOT NULL,
+                    account_id TEXT NOT NULL,
+                    contract TEXT NOT NULL,
+                    quantity INTEGER NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(owner_user_id, broker_name, account_id, contract)
+                );
                 """
             )
             order_columns = {
@@ -115,6 +148,10 @@ class SQLiteLiveOrderRepository:
                       AND broker_order_id IS NOT NULL;
                 CREATE INDEX IF NOT EXISTS idx_live_outbox_target_state
                     ON live_order_outbox(
+                        broker_name, account_id, state, created_at
+                    );
+                CREATE INDEX IF NOT EXISTS idx_live_cancel_target_state
+                    ON live_cancel_outbox(
                         broker_name, account_id, state, created_at
                     );
                 UPDATE live_order_outbox
@@ -354,6 +391,174 @@ class SQLiteLiveOrderRepository:
             )
             self.connection.commit()
 
+    def block_dispatch(self, order: BrokerOrder, reason: str) -> None:
+        """Block pre-submit work without claiming an external broker outcome."""
+
+        blocked = replace(order, status_reason=reason, updated_at=_utc_now())
+        with self.lock:
+            self.connection.execute("BEGIN IMMEDIATE")
+            self._update_order(blocked)
+            self.connection.execute(
+                "UPDATE live_order_outbox SET state='blocked', updated_at=? "
+                "WHERE client_order_id=?",
+                (
+                    blocked.updated_at.isoformat(timespec="microseconds"),
+                    blocked.request.client_order_id,
+                ),
+            )
+            self.connection.commit()
+
+    def block_pending_dispatches(
+        self, target: BrokerAccountRef, reason: str
+    ) -> int:
+        """Restart safety: pending external work requires a fresh manual action."""
+
+        now = _utc_now()
+        with self.lock:
+            rows = self.connection.execute(
+                "SELECT orders.* FROM live_order_outbox AS outbox "
+                "JOIN live_orders AS orders USING(client_order_id) "
+                "WHERE outbox.state='pending' AND outbox.broker_name=? "
+                "AND outbox.account_id=?",
+                (target.broker_name, target.account_id),
+            ).fetchall()
+            cancel_rows = self.connection.execute(
+                "SELECT orders.* FROM live_cancel_outbox AS outbox "
+                "JOIN live_orders AS orders USING(client_order_id) "
+                "WHERE outbox.state='pending' AND outbox.broker_name=? "
+                "AND outbox.account_id=?",
+                (target.broker_name, target.account_id),
+            ).fetchall()
+            for row in (*rows, *cancel_rows):
+                self._update_order(replace(
+                    self._order(row), status_reason=reason, updated_at=now
+                ))
+            self.connection.execute(
+                "UPDATE live_order_outbox SET state='blocked', updated_at=? "
+                "WHERE state='pending' AND broker_name=? AND account_id=?",
+                (
+                    now.isoformat(timespec="microseconds"),
+                    target.broker_name,
+                    target.account_id,
+                ),
+            )
+            self.connection.execute(
+                "UPDATE live_cancel_outbox SET state='blocked', updated_at=? "
+                "WHERE state='pending' AND broker_name=? AND account_id=?",
+                (
+                    now.isoformat(timespec="microseconds"),
+                    target.broker_name,
+                    target.account_id,
+                ),
+            )
+            self.connection.commit()
+        return len(rows) + len(cancel_rows)
+
+    def reserve_cancel(
+        self, target: BrokerAccountRef, owner_id: str, client_order_id: str
+    ) -> tuple[BrokerOrder, bool]:
+        now = _utc_now()
+        with self.lock:
+            self.connection.execute("BEGIN IMMEDIATE")
+            row = self.connection.execute(
+                "SELECT * FROM live_orders WHERE owner_user_id=? "
+                "AND client_order_id=? AND broker_name=? AND account_id=?",
+                (owner_id, client_order_id, target.broker_name, target.account_id),
+            ).fetchone()
+            if row is None:
+                self.connection.rollback()
+                raise KeyError("unknown platform live order")
+            order = self._order(row)
+            if order.status.terminal:
+                self.connection.commit()
+                return order, False
+            if not order.broker_order_id:
+                self.connection.rollback()
+                raise RuntimeError("live_order_requires_reconciliation_before_cancel")
+            existing = self.connection.execute(
+                "SELECT state FROM live_cancel_outbox WHERE client_order_id=?",
+                (client_order_id,),
+            ).fetchone()
+            if existing is not None:
+                self.connection.commit()
+                return order, False
+            pending = transition_order(
+                order,
+                BrokerOrderStatus.CANCEL_PENDING,
+                updated_at=max(now, order.updated_at),
+                status_reason="cancel_durably_reserved",
+            )
+            self._update_order(pending)
+            self.connection.execute(
+                "INSERT INTO live_cancel_outbox VALUES (?,?,?,'pending',0,?,?)",
+                (
+                    client_order_id,
+                    target.broker_name,
+                    target.account_id,
+                    now.isoformat(timespec="microseconds"),
+                    now.isoformat(timespec="microseconds"),
+                ),
+            )
+            self.connection.commit()
+        return pending, True
+
+    def claim_next_cancel(
+        self, target: BrokerAccountRef
+    ) -> RoutedBrokerOrder | None:
+        now = _utc_now()
+        with self.lock:
+            self.connection.execute("BEGIN IMMEDIATE")
+            row = self.connection.execute(
+                "SELECT orders.* FROM live_cancel_outbox AS outbox "
+                "JOIN live_orders AS orders USING(client_order_id) "
+                "WHERE outbox.state='pending' AND outbox.broker_name=? "
+                "AND outbox.account_id=? ORDER BY outbox.created_at LIMIT 1",
+                (target.broker_name, target.account_id),
+            ).fetchone()
+            if row is None:
+                self.connection.commit()
+                return None
+            self.connection.execute(
+                "UPDATE live_cancel_outbox SET state='processing', "
+                "attempt_count=attempt_count+1,updated_at=? WHERE client_order_id=?",
+                (now.isoformat(timespec="microseconds"), row["client_order_id"]),
+            )
+            self.connection.commit()
+        stored_target = self._target(row)
+        assert stored_target is not None
+        return RoutedBrokerOrder(stored_target, self._order(row))
+
+    def finish_cancel(self, order: BrokerOrder) -> None:
+        state = "blocked" if order.status is BrokerOrderStatus.UNKNOWN else "completed"
+        with self.lock:
+            self.connection.execute("BEGIN IMMEDIATE")
+            self._update_order(order)
+            self.connection.execute(
+                "UPDATE live_cancel_outbox SET state=?,updated_at=? "
+                "WHERE client_order_id=?",
+                (
+                    state,
+                    order.updated_at.isoformat(timespec="microseconds"),
+                    order.request.client_order_id,
+                ),
+            )
+            self.connection.commit()
+
+    def block_cancel(self, order: BrokerOrder, reason: str) -> None:
+        blocked = replace(order, status_reason=reason, updated_at=_utc_now())
+        with self.lock:
+            self.connection.execute("BEGIN IMMEDIATE")
+            self._update_order(blocked)
+            self.connection.execute(
+                "UPDATE live_cancel_outbox SET state='blocked',updated_at=? "
+                "WHERE client_order_id=?",
+                (
+                    blocked.updated_at.isoformat(timespec="microseconds"),
+                    blocked.request.client_order_id,
+                ),
+            )
+            self.connection.commit()
+
     def save_reconciliation(self, order: BrokerOrder) -> None:
         with self.lock:
             self.connection.execute("BEGIN IMMEDIATE")
@@ -368,6 +573,82 @@ class SQLiteLiveOrderRepository:
                     ),
                 )
             self.connection.commit()
+
+    def apply_reconciled_snapshot(self, target, snapshot) -> None:
+        """Persist only broker fills, then derive the isolated Live position ledger."""
+
+        if snapshot.account_ref != target:
+            raise ValueError("broker snapshot target mismatch")
+        now = snapshot.captured_at.isoformat(timespec="microseconds")
+        with self.lock:
+            self.connection.execute("BEGIN IMMEDIATE")
+            for fill in snapshot.fills:
+                row = self.connection.execute(
+                    "SELECT owner_user_id FROM live_orders WHERE broker_name=? "
+                    "AND account_id=? AND broker_order_id=?",
+                    (target.broker_name, target.account_id, fill.broker_order_id),
+                ).fetchone()
+                if row is None:
+                    self.connection.rollback()
+                    raise RuntimeError("orphan_broker_fill")
+                self.connection.execute(
+                    "INSERT OR IGNORE INTO live_fills VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        target.broker_name,
+                        target.account_id,
+                        fill.fill_id,
+                        str(row["owner_user_id"]),
+                        fill.broker_order_id,
+                        fill.contract,
+                        fill.side,
+                        fill.quantity,
+                        fill.price,
+                        fill.occurred_at.isoformat(timespec="microseconds"),
+                    ),
+                )
+            owners = self.connection.execute(
+                "SELECT DISTINCT owner_user_id,contract FROM live_fills "
+                "WHERE broker_name=? AND account_id=?",
+                (target.broker_name, target.account_id),
+            ).fetchall()
+            for item in owners:
+                total = self.connection.execute(
+                    "SELECT COALESCE(SUM(CASE side WHEN 'buy' THEN quantity "
+                    "ELSE -quantity END),0) FROM live_fills WHERE owner_user_id=? "
+                    "AND broker_name=? AND account_id=? AND contract=?",
+                    (
+                        item["owner_user_id"],
+                        target.broker_name,
+                        target.account_id,
+                        item["contract"],
+                    ),
+                ).fetchone()[0]
+                self.connection.execute(
+                    "INSERT INTO live_positions VALUES (?,?,?,?,?,?) "
+                    "ON CONFLICT(owner_user_id,broker_name,account_id,contract) "
+                    "DO UPDATE SET quantity=excluded.quantity,updated_at=excluded.updated_at",
+                    (
+                        item["owner_user_id"],
+                        target.broker_name,
+                        target.account_id,
+                        item["contract"],
+                        int(total),
+                        now,
+                    ),
+                )
+            self.connection.commit()
+
+    def live_positions(
+        self, owner_id: str, target: BrokerAccountRef
+    ) -> list[dict[str, object]]:
+        with self.lock:
+            rows = self.connection.execute(
+                "SELECT contract,quantity,updated_at FROM live_positions "
+                "WHERE owner_user_id=? AND broker_name=? AND account_id=? "
+                "ORDER BY contract",
+                (owner_id, target.broker_name, target.account_id),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def _update_order(self, order: BrokerOrder) -> None:
         self.connection.execute(
@@ -395,30 +676,50 @@ class SQLiteLiveOrderRepository:
                 "JOIN live_orders AS orders USING(client_order_id) "
                 "WHERE outbox.state='processing'"
             ).fetchall()
-            for row in rows:
-                order = self._order(row)
-                unknown = BrokerOrder(
-                    request=order.request,
-                    status=BrokerOrderStatus.UNKNOWN,
-                    updated_at=now,
-                    broker_order_id=order.broker_order_id,
-                    filled_quantity=order.filled_quantity,
-                    average_fill_price=order.average_fill_price,
-                    status_reason="dispatch_interrupted_reconciliation_required",
-                )
-                self._update_order(unknown)
-                self.connection.execute(
-                    "UPDATE live_order_outbox SET state='blocked', updated_at=? "
-                    "WHERE client_order_id=?",
-                    (now.isoformat(timespec="microseconds"), order.request.client_order_id),
-                )
+            cancel_rows = self.connection.execute(
+                "SELECT orders.* FROM live_cancel_outbox AS outbox "
+                "JOIN live_orders AS orders USING(client_order_id) "
+                "WHERE outbox.state='processing'"
+            ).fetchall()
+            for table, interrupted in (
+                ("live_order_outbox", rows),
+                ("live_cancel_outbox", cancel_rows),
+            ):
+                for row in interrupted:
+                    order = self._order(row)
+                    unknown = BrokerOrder(
+                        request=order.request,
+                        status=BrokerOrderStatus.UNKNOWN,
+                        updated_at=now,
+                        broker_order_id=order.broker_order_id,
+                        filled_quantity=order.filled_quantity,
+                        average_fill_price=order.average_fill_price,
+                        status_reason="dispatch_interrupted_reconciliation_required",
+                    )
+                    self._update_order(unknown)
+                    self.connection.execute(
+                        f"UPDATE {table} SET state='blocked', updated_at=? "
+                        "WHERE client_order_id=?",
+                        (
+                            now.isoformat(timespec="microseconds"),
+                            order.request.client_order_id,
+                        ),
+                    )
             self.connection.commit()
-        return len(rows)
+        return len(rows) + len(cancel_rows)
 
     def outbox_state(self, client_order_id: str) -> str | None:
         with self.lock:
             row = self.connection.execute(
                 "SELECT state FROM live_order_outbox WHERE client_order_id=?",
+                (client_order_id,),
+            ).fetchone()
+        return str(row["state"]) if row else None
+
+    def cancel_outbox_state(self, client_order_id: str) -> str | None:
+        with self.lock:
+            row = self.connection.execute(
+                "SELECT state FROM live_cancel_outbox WHERE client_order_id=?",
                 (client_order_id,),
             ).fetchone()
         return str(row["state"]) if row else None

@@ -18,14 +18,24 @@ def _healthcheck(settings: ExecutionServiceSettings) -> int:
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
         return 1
     age = (datetime.now(timezone.utc) - heartbeat).total_seconds()
-    safe_state = (
-        document.get("locked") is True
-        and document.get("execution_state") in {
+    valid_state = document.get("execution_state") in {
             "disabled", "locked", "read_only_ready", "ready_read_only", "degraded"
         }
-        and document.get("external_order_calls") == 0
-        and document.get("external_cancel_calls") == 0
-    )
+    if settings.live_canary_enabled:
+        safe_state = (
+            valid_state
+            and isinstance(document.get("external_order_calls"), int)
+            and isinstance(document.get("external_cancel_calls"), int)
+            and int(document["external_order_calls"]) >= 0
+            and int(document["external_cancel_calls"]) >= 0
+        )
+    else:
+        safe_state = (
+            document.get("locked") is True
+            and valid_state
+            and document.get("external_order_calls") == 0
+            and document.get("external_cancel_calls") == 0
+        )
     return 0 if safe_state and age <= max(30.0, settings.heartbeat_seconds * 4) else 1
 
 

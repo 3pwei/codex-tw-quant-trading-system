@@ -213,9 +213,10 @@ class BrokerAccountWorker:
 
     def _client_ready(self) -> bool:
         health = self._client_health()
-        return all(
+        access_mode = health.get("read_only") is True or health.get("canary") is True
+        return access_mode and all(
             health.get(key) is True
-            for key in ("connected", "ca_ready", "read_only", "callback_registered")
+            for key in ("connected", "ca_ready", "callback_registered")
         )
 
     async def start(self) -> None:
@@ -461,12 +462,13 @@ class BrokerAccountWorker:
             "client_state": str(health.get("execution_state") or "disconnected"),
             "broker_connected": bool(health.get("connected", False)),
             "ca_ready": bool(health.get("ca_ready", False)),
-            "read_only": True,
+            "read_only": bool(health.get("read_only", True)),
+            "canary": bool(health.get("canary", False)),
             "callback_registered": bool(
                 health.get("callback_registered", False)
             ),
             "ordering_enabled": False,
-            "locked": True,
+            "locked": not recovery.ready,
             "recovery_status": recovery.status.value,
             "recovery_generation": recovery.generation,
             "issue_codes": list(recovery.issue_codes),
@@ -520,8 +522,11 @@ class BrokerAccountWorker:
             "max_reconciliation_ms": self.max_reconciliation_ms,
             "last_error_code": self.last_error_code,
             "dispatches": 0,
-            "external_order_calls": 0,
-            "external_cancel_calls": 0,
+            "cancel_requests_total": 0,
+            "external_order_calls": int(health.get("external_order_calls", 0) or 0),
+            "external_cancel_calls": int(health.get("external_cancel_calls", 0) or 0),
+            "average_broker_response_ms": health.get("average_broker_response_ms"),
+            "max_broker_response_ms": health.get("max_broker_response_ms"),
         }
 
 
@@ -553,15 +558,78 @@ class ExecutionSupervisor:
         ready = sum(item["status"] == "ready_read_only" for item in accounts)
         return {
             "state": "ready_read_only" if accounts and ready == len(accounts) else "locked",
-            "ordering_enabled": False,
-            "locked": True,
+            "ordering_enabled": any(item.get("ordering_enabled") for item in accounts),
+            "locked": ready != len(accounts),
             "broker_accounts": accounts,
             "ready_accounts": ready,
             "locked_accounts": len(accounts) - ready,
-            "dispatches": 0,
-            "external_order_calls": 0,
-            "external_cancel_calls": 0,
+            "dispatches": sum(int(item.get("dispatches", 0) or 0) for item in accounts),
+            "external_order_calls": sum(int(item.get("external_order_calls", 0) or 0) for item in accounts),
+            "external_cancel_calls": sum(int(item.get("external_cancel_calls", 0) or 0) for item in accounts),
         }
+
+
+class CanaryBrokerAccountWorker(BrokerAccountWorker):
+    """Opt-in manual canary dispatch layered on the read/recovery worker."""
+
+    def __init__(self, *, order_manager: LiveOrderManager, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.order_manager = order_manager
+        self.live_order_dispatched_total = 0
+        self.cancel_requests_total = 0
+        self._dispatch_task: asyncio.Task[None] | None = None
+
+    async def start(self) -> None:
+        await super().start()
+        if self._dispatch_task is None:
+            self._dispatch_task = asyncio.create_task(
+                self._run_canary_dispatch(), name=f"{self._task_prefix}-canary-dispatch"
+            )
+
+    async def stop(self) -> None:
+        if self._dispatch_task is not None:
+            self._dispatch_task.cancel()
+            await asyncio.gather(self._dispatch_task, return_exceptions=True)
+            self._dispatch_task = None
+        await super().stop()
+
+    async def _run_canary_dispatch(self) -> None:
+        while not self._stop_event.is_set():
+            recovery = self.recovery_lock.state(
+                self.account_ref.broker_name, self.account_ref.account_id
+            )
+            if recovery.ready and self._client_ready():
+                try:
+                    order = await self.order_manager.dispatch_cancel_once(self.account_ref)
+                    if order is not None:
+                        self.cancel_requests_total += 1
+                        if order.status is BrokerOrderStatus.UNKNOWN:
+                            self._persist_lock("unknown_cancel_requires_reconciliation")
+                        continue
+                    order = await self.order_manager.dispatch_once(self.account_ref)
+                    if order is not None:
+                        self.live_order_dispatched_total += 1
+                        if order.status is BrokerOrderStatus.UNKNOWN:
+                            self._persist_lock("unknown_order_requires_reconciliation")
+                        continue
+                except Exception as exc:
+                    self._persist_lock(_operational_code(exc, "canary_dispatch_failed"))
+            if await self._wait(self.settings.dispatch_poll_seconds):
+                return
+
+    def snapshot(self) -> dict[str, object]:
+        value = super().snapshot()
+        health = self._client_health()
+        value.update({
+            "ordering_enabled": True,
+            "dispatches": self.live_order_dispatched_total,
+            "cancel_requests_total": self.cancel_requests_total,
+            "external_order_calls": int(health.get("external_order_calls", 0) or 0),
+            "external_cancel_calls": int(health.get("external_cancel_calls", 0) or 0),
+            "average_broker_response_ms": health.get("average_broker_response_ms"),
+            "max_broker_response_ms": health.get("max_broker_response_ms"),
+        })
+        return value
 
 
 class ExecutionWorker:

@@ -7,6 +7,10 @@ from typing import Mapping, Protocol, Sequence, runtime_checkable
 from .models import BrokerOrder, BrokerOrderRequest
 from .identity import BrokerAccountRef
 from .routing import RoutedBrokerOrder, RoutedBrokerOrderRequest
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .reconciliation import BrokerReconciliationSnapshot
 
 
 class BrokerAccount(Protocol):
@@ -113,6 +117,24 @@ class LiveOrderStore(Protocol):
 
     def finish_dispatch(self, order: BrokerOrder) -> None: ...
 
+    def block_dispatch(self, order: BrokerOrder, reason: str) -> None: ...
+
+    def block_pending_dispatches(self, target: BrokerAccountRef, reason: str) -> int: ...
+
+    def reserve_cancel(
+        self, target: BrokerAccountRef, owner_id: str, client_order_id: str
+    ) -> tuple[BrokerOrder, bool]: ...
+
+    def claim_next_cancel(self, target: BrokerAccountRef) -> RoutedBrokerOrder | None: ...
+
+    def finish_cancel(self, order: BrokerOrder) -> None: ...
+
+    def block_cancel(self, order: BrokerOrder, reason: str) -> None: ...
+
     def save_reconciliation(self, order: BrokerOrder) -> None: ...
+
+    def apply_reconciled_snapshot(
+        self, target: BrokerAccountRef, snapshot: "BrokerReconciliationSnapshot"
+    ) -> None: ...
 
     def recover_interrupted_dispatches(self) -> int: ...

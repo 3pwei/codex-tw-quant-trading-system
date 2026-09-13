@@ -5,6 +5,7 @@ import os
 from typing import Mapping
 
 from ..broker.identity import BrokerAccountRef
+from ..broker.canary import LIVE_CANARY_CONFIRMATION, LiveCanaryConfig
 from ..broker.settings import BrokerConnectionSettings
 
 
@@ -34,6 +35,15 @@ class ExecutionServiceSettings:
     reconciliation_stale_seconds: float = 120.0
     callback_queue_size: int = 1024
     shutdown_drain_seconds: float = 5.0
+    live_canary_enabled: bool = False
+    live_canary_confirmation: str = ""
+    live_canary_allowed_owner_ids: frozenset[str] = frozenset()
+    live_canary_allowed_symbols: frozenset[str] = frozenset()
+    live_canary_allowed_contracts: frozenset[str] = frozenset()
+    live_canary_max_quantity: int = 1
+    live_canary_arm_ttl_seconds: int = 600
+    live_canary_protective_stop_ticks: int = 20
+    live_canary_requests_per_minute: int = 4
 
     @classmethod
     def from_env(
@@ -44,6 +54,9 @@ class ExecutionServiceSettings:
             item.strip()
             for item in values.get("LIVE_ALLOWED_ACCOUNT_IDS", "").split(",")
             if item.strip()
+        )
+        split = lambda name: frozenset(
+            item.strip() for item in values.get(name, "").split(",") if item.strip()
         )
         return cls(
             broker_name=values.get("BROKER_PROVIDER", "disabled").strip().lower(),
@@ -91,6 +104,17 @@ class ExecutionServiceSettings:
             shutdown_drain_seconds=float(
                 values.get("LIVE_CALLBACK_SHUTDOWN_DRAIN_SECONDS", "5")
             ),
+            live_canary_enabled=_enabled(values.get("LIVE_CANARY_ENABLED")),
+            live_canary_confirmation=values.get(
+                "LIVE_CANARY_CONFIRMATION", ""
+            ).strip(),
+            live_canary_allowed_owner_ids=split("LIVE_CANARY_ALLOWED_OWNER_IDS"),
+            live_canary_allowed_symbols=split("LIVE_CANARY_ALLOWED_SYMBOLS"),
+            live_canary_allowed_contracts=split("LIVE_CANARY_ALLOWED_CONTRACTS"),
+            live_canary_max_quantity=int(values.get("LIVE_CANARY_MAX_QUANTITY", "1")),
+            live_canary_arm_ttl_seconds=int(values.get("LIVE_CANARY_ARM_TTL_SECONDS", "600")),
+            live_canary_protective_stop_ticks=int(values.get("LIVE_CANARY_PROTECTIVE_STOP_TICKS", "20")),
+            live_canary_requests_per_minute=int(values.get("LIVE_ORDER_REQUESTS_PER_MINUTE", "4")),
         )
 
     @property
@@ -118,6 +142,24 @@ class ExecutionServiceSettings:
             for account_id in self.allowed_account_ids
         )
 
+    @property
+    def canary_config(self) -> LiveCanaryConfig:
+        accounts = (
+            frozenset({BrokerAccountRef(self.broker_name, self.account_id)})
+            if self.account_id else frozenset()
+        )
+        return LiveCanaryConfig(
+            enabled=self.live_canary_enabled,
+            allowed_owner_ids=self.live_canary_allowed_owner_ids,
+            allowed_broker_accounts=accounts,
+            allowed_symbols=self.live_canary_allowed_symbols,
+            allowed_contracts=self.live_canary_allowed_contracts,
+            max_quantity=self.live_canary_max_quantity,
+            arm_ttl_seconds=self.live_canary_arm_ttl_seconds,
+            protective_stop_ticks=self.live_canary_protective_stop_ticks,
+            requests_per_minute=self.live_canary_requests_per_minute,
+        )
+
     def validation_issues(self) -> tuple[str, ...]:
         issues: list[str] = []
         if not self.broker_name:
@@ -141,6 +183,21 @@ class ExecutionServiceSettings:
             issues.append("account_not_allowlisted")
         if self.live_trading_enabled and self.production_read_only_enabled:
             issues.append("read_only_conflicts_with_live_trading")
+        if self.live_canary_enabled:
+            if not self.live_trading_enabled:
+                issues.append("live_canary_requires_live_trading_enabled")
+            if self.production_read_only_enabled:
+                issues.append("live_canary_conflicts_with_read_only")
+            if self.broker_name != "shioaji":
+                issues.append("unsupported_live_canary_broker")
+            if self.live_canary_confirmation != LIVE_CANARY_CONFIRMATION:
+                issues.append("invalid_live_canary_confirmation")
+            if not self.instrument_map_json:
+                issues.append("missing_broker_instrument_map")
+            try:
+                self.canary_config
+            except ValueError:
+                issues.append("invalid_live_canary_config")
         if self.production_read_only_enabled and self.broker_name != "shioaji":
             issues.append("unsupported_read_only_broker")
         if (

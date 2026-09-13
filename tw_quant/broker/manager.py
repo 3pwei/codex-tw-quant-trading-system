@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timezone
 
 from .lifecycle import transition_order
@@ -18,11 +19,15 @@ class LiveOrderManager:
         repository: LiveOrderStore,
         registry: BrokerRegistry,
         admission_gates: dict[BrokerAccountRef, OrderAdmissionGate] | None = None,
+        *,
+        recover_interrupted: bool = True,
     ):
         self.repository = repository
         self.registry = registry
         self.admission_gates = dict(admission_gates or {})
-        self.interrupted_dispatches = repository.recover_interrupted_dispatches()
+        self.interrupted_dispatches = (
+            repository.recover_interrupted_dispatches() if recover_interrupted else 0
+        )
 
     def _assert_admitted(self, target: BrokerAccountRef) -> None:
         self.registry.resolve(target)
@@ -65,6 +70,16 @@ class LiveOrderManager:
             return None
         if reserved.target != target:
             raise RuntimeError("durable outbox returned a different execution target")
+        try:
+            self._assert_order_admitted(reserved)
+        except Exception as exc:
+            code = str(exc) or "worker_admission_rejected"
+            self.repository.block_dispatch(reserved.order, code)
+            return replace(
+                reserved.order,
+                status_reason=code,
+                updated_at=datetime.now(timezone.utc),
+            )
         broker = self.registry.resolve(reserved.target)
         try:
             result = await broker.submit_order(reserved.order.request)
@@ -76,6 +91,46 @@ class LiveOrderManager:
                 status_reason="broker_call_failed_reconciliation_required",
             )
         self.repository.finish_dispatch(result)
+        return result
+
+    def request_cancel(
+        self, target: BrokerAccountRef, owner_id: str, client_order_id: str
+    ) -> tuple[BrokerOrder, bool]:
+        self._assert_admitted(target)
+        current = self.repository.get_routed(owner_id, client_order_id)
+        if current is None or current.target != target:
+            raise KeyError("unknown platform live order")
+        self._assert_order_admitted(current, cancel=True)
+        return self.repository.reserve_cancel(target, owner_id, client_order_id)
+
+    async def dispatch_cancel_once(
+        self, target: BrokerAccountRef
+    ) -> BrokerOrder | None:
+        self._assert_admitted(target)
+        reserved = self.repository.claim_next_cancel(target)
+        if reserved is None:
+            return None
+        try:
+            self._assert_order_admitted(reserved, cancel=True)
+        except Exception as exc:
+            code = str(exc) or "worker_cancel_admission_rejected"
+            self.repository.block_cancel(reserved.order, code)
+            return replace(
+                reserved.order,
+                updated_at=datetime.now(timezone.utc),
+                status_reason=code,
+            )
+        broker = self.registry.resolve(target)
+        try:
+            result = await broker.cancel_order(reserved.order)
+        except Exception:
+            result = transition_order(
+                reserved.order,
+                BrokerOrderStatus.UNKNOWN,
+                updated_at=datetime.now(timezone.utc),
+                status_reason="broker_cancel_failed_reconciliation_required",
+            )
+        self.repository.finish_cancel(result)
         return result
 
     async def reconcile(
