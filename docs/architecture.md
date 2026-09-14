@@ -1,5 +1,12 @@
 # 程式架構與依賴規則
 
+## Strategy Auto Live boundary
+
+`live_auto` extends the existing core: Strategy Runtime → Decision → Live Risk
+→ Execution Policy → restricted Strategy Live Sink → LiveOrderManager/outbox →
+account worker → exact BrokerRegistry target. It has no fallback and accepts no
+Observe, Paper, or Shadow source. Position Guardian exclusively owns exits.
+
 本文件是新進維護者理解系統的入口。現階段平台提供行情、策略研究、歷史回測、
 Replay、Paper Trading 與預設停用的 Manual Live Canary；Strategy Auto Live 尚未
 啟用。架構調整採漸進式遷移，既有 API 在替代實作完成前不得直接移除。

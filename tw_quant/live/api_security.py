@@ -32,6 +32,8 @@ def required_permission(method: str, path: str) -> str | None:
         return "backtest.run"
     if path.startswith("/api/live-shadow"):
         return "strategy.read.own" if method == "GET" else "__deny_unknown_api__"
+    if path == "/api/live-auto" and method == "GET":
+        return "orders.live.auto.read"
     if path == "/api/live/canary" and method == "GET":
         return "orders.live.read"
     if path == "/api/live/canary/arm":
@@ -47,6 +49,14 @@ def required_permission(method: str, path: str) -> str | None:
     if path == "/api/live/position/close" and method == "POST":
         return "orders.live.close"
     if path.startswith("/api/trading-runtimes"):
+        if path.endswith("/live-auto/arm"):
+            return "orders.live.auto.arm"
+        if path.endswith("/live-auto/disarm"):
+            return "orders.live.auto.pause"
+        if path.endswith("/live-auto/stop"):
+            return "orders.live.auto.stop"
+        if "/live-auto" in path:
+            return "orders.live.auto.read"
         if method == "POST" and path.endswith("/arm"):
             return "orders.paper"
         return "strategy.read.own" if method == "GET" else "strategy.write.own"

@@ -27,6 +27,7 @@ from .trading_runtime import (
 )
 from .live_shadow import LiveShadowExecutionController
 from .live_canary import ManualLiveCanaryService
+from .live_auto import LIVE_AUTO_CONFIRMATION, LiveAutoArm, LiveAutoService
 
 __all__ = [
     "ApplicationError",
@@ -51,4 +52,7 @@ __all__ = [
     "auto_exit_idempotency_key",
     "LiveShadowExecutionController",
     "ManualLiveCanaryService",
+    "LIVE_AUTO_CONFIRMATION",
+    "LiveAutoArm",
+    "LiveAutoService",
 ]

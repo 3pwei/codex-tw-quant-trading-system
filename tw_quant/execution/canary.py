@@ -28,3 +28,22 @@ class LiveExecutionSink:
         self, target: BrokerAccountRef, owner_id: str, client_order_id: str
     ) -> tuple[BrokerOrder, bool]:
         return self.manager.request_cancel(target, owner_id, client_order_id)
+
+
+@dataclass(frozen=True)
+class StrategyLiveExecutionSink:
+    """Dedicated real sink for Strategy Auto Live entry orders only."""
+
+    manager: LiveOrderManager
+
+    def reserve(
+        self, target: BrokerAccountRef, request: BrokerOrderRequest
+    ) -> tuple[BrokerOrder, bool]:
+        if (
+            request.source != "strategy_live_auto"
+            or request.reduce_only
+            or request.purpose != "entry"
+            or not request.arm_id
+        ):
+            raise RuntimeError("strategy_live_entry_source_required")
+        return self.manager.create(RoutedBrokerOrderRequest(target, request))

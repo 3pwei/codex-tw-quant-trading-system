@@ -276,7 +276,7 @@ class LivePositionGuardian:
         created = 0
         for order in self.order_store.orders(owner_id, target=self.account_ref):
             if (
-                order.request.source == "manual_live_canary"
+                order.request.source in {"manual_live_canary", "strategy_live_auto"}
                 and not order.request.reduce_only
                 and not order.status.terminal
                 and order.broker_order_id

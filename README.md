@@ -7,7 +7,9 @@
 > 本專案僅供研究與工程驗證，不構成投資建議。Production 預設不會向外部券商送出
 > 真實委託。只有另行啟用、通過 readiness review 且由操作人員限時 ARM 的 Manual
 > Live Canary 可送出一口 allowlisted 委託；Strategy、Paper 與 Live Shadow 永遠不能
-> 抵達這條路徑。一般部署、重啟與 read-only 模式仍拒絕所有 broker write。
+> 抵達這條路徑。Strategy Auto Live 程式邊界已加入，但預設
+> `LIVE_AUTO_ENABLED=false`，必須另行完成 server preflight 與限時人工 ARM；一般部署、
+> 重啟與 read-only 模式仍拒絕所有 broker write。
 
 ## 核心能力
 
@@ -21,7 +23,7 @@
 | 風控 | Paper 與 Live policy 分離；Live Shadow 依 broker truth 做 account／owner portfolio limits、quote／session／expiry／capability gates |
 | 平台 | Cloudflare OTP、FastAPI RBAC、申請與審核、Rate Limit、Request Size Limit、稽核紀錄 |
 | 穩定性 | 重啟復原、SQLite verified backup、Queue／WebSocket／DB／主機監控、五種服務狀態 |
-| UI | `/trade/` 整合 Observe／Paper／Live Shadow；Canary 明確標示 REAL MONEY，預設停用且無 Strategy Auto Live |
+| UI | `/trade/` 整合 Observe／Paper／Live Shadow／Live Auto；真實路徑明確標示 REAL MONEY 且預設停用 |
 | 部署 | Docker、Caddy、AWS Lightsail、GitHub Actions、Python 套件鎖定 |
 
 Level 2 工程能力已實作；每個正式候選版本仍須依 [Level 2 完成標準](docs/level2-definition-of-done.md) 留存四小時 soak 與人工驗收證據。Live execution foundation 已具備 simulation、production read-only 與 Manual Live Canary 組裝邊界。Canary 是預設停用、單一 owner／account／contract／一口且人工 ARM 的受限能力，不代表 Strategy Auto Live 或一般實盤能力。
@@ -111,6 +113,12 @@ Manual Live Canary 上線前必須逐項通過
 [Canary Rollback](docs/live-canary-rollback.md)。部署與 CI 不會自動完成這項人工授權。
 
 Dow Channel 策略共用同一套 confirmed pivot、ATR、HH／HL、LH／LL 與平行軌道偵測；`Dow Channel Pullback` 在邊界測試後收回時順勢進場，`Dow Channel Reversal` 在反向突破趨勢軌道時反向進場，`Dow Channel Momentum` 則沿既有趨勢突破外側軌道。既有 key `linear_channel_breakout` 保留為 Momentum 的 canonical key，確保歷史回測、參數快照及組合策略引用持續有效。
+
+`live_auto` 沿用既有 Live Risk、Execution Policy、`LiveOrderManager`、durable outbox、
+Recovery Lock、BrokerRegistry 與 Position Guardian。Runtime 預設 PAUSED／DISARMED；
+restart 或 reconnect 不會 ARM。第一版固定單 broker／account／contract／runtime、quantity 1，
+禁止 pyramiding 與 fallback；所有 exit 與 protection 只由 Guardian 協調。詳見
+[Strategy Auto Live Runbook](docs/strategy-auto-live-runbook.md)。
 
 主要程式位置：
 

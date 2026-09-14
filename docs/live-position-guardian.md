@@ -1,5 +1,12 @@
 # Live Position Guardian
 
+## Strategy Auto coordination
+
+After an Auto fill, Guardian must report the complete broker position protected
+before new exposure. Strategy Exit is an intent delivered to Guardian, never a
+competing order. Pause, disarm, stop, or Strategy failure preserves protection;
+Emergency Flatten has highest priority.
+
 The Guardian is independent of Strategy Runtime and survives strategy pause,
 stop or crash. It rebuilds managed positions only from reconciled broker fills and
 position truth. Every Guardian order is owner/account scoped and reduce-only.

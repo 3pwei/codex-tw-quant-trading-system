@@ -32,10 +32,12 @@ from ..broker import (
     SQLiteBrokerTruthRepository,
     SQLiteLiveOrderRepository,
     SQLiteRecoveryLockRepository,
+    SQLitePositionGuardianRepository,
 )
 from ..execution.live_models import InstrumentSpec
 from ..execution.live_policy import MarketableLimitIOCPolicy
-from ..execution.canary import LiveExecutionSink
+from ..execution.canary import LiveExecutionSink, StrategyLiveExecutionSink
+from ..execution.guardian import GuardianExecutionSink, LivePositionGuardian, LivePositionGuardianConfig, default_guardian_policies
 from ..execution.shadow import ShadowExecutionService
 from ..risk import LiveRiskConfig, LiveRiskService
 from ..risk.live import LiveKillSwitchAction, LiveKillSwitchScope
@@ -51,6 +53,7 @@ from .application import (
     TradingRuntimeApplicationService,
     LiveShadowExecutionController,
     ManualLiveCanaryService,
+    LiveAutoService,
 )
 from .api_models import (
     AdminUserCreate,
@@ -75,6 +78,7 @@ from .api_routes import (
     build_system_router,
     build_trading_runtime_router,
     build_live_canary_router,
+    build_live_auto_router,
 )
 from .api_routes.admin import system_status
 from .api_security import (
@@ -88,6 +92,7 @@ from .service import LiveMarketService
 from .settings import LiveSettings
 from .shadow_context import (
     ConfiguredBrokerCapabilityView,
+    ConfiguredLiveAutoContext,
     ConfiguredManualCanaryContext,
     LiveExecutionTargetCatalog,
     LiveShadowRiskContextProvider,
@@ -255,6 +260,8 @@ def create_app(
     )
     canary_arms = None
     live_canary = None
+    live_auto = None
+    guardian_store = None
     if config.live_canary_enabled:
         try:
             canary_target = shadow_targets.resolve(
@@ -350,6 +357,42 @@ def create_app(
                 ),
                 context=canary_context,
             )
+            if config.live_auto_enabled:
+                guardian_store = SQLitePositionGuardianRepository(config.db_path)
+                guardian_config = LivePositionGuardianConfig(enabled=True)
+                normal_guardian_policy, emergency_guardian_policy = default_guardian_policies(guardian_config)
+                api_guardian = LivePositionGuardian(
+                    account_ref=canary_target, config=guardian_config,
+                    store=guardian_store, order_store=live_orders,
+                    truth_store=broker_truth, recovery=recovery,
+                    registry=canary_registry, sink=GuardianExecutionSink(canary_manager),
+                    quotes=service.execution_quotes,
+                    instrument=instrument_catalog.resolve(
+                        next(iter(config.live_canary_allowed_symbols)),
+                        next(iter(config.live_canary_allowed_contracts)),
+                    ),
+                    normal_policy=normal_guardian_policy,
+                    emergency_policy=emergency_guardian_policy,
+                    readiness=lambda: canary_readiness(),
+                    kill_switches=None,
+                    owner_ids=frozenset({config.live_canary_owner_id}),
+                )
+                live_auto = LiveAutoService(
+                    enabled=True, runtimes=repo,
+                    context=ConfiguredLiveAutoContext(
+                        canary_context, api_guardian, live_orders, canary_arms,
+                        acceptance_passed=config.live_auto_production_acceptance_passed,
+                    ),
+                    quotes=service.execution_quotes,
+                    risk=LiveRiskService(live_risk_config),
+                    policy=MarketableLimitIOCPolicy(
+                        live_risk_config.max_slippage_ticks,
+                        live_risk_config.max_spread_ticks,
+                    ),
+                    sink=StrategyLiveExecutionSink(canary_manager),
+                    arm_ttl_seconds=config.live_auto_arm_ttl_seconds,
+                    shared_arms=canary_arms,
+                )
     paper = PaperTradingService(SQLitePaperRepository(config.db_path))
     replay_trading = ReplayTradingSessionRegistry()
     limiter = rate_limiter or _build_rate_limiter(config)
@@ -369,6 +412,9 @@ def create_app(
         live_shadow_enabled=config.live_shadow_enabled,
         execution_targets=shadow_targets,
         reservation_store=shadow_store,
+        live_auto_enabled=config.live_auto_enabled,
+        live_risk_version=live_risk_config.version,
+        live_execution_policy_version="marketable-limit-ioc:v1",
     )
     paper_auto = PaperAutoExecutionController(
         repo, identity_repo, service, paper
@@ -377,6 +423,9 @@ def create_app(
     runtime_app.add_decision_listener(paper_auto.on_decision)
     live_shadow = LiveShadowExecutionController(repo, shadow_service)
     runtime_app.add_decision_listener(live_shadow.on_decision)
+    if live_auto is not None:
+        repo.disarm_live_auto_runtimes_for_restart(config.symbol)
+        runtime_app.add_decision_listener(live_auto.on_decision)
     service.add_bar_listener(paper_auto.before_bar)
     service.add_bar_listener(paper.on_bar)
     service.add_bar_listener(paper_auto.after_bar)
@@ -402,6 +451,8 @@ def create_app(
             shadow_store.close()
             if canary_arms is not None:
                 canary_arms.close()
+            if guardian_store is not None:
+                guardian_store.close()
             broker_truth.close()
             recovery.close()
             live_orders.close()
@@ -436,6 +487,7 @@ def create_app(
         shadow_targets=shadow_targets,
         shadow_service=shadow_service,
         live_canary=live_canary,
+        live_auto=live_auto,
     )
     app.state.api_dependencies = deps
     app.state.market_service = service
@@ -468,6 +520,7 @@ def create_app(
         build_research_router(deps),
         build_trading_runtime_router(deps),
         build_live_canary_router(deps),
+        build_live_auto_router(deps),
     ):
         app.include_router(router)
 

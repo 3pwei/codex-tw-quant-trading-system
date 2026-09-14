@@ -44,6 +44,7 @@ class ExecutionServiceSettings:
     live_canary_arm_ttl_seconds: int = 600
     live_canary_protective_stop_ticks: int = 20
     live_canary_requests_per_minute: int = 4
+    live_auto_enabled: bool = False
     live_position_guardian_enabled: bool = False
     live_guardian_stop_loss_ticks: int = 20
     live_guardian_take_profit_ticks: int = 40
@@ -122,6 +123,7 @@ class ExecutionServiceSettings:
             live_canary_arm_ttl_seconds=int(values.get("LIVE_CANARY_ARM_TTL_SECONDS", "600")),
             live_canary_protective_stop_ticks=int(values.get("LIVE_CANARY_PROTECTIVE_STOP_TICKS", "20")),
             live_canary_requests_per_minute=int(values.get("LIVE_ORDER_REQUESTS_PER_MINUTE", "4")),
+            live_auto_enabled=_enabled(values.get("LIVE_AUTO_ENABLED")),
             live_position_guardian_enabled=_enabled(
                 values.get("LIVE_POSITION_GUARDIAN_ENABLED")
             ),
@@ -226,6 +228,8 @@ class ExecutionServiceSettings:
                 self.canary_config
             except ValueError:
                 issues.append("invalid_live_canary_config")
+        if self.live_auto_enabled and not self.live_canary_enabled:
+            issues.append("live_auto_requires_live_canary")
         if self.live_position_guardian_enabled:
             if not self.live_canary_enabled:
                 issues.append("guardian_requires_live_canary")
