@@ -20,6 +20,7 @@
 | 策略 | 14 套基本策略（含三種共用 Dow Channel 結構的進場邏輯）、多週期 Setup／Entry／Exit／Risk、ALL／ANY、三層組合策略引用 |
 | 版本 | 不可變版本、參數快照、名稱唯一、封存、引用保護及回測追溯 |
 | 執行 | Backtest／Replay／Paper 共用事件語意；Live foundation 提供 durable outbox、callback audit、Recovery Lock、三方對帳、Execution Worker 與 Live Shadow |
+| 執行目標 | `owner_user_id → ExecutionTarget → BrokerAccountRef` durable ownership；opaque target ID、exact lookup、無 fallback |
 | 風控 | Paper 與 Live policy 分離；Live Shadow 依 broker truth 做 account／owner portfolio limits、quote／session／expiry／capability gates |
 | 平台 | Cloudflare OTP、FastAPI RBAC、申請與審核、Rate Limit、Request Size Limit、稽核紀錄 |
 | 穩定性 | 重啟復原、SQLite verified backup、Queue／WebSocket／DB／主機監控、五種服務狀態 |
@@ -57,6 +58,9 @@ flowchart TD
 - Live 下單基礎先持久化 order／outbox，再由 Recovery Lock 控制 dispatch；callback 只觸發 audit 與券商狀態 refresh。
 - execution connection、Recovery、health 與 secret resolution 均使用
   `broker_name + account_id`；相同帳號字串在不同券商不會形成同一個執行身分。
+- `ExecutionTarget` 是 broker-neutral 的 durable ownership/routing metadata；只保存不透明
+  `secret_ref`，不解析或持有任何 API key、密碼或 CA material。`active` 也不代表 ARMED
+  或允許實盤。
 - 每筆 Live order 與 outbox 都持久化 `BrokerAccountRef` target；restart 後依原 target
   精確解析，未知、locked 或 unavailable target 一律拒絕，不會 fallback 至其他券商。
 - `BrokerRegistry` 以 O(1) lookup 解析長生命週期 account runtime；每個 registration

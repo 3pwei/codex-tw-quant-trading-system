@@ -17,6 +17,7 @@ from tw_quant.broker import (
     BrokerSecretMaterial,
     CompositeOrderAdmissionGate,
     ExecutionMode,
+    ExecutionTargetStatus,
     LockedOrderAdmissionGate,
     RecoveryStatus,
     RoutedBrokerOrderRequest,
@@ -88,6 +89,47 @@ class ExecutionSecurityBoundaryTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(health["broker_name"], "shioaji")
             self.assertEqual(health["execution_state"], "locked")
             self.assertEqual(runtime.worker.snapshot()["dispatches"], 0)
+        finally:
+            await runtime.close()
+
+    async def test_legacy_account_bootstraps_owned_target_without_enabling_orders(self):
+        runtime = build_execution_service(env=self.environment(
+            LIVE_CANARY_ALLOWED_OWNER_IDS="owner-1",
+        ))
+        try:
+            targets = runtime.execution_target_repository.list_for_owner("owner-1")
+            self.assertEqual(len(targets), 1)
+            self.assertEqual(targets[0].account_ref, BrokerAccountRef("shioaji", "account-1234"))
+            self.assertTrue(runtime.public_health()["locked"])
+            self.assertEqual(runtime.worker.snapshot()["dispatches"], 0)
+        finally:
+            await runtime.close()
+
+    async def test_ambiguous_legacy_owner_does_not_bootstrap_or_unlock(self):
+        runtime = build_execution_service(env=self.environment(
+            LIVE_CANARY_ALLOWED_OWNER_IDS="owner-1,owner-2",
+        ))
+        try:
+            self.assertIn("legacy_execution_target_bootstrap_rejected", runtime.issues)
+            self.assertEqual(runtime.execution_target_repository.list_for_owner("owner-1"), [])
+            self.assertIsNone(runtime.manager)
+            self.assertTrue(runtime.public_health()["locked"])
+        finally:
+            await runtime.close()
+
+    async def test_disabled_owned_target_blocks_legacy_execution_composition(self):
+        env = self.environment(LIVE_CANARY_ALLOWED_OWNER_IDS="owner-1")
+        first = build_execution_service(env=env)
+        first.execution_target_repository.update_status(
+            first.execution_target_repository.list_for_owner("owner-1")[0].target_id,
+            ExecutionTargetStatus.DISABLED,
+        )
+        await first.close()
+        runtime = build_execution_service(env=env)
+        try:
+            self.assertIn("execution_target_not_active", runtime.issues)
+            self.assertIsNone(runtime.manager)
+            self.assertTrue(runtime.public_health()["locked"])
         finally:
             await runtime.close()
 

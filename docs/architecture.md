@@ -84,6 +84,24 @@ core。現階段只在 composition/factory layer 驗證 `disabled` 與 `shioaji`
 詳細 secret ownership、network isolation、fail-closed 狀態與部署遷移見
 [Live Execution Security Boundary](live-execution-security-boundary.md)。
 
+### Owned execution targets
+
+```mermaid
+flowchart TD
+    A["Authenticated Platform User"] --> B["ExecutionTargetRepository<br/>owner-scoped exact lookup"]
+    B --> C["ExecutionTarget<br/>opaque target_id + status"]
+    C --> D["BrokerAccountRef<br/>broker_name + account_id"]
+    D --> E["BrokerRegistry"]
+    E --> F["Broker Runtime"]
+```
+
+`ExecutionTarget` 是 durable identity、ownership 與 routing metadata，不是 credential、
+order、position、Recovery 或 Guardian aggregate。Repository 以 `target_id` 與
+`broker_name + account_id` 唯一約束拒絕重複；owner mismatch、unknown/disabled/locked
+target、unknown broker runtime 都 fail closed，且沒有 default-account fallback。Live Order
+仍持久化 exact `BrokerAccountRef`，不會只保存 target ID。完整規則見
+[Execution Targets](execution-targets.md)。
+
 ### Multi-Broker Execution Architecture
 
 ```mermaid

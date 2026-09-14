@@ -32,6 +32,8 @@ from ..broker import (
     LIVE_TRADING_CONFIRMATION,
     LockedOrderAdmissionGate,
     SQLiteCanaryArmRepository,
+    SQLiteExecutionTargetRepository,
+    ExecutionTargetStatus,
     SQLiteLiveOrderRepository,
     SQLiteBrokerEventAuditRepository,
     SQLiteRecoveryLockRepository,
@@ -43,6 +45,7 @@ from ..broker import (
     ShioajiInstrumentMapper,
     ShioajiProductionExecutionClient,
     LiveTradingSafety,
+    bootstrap_legacy_execution_target,
 )
 from ..broker.recovery import RecoveryOrderGate
 from ..broker.secret_factory import build_broker_secret_provider
@@ -108,6 +111,9 @@ class ExecutionServiceRuntime:
     kill_switch_repository: SQLiteShadowExecutionRepository | None = field(default=None, repr=False)
     guardian_repository: SQLitePositionGuardianRepository | None = field(default=None, repr=False)
     quote_repository: SQLiteExecutionQuoteRepository | None = field(default=None, repr=False)
+    execution_target_repository: SQLiteExecutionTargetRepository | None = field(
+        default=None, repr=False
+    )
     broker_registry: BrokerRegistry | None = field(default=None, repr=False)
     redaction_filter: SecretRedactionFilter | None = field(default=None, repr=False)
     read_only_client: ShioajiProductionExecutionClient | None = field(
@@ -264,6 +270,8 @@ class ExecutionServiceRuntime:
             self.guardian_repository.close()
         if self.quote_repository is not None:
             self.quote_repository.close()
+        if self.execution_target_repository is not None:
+            self.execution_target_repository.close()
         if self.redaction_filter is not None:
             LOGGER.removeFilter(self.redaction_filter)
 
@@ -321,11 +329,28 @@ def build_execution_service(
     kill_switches = None
     guardian_store = None
     quote_store = None
+    execution_targets = None
     registry = None
     redactor = None
     read_only_client = None
     worker: ServiceWorker = DisabledExecutionWorker()
     account = connection.account_ref if connection is not None else None
+    if connection is not None and config.database_path:
+        execution_targets = SQLiteExecutionTargetRepository(config.database_path)
+        if account is not None and config.live_canary_allowed_owner_ids:
+            try:
+                owned_target = bootstrap_legacy_execution_target(
+                    execution_targets,
+                    owner_user_ids=config.live_canary_allowed_owner_ids,
+                    connection=connection,
+                )
+                account = owned_target.account_ref
+                if owned_target.status is not ExecutionTargetStatus.ACTIVE:
+                    issues.append("execution_target_not_active")
+                    material = None
+            except (PermissionError, ValueError):
+                issues.append("legacy_execution_target_bootstrap_rejected")
+                material = None
     if material is not None and account is not None and not config.validation_issues():
         redactor = SecretRedactionFilter(
             material.redaction_values + (account.account_id,)
@@ -541,6 +566,7 @@ def build_execution_service(
         kill_switch_repository=kill_switches,
         guardian_repository=guardian_store,
         quote_repository=quote_store,
+        execution_target_repository=execution_targets,
         broker_registry=registry,
         redaction_filter=redactor,
         read_only_client=read_only_client,
