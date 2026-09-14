@@ -1,5 +1,9 @@
 # Manual Live Canary runbook
 
+> Manual Canary and Strategy Auto have separate permissions, attribution, and
+> ARM lifecycles. Passing this runbook does not enable or ARM Strategy Auto; use
+> `strategy-auto-live-runbook.md` for that rollout.
+
 Manual Live Canary uses real money. Merging or deploying the code does not enable
 it. The default is `LIVE_CANARY_ENABLED=false`; first enablement requires a
 separate human readiness review with an operator present. This is an operational

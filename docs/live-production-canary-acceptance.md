@@ -1,5 +1,12 @@
 # Production Manual Live Canary acceptance
 
+## Strategy Auto prerequisite
+
+Auto preflight requires recorded passing acceptance; deployment alone is not
+evidence. Keep `LIVE_AUTO_ENABLED=false` until an operator review confirms zero
+duplicates, UNKNOWN retries, mismatches, unprotected positions, stale entries,
+cross-broker routes, restart ARM, backfill, secret leakage, and override failure.
+
 This document is the release gate for the first real-money canary. Passing CI is
 necessary but does not authorize a production order. `LIVE_CANARY_ENABLED=false`
 remains the default, deployment never ARM's the account, and Strategy Auto Live
@@ -85,4 +92,3 @@ callback wire latency require an external trace backend and are a known limitati
 Do not mark this checklist complete from CI. A human must append a sanitized
 production evidence reference after one controlled 1-lot run. Until then the
 software acceptance is PASS/production exercise is PENDING.
-

@@ -378,3 +378,54 @@ class ConfiguredManualCanaryContext:
             reason=reason,
             activated_at=now,
         ))
+
+
+class ConfiguredLiveAutoContext:
+    """Auto-Live adapter over reconciled canary state and the shared Guardian."""
+
+    def __init__(self, canary: ConfiguredManualCanaryContext, guardian, orders, arms,
+                 acceptance_passed: bool = True):
+        self.canary = canary
+        self.guardian = guardian
+        self.orders = orders
+        self.arms = arms
+        self.acceptance_passed = acceptance_passed
+
+    def preflight(self, runtime):
+        owner = str(runtime["owner_user_id"])
+        snapshot = runtime.get("strategy_snapshot")
+        contract = snapshot.get("execution_contract") if isinstance(snapshot, Mapping) else None
+        raw = self.canary.preflight(owner, True, frozenset({str(contract)}))
+        checks = dict(raw["checks"])
+        checks.update({
+            "permission": True,
+            "account_allowlist": runtime.get("account_id") == self.canary.target(owner).account_id,
+            "quote_fresh": self.canary.risk_provider.market.status_message().get("service_status") == "healthy",
+            "position_reconciled": checks.get("broker_truth_reconciled", False),
+            "kill_switch_allows_entry": checks.get("kill_switch_ready", False),
+            "live_risk_available": True,
+            "production_acceptance_passed": self.acceptance_passed,
+        })
+        return checks
+
+    def risk_context(self, candidate): return self.canary.risk_context(candidate)
+    def instrument(self, symbol, contract): return self.canary.instrument(symbol, contract)
+    def capabilities(self, target): return self.canary.capabilities(target)
+    def active_position(self, owner_id, target, contract): return self.canary.broker_position(target, contract)
+    def active_entry_orders(self, owner_id, target, contract):
+        return sum(not order.status.terminal and not order.request.reduce_only
+                   for order in self.orders.orders(owner_id, target=target)
+                   if order.request.contract == contract)
+    def request_strategy_exit(self, runtime):
+        target = BrokerAccountRef(str(runtime["broker_name"]), str(runtime["account_id"]))
+        positions = [p for p in self.guardian.store.positions(target)
+                     if p.owner_id == runtime["owner_user_id"] and p.state.value != "flat"]
+        if len(positions) != 1:
+            raise RuntimeError("guardian_managed_position_unavailable")
+        order, _created = self.guardian.request_strategy_exit(positions[0].position_id)
+        return order.request.client_order_id
+    def audit(self, event, runtime, detail):
+        target = BrokerAccountRef(str(runtime["broker_name"]), str(runtime["account_id"]))
+        self.arms.audit(event, str(runtime["owner_user_id"]), target,
+                        request_id=str(runtime["runtime_id"]), detail=dict(detail),
+                        occurred_at=datetime.now(timezone.utc))

@@ -525,12 +525,12 @@ class SQLiteBarRepository:
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 CHECK(strategy_kind IN ('atomic', 'composite')),
-                CHECK(mode IN ('observe', 'paper_auto', 'live_shadow')),
+                CHECK(mode IN ('observe', 'paper_auto', 'live_shadow', 'live_auto')),
                 CHECK(status IN (
                     'active', 'paused', 'armed', 'recovery_locked', 'stopped'
                 )),
-                CHECK((mode='live_shadow' AND broker_name IS NOT NULL AND account_id IS NOT NULL)
-                   OR (mode!='live_shadow' AND broker_name IS NULL AND account_id IS NULL))
+                CHECK((mode IN ('live_shadow','live_auto') AND broker_name IS NOT NULL AND account_id IS NOT NULL)
+                   OR (mode NOT IN ('live_shadow','live_auto') AND broker_name IS NULL AND account_id IS NULL))
             );
             CREATE INDEX IF NOT EXISTS idx_strategy_runtimes_owner_updated
                 ON strategy_runtimes(owner_user_id, updated_at DESC);
@@ -586,6 +586,11 @@ class SQLiteBarRepository:
             ).fetchone()[0]
         if "'live_shadow'" not in runtime_sql:
             self._upgrade_live_shadow_runtime_schema()
+            runtime_sql = self.connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='strategy_runtimes'"
+            ).fetchone()[0]
+        if "'live_auto'" not in runtime_sql:
+            self._upgrade_live_auto_runtime_schema()
         decision_columns = {
             row["name"] for row in self.connection.execute(
                 "PRAGMA table_info(trading_decisions)"
@@ -604,6 +609,41 @@ class SQLiteBarRepository:
                 self.connection.execute(
                     f"ALTER TABLE trading_decisions ADD COLUMN {name} {definition}"
                 )
+        self.connection.commit()
+
+    def _upgrade_live_auto_runtime_schema(self) -> None:
+        """Extend the existing runtime table while preserving all decisions."""
+        self.connection.execute("PRAGMA foreign_keys=OFF")
+        try:
+            self.connection.executescript(
+                """
+                ALTER TABLE strategy_runtimes RENAME TO strategy_runtimes_live_auto_legacy;
+                CREATE TABLE strategy_runtimes (
+                    runtime_id TEXT PRIMARY KEY, owner_user_id TEXT NOT NULL,
+                    strategy_kind TEXT NOT NULL, strategy_id TEXT NOT NULL,
+                    strategy_version INTEGER, strategy_snapshot_json TEXT NOT NULL,
+                    symbol TEXT NOT NULL, interval TEXT NOT NULL,
+                    quantity INTEGER NOT NULL, mode TEXT NOT NULL,
+                    broker_name TEXT, account_id TEXT, status TEXT NOT NULL,
+                    recovery_issue TEXT, recovery_checked_at TEXT,
+                    last_evaluated_bar TEXT, last_decision TEXT,
+                    created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                    CHECK(strategy_kind IN ('atomic', 'composite')),
+                    CHECK(mode IN ('observe', 'paper_auto', 'live_shadow', 'live_auto')),
+                    CHECK(status IN ('active','paused','armed','recovery_locked','stopped')),
+                    CHECK((mode IN ('live_shadow','live_auto') AND broker_name IS NOT NULL AND account_id IS NOT NULL)
+                       OR (mode NOT IN ('live_shadow','live_auto') AND broker_name IS NULL AND account_id IS NULL))
+                );
+                INSERT INTO strategy_runtimes SELECT * FROM strategy_runtimes_live_auto_legacy;
+                DROP TABLE strategy_runtimes_live_auto_legacy;
+                CREATE INDEX idx_strategy_runtimes_owner_updated
+                    ON strategy_runtimes(owner_user_id, updated_at DESC);
+                CREATE INDEX idx_strategy_runtimes_active_symbol
+                    ON strategy_runtimes(status, symbol);
+                """
+            )
+        finally:
+            self.connection.execute("PRAGMA foreign_keys=ON")
         self.connection.commit()
 
     def _upgrade_live_shadow_runtime_schema(self) -> None:
@@ -944,11 +984,24 @@ class SQLiteBarRepository:
                 "SELECT * FROM strategy_runtimes WHERE symbol=? AND ("
                 "(status='active' AND mode='observe') OR "
                 "(status='active' AND mode='live_shadow') OR "
+                "(status IN ('armed','paused','recovery_locked') AND mode='live_auto') OR "
                 "(status IN ('armed','paused','recovery_locked') "
                 "AND mode='paper_auto')) ORDER BY created_at",
                 (symbol,),
             ).fetchall()
         return [self._runtime_row(row) for row in rows]
+
+    def disarm_live_auto_runtimes_for_restart(self, symbol: str) -> int:
+        """ARM is process-scoped; durable definitions always restart paused."""
+        now = datetime.now().astimezone().isoformat(timespec="seconds")
+        with self.lock:
+            cursor = self.connection.execute(
+                "UPDATE strategy_runtimes SET status='recovery_locked',updated_at=? "
+                "WHERE symbol=? AND mode='live_auto' AND status!='stopped'",
+                (now, symbol),
+            )
+            self.connection.commit()
+            return cursor.rowcount
 
     def paper_auto_runtimes(
         self, symbol: str

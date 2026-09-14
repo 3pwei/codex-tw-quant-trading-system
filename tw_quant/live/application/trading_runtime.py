@@ -77,6 +77,9 @@ class TradingRuntimeApplicationService:
         live_shadow_enabled: bool = False,
         execution_targets: ExecutionTargetCatalog | None = None,
         reservation_store: RuntimeReservationStore | None = None,
+        live_auto_enabled: bool = False,
+        live_risk_version: str | None = None,
+        live_execution_policy_version: str | None = None,
     ):
         self.runtime_repository = runtime_repository
         self.strategy_repository = strategy_repository
@@ -86,6 +89,9 @@ class TradingRuntimeApplicationService:
         self.live_shadow_enabled = live_shadow_enabled
         self.execution_targets = execution_targets
         self.reservation_store = reservation_store
+        self.live_auto_enabled = live_auto_enabled
+        self.live_risk_version = live_risk_version
+        self.live_execution_policy_version = live_execution_policy_version
         self._decision_listeners: list[
             Callable[[Mapping[str, object], Mapping[str, object], KBar], None]
         ] = []
@@ -106,19 +112,20 @@ class TradingRuntimeApplicationService:
         if kind not in {"atomic", "composite"}:
             raise InvalidInputError("strategy_kind must be atomic or composite")
         mode = str(request.get("mode", "observe")).lower()
-        if mode not in {"observe", "paper_auto", "live_shadow"}:
-            raise InvalidInputError("mode must be observe, paper_auto or live_shadow")
+        if mode not in {"observe", "paper_auto", "live_shadow", "live_auto"}:
+            raise InvalidInputError("unsupported runtime mode")
         target: BrokerAccountRef | None = None
-        if mode == "live_shadow":
-            if not self.live_shadow_enabled or self.execution_targets is None:
-                raise InvalidInputError("live_shadow is disabled")
+        if mode in {"live_shadow", "live_auto"}:
+            enabled = self.live_shadow_enabled if mode == "live_shadow" else self.live_auto_enabled
+            if not enabled or self.execution_targets is None:
+                raise InvalidInputError(f"{mode} is disabled")
             target_id = str(request.get("execution_target_id", "")).strip()
             if not target_id:
-                raise InvalidInputError("live_shadow requires execution_target_id")
+                raise InvalidInputError(f"{mode} requires execution_target_id")
             try:
                 target = self.execution_targets.resolve(target_id, owner_id)
             except KeyError as exc:
-                raise InvalidInputError("unknown live shadow execution target") from exc
+                raise InvalidInputError("unknown live execution target") from exc
         symbol = str(request.get("symbol", self.symbol)).upper()
         if symbol != self.symbol:
             raise InvalidInputError("unsupported symbol")
@@ -129,6 +136,8 @@ class TradingRuntimeApplicationService:
             raise InvalidInputError(str(exc)) from exc
         if quantity < 1 or quantity > 100:
             raise InvalidInputError("quantity must be between 1 and 100")
+        if mode == "live_auto" and quantity != 1:
+            raise InvalidInputError("live_auto quantity must equal 1")
 
         strategy_id = str(request.get("strategy_id", "")).strip().lower()
         strategy_version: int | None = None
@@ -167,6 +176,17 @@ class TradingRuntimeApplicationService:
                 "version": strategy_version,
                 "definition": saved["definition"],
             }
+        if mode == "live_auto":
+            if not self.live_risk_version or not self.live_execution_policy_version:
+                raise InvalidInputError("live_auto policy versions are unavailable")
+            snapshot = {
+                **snapshot,
+                "execution_contract": str(request.get("contract") or "").strip().upper(),
+                "live_risk_config_version": self.live_risk_version,
+                "execution_policy_version": self.live_execution_policy_version,
+            }
+            if not snapshot["execution_contract"]:
+                raise InvalidInputError("live_auto requires an immutable contract")
 
         latest = [
             bar
@@ -222,6 +242,9 @@ class TradingRuntimeApplicationService:
         return self._public_runtime(runtime)
 
     def stop(self, runtime_id: str, owner_id: str) -> dict[str, object]:
+        existing = self.get(runtime_id, owner_id)
+        if existing["mode"] == "live_auto":
+            raise InvalidInputError("live_auto must use its dedicated stop control")
         runtime = self.runtime_repository.stop_trading_runtime(
             runtime_id, owner_id
         )
@@ -259,6 +282,8 @@ class TradingRuntimeApplicationService:
 
     def pause(self, runtime_id: str, owner_id: str) -> dict[str, object]:
         runtime = self.get(runtime_id, owner_id)
+        if runtime["mode"] == "live_auto":
+            raise InvalidInputError("live_auto must use its dedicated disarm control")
         if runtime["mode"] != "paper_auto":
             raise InvalidInputError("only paper_auto runtimes can be paused")
         if runtime["status"] == "stopped":
@@ -425,7 +450,7 @@ class TradingRuntimeApplicationService:
             "execution_status": (
                 ("skipped" if stale_or_recovered else "pending")
                 if (
-                    runtime["mode"] in {"paper_auto", "live_shadow"}
+                    runtime["mode"] in {"paper_auto", "live_shadow", "live_auto"}
                     and intent["action"] in {"entry", "exit"}
                 )
                 else "not_applicable"
@@ -433,7 +458,7 @@ class TradingRuntimeApplicationService:
             "execution_reason": (
                 "stale_or_recovered_signal"
                 if stale_or_recovered
-                and runtime["mode"] in {"paper_auto", "live_shadow"}
+                and runtime["mode"] in {"paper_auto", "live_shadow", "live_auto"}
                 and intent["action"] in {"entry", "exit"}
                 else None
             ),

@@ -22,9 +22,10 @@ class TradingRuntimeCreate(BaseModel):
     strategy_id: ShortIdentifier
     strategy_version: int | None = Field(default=None, ge=1)
     symbol: Annotated[str, Field(min_length=1, max_length=32)] = "TMF"
+    contract: Annotated[str, Field(min_length=1, max_length=40)] | None = None
     interval: Annotated[str, Field(min_length=1, max_length=16)] = "1m"
     quantity: int = Field(default=1, ge=1, le=100)
-    mode: Literal["observe", "paper_auto", "live_shadow"] = "observe"
+    mode: Literal["observe", "paper_auto", "live_shadow", "live_auto"] = "observe"
     execution_target_id: Annotated[str, Field(max_length=80)] | None = None
 
 
@@ -91,6 +92,11 @@ class PaperControlRequest(BaseModel):
 class LiveCanaryArmRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     confirmation: Annotated[str, Field(min_length=1, max_length=80)]
+
+
+class LiveAutoArmRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    confirmation: Literal["ARM LIVE AUTO - REAL MONEY"]
 
 
 class ManualLiveOrderCreate(BaseModel):

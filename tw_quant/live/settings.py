@@ -74,6 +74,9 @@ class LiveSettings:
     live_canary_arm_ttl_seconds: int
     live_canary_protective_stop_ticks: int
     live_canary_requests_per_minute: int
+    live_auto_enabled: bool
+    live_auto_arm_ttl_seconds: int
+    live_auto_production_acceptance_passed: bool
 
     def __init__(
         self,
@@ -125,6 +128,9 @@ class LiveSettings:
         live_canary_arm_ttl_seconds: int = 600,
         live_canary_protective_stop_ticks: int = 20,
         live_canary_requests_per_minute: int = 4,
+        live_auto_enabled: bool = False,
+        live_auto_arm_ttl_seconds: int = 600,
+        live_auto_production_acceptance_passed: bool = False,
         # Compatibility inputs from the pre-provider settings model.
         mode: str | None = None,
         symbol: str | None = None,
@@ -226,6 +232,9 @@ class LiveSettings:
             ("live_canary_arm_ttl_seconds", live_canary_arm_ttl_seconds),
             ("live_canary_protective_stop_ticks", live_canary_protective_stop_ticks),
             ("live_canary_requests_per_minute", live_canary_requests_per_minute),
+            ("live_auto_enabled", live_auto_enabled),
+            ("live_auto_arm_ttl_seconds", live_auto_arm_ttl_seconds),
+            ("live_auto_production_acceptance_passed", live_auto_production_acceptance_passed),
         ):
             object.__setattr__(self, name, value)
 
@@ -326,6 +335,9 @@ class LiveSettings:
             live_canary_arm_ttl_seconds=int(os.getenv("LIVE_CANARY_ARM_TTL_SECONDS", "600")),
             live_canary_protective_stop_ticks=int(os.getenv("LIVE_CANARY_PROTECTIVE_STOP_TICKS", "20")),
             live_canary_requests_per_minute=int(os.getenv("LIVE_ORDER_REQUESTS_PER_MINUTE", "4")),
+            live_auto_enabled=os.getenv("LIVE_AUTO_ENABLED", "false").lower() in {"1", "true", "yes", "on"},
+            live_auto_arm_ttl_seconds=int(os.getenv("LIVE_AUTO_ARM_TTL_SECONDS", "600")),
+            live_auto_production_acceptance_passed=os.getenv("LIVE_AUTO_PRODUCTION_ACCEPTANCE_PASSED", "false").lower() in {"1", "true", "yes", "on"},
         )
 
     def validate(self) -> None:
@@ -411,6 +423,13 @@ class LiveSettings:
                 raise ValueError("live canary rate limit must be 1-10")
             if self.live_shadow_contract_expiry is None:
                 raise ValueError("live canary requires canonical contract expiry")
+        if self.live_auto_enabled:
+            if not self.live_canary_enabled:
+                raise ValueError("live_auto requires the accepted live canary boundary")
+            if not 60 <= self.live_auto_arm_ttl_seconds <= 900:
+                raise ValueError("live_auto ARM TTL must be 1-15 minutes")
+            if not self.live_auto_production_acceptance_passed:
+                raise ValueError("live_auto requires explicit production acceptance evidence")
         if self.access_mode not in {"disabled", "cloudflare"}:
             raise ValueError("MARKET_ACCESS_MODE must be disabled or cloudflare")
         if self.access_mode == "cloudflare" and not (

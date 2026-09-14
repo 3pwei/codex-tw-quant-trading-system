@@ -19,6 +19,7 @@ from .shadow_context import LiveExecutionTargetCatalog
 from .shadow_store import SQLiteShadowExecutionRepository
 from ..execution.shadow import ShadowExecutionService
 from .application.live_canary import ManualLiveCanaryService
+from .application.live_auto import LiveAutoService
 from .rate_limit import SlidingWindowRateLimiter
 from .service import LiveMarketService
 from .settings import LiveSettings
@@ -47,6 +48,7 @@ class ApiDependencies:
     shadow_targets: LiveExecutionTargetCatalog
     shadow_service: ShadowExecutionService
     live_canary: ManualLiveCanaryService | None
+    live_auto: LiveAutoService | None = None
 
     def identity_from_headers(self, headers) -> AccessIdentity | None:
         token = headers.get("cf-access-jwt-assertion")

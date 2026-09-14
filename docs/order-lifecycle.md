@@ -1,5 +1,12 @@
 # 訂單生命週期
 
+## Strategy Auto Live attribution
+
+Auto entries use source `strategy_live_auto`, a deterministic client order ID,
+and short process-scoped ARM ID. Strategy Exit creates a Guardian request; its
+order source is `live_position_guardian` and reduce-only. UNKNOWN is never
+retried and locks runtime/account admission pending reconciliation.
+
 > Production 預設 real order execution disabled。只有另行啟用並由人工限時 ARM 的
 > Manual Live Canary 能建立一口 allowlisted 真實委託；Strategy Auto Live 仍不存在。
 > Public Application 與 Dedicated Execution Service 的 process、secret、network 邊界見

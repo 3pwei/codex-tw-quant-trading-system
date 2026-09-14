@@ -127,9 +127,10 @@ class CanaryOrderAdmissionGate:
             raise RuntimeError("live_canary_invalid_order_context")
         if target != self.target:
             raise RuntimeError("live_canary_target_mismatch")
-        if request.source not in {"manual_live_canary", "live_position_guardian"}:
+        if request.source not in {"manual_live_canary", "strategy_live_auto", "live_position_guardian"}:
             raise RuntimeError("live_canary_source_not_allowed")
         guardian_exit = request.source == "live_position_guardian"
+        strategy_auto = request.source == "strategy_live_auto"
         if guardian_exit and (
             not request.reduce_only or request.purpose not in {"exit", "liquidation"}
         ):
@@ -162,6 +163,8 @@ class CanaryOrderAdmissionGate:
             raise RuntimeError("live_canary_arm_inactive")
         if request.arm_id != arm.arm_id:
             raise RuntimeError("live_canary_arm_mismatch")
+        if strategy_auto and not arm.created_by.startswith("live_auto:"):
+            raise RuntimeError("live_auto_arm_scope_mismatch")
 
     def assert_cancel_allowed(self, routed_order: object) -> None:
         from .routing import RoutedBrokerOrder
@@ -171,7 +174,7 @@ class CanaryOrderAdmissionGate:
         request = routed_order.order.request
         if routed_order.target != self.target:
             raise RuntimeError("live_canary_target_mismatch")
-        if request.source not in {"manual_live_canary", "live_position_guardian"}:
+        if request.source not in {"manual_live_canary", "strategy_live_auto", "live_position_guardian"}:
             raise RuntimeError("live_canary_source_not_allowed")
         self.config.assert_request_allowed(
             request.owner_id,
