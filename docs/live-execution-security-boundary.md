@@ -39,6 +39,26 @@ contexts. The CA file must be a non-symlink regular file with no group or other
 permission bits. Missing values, an unavailable CA, open CA permissions, or an
 account outside `LIVE_ALLOWED_ACCOUNT_IDS` keeps the service locked.
 
+`ExecutionTarget.secret_ref` is routing metadata, not secret material. The target model and
+public representation never contain API keys, secret keys, CA passwords, or CA binary data;
+this PR does not resolve `secret_ref` or change `ShioajiEnvironmentSecretProvider`. Full account
+IDs remain internal to persistence and execution routing. Browser payloads, normal health, and
+logs use only the masked account ID.
+
+## Execution target ownership boundary
+
+The authenticated server identity supplies `owner_user_id`; browser-provided owner IDs are never
+authorization truth. Resolution is exact:
+
+```text
+authenticated owner → target_id → owned ExecutionTarget → BrokerAccountRef → BrokerRegistry
+```
+
+Unknown targets, cross-owner access, inactive targets, duplicate account mappings, missing broker
+runtimes, and runtime identity mismatches are rejected without falling back to a configured or
+first account. Target `active` means only that later composition may consider it; Canary/Auto ARM,
+Recovery Lock, Kill Switch, production acceptance, and write enablement remain separate gates.
+
 ## Broker-neutral connection and secret boundary
 
 The execution application identifies every connection by `connection_id` and

@@ -21,6 +21,14 @@ from .disabled import DisabledBroker, LockedBroker
 from .events import BrokerEvent, broker_event_id
 from .factory import BrokerAdapterFactory, build_broker
 from .identity import BrokerAccountRef
+from .execution_targets import ExecutionTarget, ExecutionTargetStatus, mask_account_id
+from .execution_target_repository import (
+    ExecutionTargetRepository,
+    OwnedExecutionTargetResolver,
+    SQLiteExecutionTargetRepository,
+    bootstrap_legacy_execution_target,
+    legacy_target_id,
+)
 from .guardian_repository import SQLitePositionGuardianRepository
 from .guardian_models import (
     GuardianExitReason,
@@ -162,6 +170,9 @@ __all__ = [
     "DisabledBroker",
     "DisabledExecutionWorker",
     "ExecutionMode",
+    "ExecutionTarget",
+    "ExecutionTargetRepository",
+    "ExecutionTargetStatus",
     "ExecutionRuntime",
     "ExecutionSupervisor",
     "ExecutionWorker",
@@ -211,11 +222,16 @@ __all__ = [
     "READ_ONLY_ERROR",
     "SecretConfigurationError",
     "SQLiteBrokerEventAuditRepository",
+    "SQLiteExecutionTargetRepository",
     "SQLiteCanaryArmRepository",
     "SQLiteLiveOrderRepository",
     "SQLitePositionGuardianRepository",
     "SQLiteRecoveryLockRepository",
     "canonical_paper_status",
+    "bootstrap_legacy_execution_target",
+    "legacy_target_id",
+    "mask_account_id",
+    "OwnedExecutionTargetResolver",
     "normalize_callback",
     "normalize_production_callback",
     "normalize_trade",
