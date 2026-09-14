@@ -517,6 +517,7 @@ class SQLiteBarRepository:
                 mode TEXT NOT NULL,
                 broker_name TEXT,
                 account_id TEXT,
+                execution_target_id TEXT,
                 status TEXT NOT NULL,
                 recovery_issue TEXT,
                 recovery_checked_at TEXT,
@@ -591,6 +592,15 @@ class SQLiteBarRepository:
             ).fetchone()[0]
         if "'live_auto'" not in runtime_sql:
             self._upgrade_live_auto_runtime_schema()
+        runtime_columns = {
+            str(row[1]) for row in self.connection.execute(
+                "PRAGMA table_info(strategy_runtimes)"
+            ).fetchall()
+        }
+        if "execution_target_id" not in runtime_columns:
+            self.connection.execute(
+                "ALTER TABLE strategy_runtimes ADD COLUMN execution_target_id TEXT"
+            )
         decision_columns = {
             row["name"] for row in self.connection.execute(
                 "PRAGMA table_info(trading_decisions)"
@@ -886,6 +896,7 @@ class SQLiteBarRepository:
             "mode": row["mode"],
             "broker_name": row["broker_name"],
             "account_id": row["account_id"],
+            "execution_target_id": row["execution_target_id"],
             "status": row["status"],
             "recovery_issue": row["recovery_issue"],
             "recovery_checked_at": row["recovery_checked_at"],
@@ -932,8 +943,8 @@ class SQLiteBarRepository:
                 "INSERT INTO strategy_runtimes("
                 "runtime_id,owner_user_id,strategy_kind,strategy_id,"
                 "strategy_version,strategy_snapshot_json,symbol,interval,"
-                "quantity,mode,broker_name,account_id,status,last_evaluated_bar,last_decision,"
-                "created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "quantity,mode,broker_name,account_id,execution_target_id,status,last_evaluated_bar,last_decision,"
+                "created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     runtime_id, runtime["owner_user_id"],
                     runtime["strategy_kind"], runtime["strategy_id"],
@@ -945,6 +956,7 @@ class SQLiteBarRepository:
                     runtime["symbol"], runtime["interval"],
                     runtime["quantity"], runtime["mode"],
                     runtime.get("broker_name"), runtime.get("account_id"),
+                    runtime.get("execution_target_id"),
                     "active" if runtime["mode"] in {"observe", "live_shadow"} else "paused",
                     runtime.get("last_evaluated_bar"), None, now, now,
                 ),

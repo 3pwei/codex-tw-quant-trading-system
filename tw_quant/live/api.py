@@ -33,6 +33,8 @@ from ..broker import (
     SQLiteLiveOrderRepository,
     SQLiteRecoveryLockRepository,
     SQLitePositionGuardianRepository,
+    SQLiteExecutionTargetRepository,
+    OwnedExecutionTargetCatalog,
 )
 from ..execution.live_models import InstrumentSpec
 from ..execution.live_policy import MarketableLimitIOCPolicy
@@ -206,6 +208,8 @@ def create_app(
         existing.add(config.live_canary_target_id)
         owner_targets[config.live_canary_owner_id] = frozenset(existing)
     shadow_targets = LiveExecutionTargetCatalog(broker_truth, owner_targets)
+    owned_target_repository = SQLiteExecutionTargetRepository(config.db_path)
+    owned_targets = OwnedExecutionTargetCatalog(owned_target_repository)
     live_risk_config = LiveRiskConfig(
         allowed_symbols=config.live_shadow_allowed_symbols,
         allowed_contracts=config.live_shadow_allowed_contracts or frozenset({config.contract}),
@@ -264,7 +268,7 @@ def create_app(
     guardian_store = None
     if config.live_canary_enabled:
         try:
-            canary_target = shadow_targets.resolve(
+            canary_target = owned_targets.resolve(
                 config.live_canary_target_id, config.live_canary_owner_id
             )
         except KeyError:
@@ -309,6 +313,8 @@ def create_app(
                     (LiveKillSwitchScope.GLOBAL.value, "global"),
                     (LiveKillSwitchScope.OWNER.value, owner_id),
                     (LiveKillSwitchScope.BROKER_ACCOUNT.value, account_scope),
+                    (LiveKillSwitchScope.EXECUTION_TARGET.value,
+                     f"{owner_id}:{config.live_canary_target_id}"),
                 })
                 return any(
                     state.action in {LiveKillSwitchAction.CANCEL_WORKING, LiveKillSwitchAction.FLATTEN}
@@ -325,6 +331,7 @@ def create_app(
                 readiness=canary_readiness,
                 kill_switch_blocks=kill_switch_blocks,
                 now=lambda: datetime.now(timezone.utc),
+                execution_target_id=config.live_canary_target_id,
             )
             canary_manager = LiveOrderManager(
                 live_orders,
@@ -335,7 +342,7 @@ def create_app(
             canary_context = ConfiguredManualCanaryContext(
                 owner_id=config.live_canary_owner_id,
                 target_id=config.live_canary_target_id,
-                targets=shadow_targets,
+                targets=owned_targets,
                 instruments=instrument_catalog,
                 capabilities=ConfiguredBrokerCapabilityView({
                     "shioaji": SHIOAJI_CANARY_CAPABILITIES,
@@ -410,7 +417,7 @@ def create_app(
     runtime_app = TradingRuntimeApplicationService(
         repo, repo, repo, config.symbol, config.history_limit,
         live_shadow_enabled=config.live_shadow_enabled,
-        execution_targets=shadow_targets,
+        execution_targets=owned_targets,
         reservation_store=shadow_store,
         live_auto_enabled=config.live_auto_enabled,
         live_risk_version=live_risk_config.version,
@@ -456,6 +463,7 @@ def create_app(
             broker_truth.close()
             recovery.close()
             live_orders.close()
+            owned_target_repository.close()
             execution_quotes.close()
             repo.close()
             identity_repo.close()
@@ -484,7 +492,7 @@ def create_app(
         runtime_app=runtime_app,
         execution_worker=execution_worker,
         shadow_store=shadow_store,
-        shadow_targets=shadow_targets,
+        shadow_targets=owned_targets,
         shadow_service=shadow_service,
         live_canary=live_canary,
         live_auto=live_auto,

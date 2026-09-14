@@ -42,6 +42,14 @@ class Context:
             "no_unknown_orders", "no_unknown_external_orders", "no_unmanaged_position",
             "kill_switch_allows_entry", "live_risk_available", "production_acceptance_passed",
         )}
+    def resolve_target(self, runtime):
+        if runtime.get("execution_target_id") != "exec_0123456789abcdef":
+            raise RuntimeError("live_auto_target_mismatch")
+        if (runtime.get("broker_name"), runtime.get("account_id")) != (
+            TARGET.broker_name, TARGET.account_id
+        ):
+            raise RuntimeError("live_auto_target_mismatch")
+        return TARGET
     def risk_context(self, candidate): return object()
     def instrument(self, symbol, contract): return InstrumentSpec(symbol, contract, 1, 10, date(2026, 10, 21))
     def capabilities(self, target): return BrokerCapabilities(supports_limit_orders=True, supports_ioc=True)
@@ -65,6 +73,7 @@ class LiveAutoTests(unittest.TestCase):
             "strategy_version": 2, "strategy_snapshot": {"strategy": "orb", "parameters": {}, "execution_contract": "TMF202610", "live_risk_config_version": "risk:v1", "execution_policy_version": "marketable-limit-ioc:v1"},
             "symbol": "TMF", "interval": "1m", "quantity": 1, "mode": "live_auto",
             "broker_name": TARGET.broker_name, "account_id": TARGET.account_id,
+            "execution_target_id": "exec_0123456789abcdef",
         })
         self.context = Context(); self.sink = Sink(); self.quotes = ExecutionQuoteCache()
         self.quotes.update(ExecutionQuote("TMF", "TMF202610", 20000, 20002, 20001, NOW, NOW, "test"))

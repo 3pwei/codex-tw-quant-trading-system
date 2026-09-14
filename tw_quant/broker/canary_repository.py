@@ -30,6 +30,7 @@ class SQLiteCanaryArmRepository:
                     armed_at TEXT NOT NULL,
                     expires_at TEXT NOT NULL,
                     created_by TEXT NOT NULL,
+                    target_id TEXT,
                     UNIQUE(owner_user_id, broker_name, account_id)
                 );
                 CREATE TABLE IF NOT EXISTS live_canary_audit (
@@ -47,6 +48,11 @@ class SQLiteCanaryArmRepository:
                     ON live_canary_audit(owner_user_id, occurred_at DESC);
                 """
             )
+            columns = {str(row[1]) for row in self.connection.execute(
+                "PRAGMA table_info(live_canary_arms)"
+            ).fetchall()}
+            if "target_id" not in columns:
+                self.connection.execute("ALTER TABLE live_canary_arms ADD COLUMN target_id TEXT")
             if clear_on_start:
                 rows = self.connection.execute(
                     "SELECT * FROM live_canary_arms"
@@ -74,6 +80,7 @@ class SQLiteCanaryArmRepository:
             armed_at=datetime.fromisoformat(str(row["armed_at"])),
             expires_at=datetime.fromisoformat(str(row["expires_at"])),
             created_by=str(row["created_by"]),
+            target_id=row["target_id"],
         )
 
     def _audit_locked(
@@ -129,7 +136,9 @@ class SQLiteCanaryArmRepository:
                 (session.owner_id,),
             )
             self.connection.execute(
-                "INSERT INTO live_canary_arms VALUES (?,?,?,?,?,?,?)",
+                "INSERT INTO live_canary_arms "
+                "(arm_id,owner_user_id,broker_name,account_id,armed_at,expires_at,created_by,target_id) "
+                "VALUES (?,?,?,?,?,?,?,?)",
                 (
                     session.arm_id,
                     session.owner_id,
@@ -138,6 +147,7 @@ class SQLiteCanaryArmRepository:
                     session.armed_at.isoformat(timespec="microseconds"),
                     session.expires_at.isoformat(timespec="microseconds"),
                     session.created_by,
+                    session.target_id,
                 ),
             )
             self._audit_locked(
@@ -149,7 +159,8 @@ class SQLiteCanaryArmRepository:
             self.connection.commit()
 
     def active(
-        self, owner_id: str, target: BrokerAccountRef, now: datetime
+        self, owner_id: str, target: BrokerAccountRef, now: datetime,
+        target_id: str | None = None,
     ) -> CanaryArmSession | None:
         with self.lock:
             row = self.connection.execute(
@@ -160,6 +171,8 @@ class SQLiteCanaryArmRepository:
             if row is None:
                 return None
             session = self._session(row)
+            if target_id is not None and session.target_id != target_id:
+                return None
             if session.active(now):
                 return session
             self.connection.execute(

@@ -20,6 +20,7 @@ class LiveKillSwitchScope(str, Enum):
     GLOBAL = "global"
     OWNER = "owner"
     BROKER_ACCOUNT = "broker_account"
+    EXECUTION_TARGET = "execution_target"
 
 
 @dataclass(frozen=True)

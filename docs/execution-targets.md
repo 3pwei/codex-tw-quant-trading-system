@@ -1,5 +1,18 @@
 # Execution Targets
 
+## Production canonical path (PR #120)
+
+Production resolves exactly `LIVE_EXECUTION_OWNER_USER_ID + LIVE_EXECUTION_TARGET_ID`.
+The worker calls `ExecutionTargetRepository.get_owned()`, obtains the immutable
+`BrokerAccountRef` and `secret_ref`, resolves only that target's secret directory,
+and registers that exact account in `BrokerRegistry`. Unknown or inactive targets,
+owner/account mismatch, absent secrets, unavailable brokers, and more than one
+active production target all fail closed. Legacy account environment variables
+are not a routing fallback.
+
+Live Auto persists opaque `execution_target_id` plus the broker/account snapshot.
+ARM and dispatch revalidate all three, so an existing runtime cannot be retargeted.
+
 ## Purpose
 
 `ExecutionTarget` separates platform ownership from the broker's exact execution identity:
@@ -44,16 +57,14 @@ SQLite creates `execution_targets` and `execution_target_schema_migrations` addi
 version 1 is idempotent and does not alter Live Order, outbox, Recovery, broker truth, or Guardian
 tables. Restarts can safely rerun it.
 
-Legacy `LIVE_BROKER_ACCOUNT_ID`, `LIVE_ALLOWED_ACCOUNT_IDS`,
-`LIVE_CANARY_ALLOWED_OWNER_IDS`, and `LIVE_BROKER_SECRET_REF` remain compatible bootstrap inputs.
-Bootstrap occurs only when exactly one owner and one broker/account identity are known; it is
-deterministic and idempotent. Missing or ambiguous ownership and owner changes fail closed. It
-never resolves credentials, enables broker writes, changes acceptance, or arms a runtime.
+Legacy account variables are accepted only by the explicit migration command. Normal service
+startup never bootstraps a target. The command requires exactly one owner and broker/account,
+is deterministic and idempotent, and never connects to the broker, changes acceptance, or arms.
 
 ## Current rollout boundary
 
-Production restricts eligible active targets to one. Each active target resolves either its exact
-`file:broker-secrets/<target_id>` directory or explicit legacy `environment:primary`; a missing file
-ref never falls back to environment. Multiple live broker clients, onboarding UI, Canary activation,
+Production restricts eligible active targets to one and requires its exact
+`file:broker-secrets/<target_id>` directory. Legacy environment secrets are rejected by production
+startup. Multiple live broker clients, onboarding UI, Canary activation,
 and Strategy Auto activation remain later work. The defaults remain `LIVE_CANARY_ENABLED=false`, `LIVE_AUTO_ENABLED=false`, and
 `LIVE_AUTO_PRODUCTION_ACCEPTANCE_PASSED=false`.

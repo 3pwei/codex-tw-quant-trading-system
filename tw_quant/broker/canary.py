@@ -73,6 +73,7 @@ class CanaryArmSession:
     armed_at: datetime
     expires_at: datetime
     created_by: str
+    target_id: str | None = None
 
     def __post_init__(self) -> None:
         if not self.arm_id.strip() or not self.owner_id.strip() or not self.created_by.strip():
@@ -90,7 +91,8 @@ class CanaryArmStore(Protocol):
     def arm(self, session: CanaryArmSession) -> None: ...
 
     def active(
-        self, owner_id: str, target: BrokerAccountRef, now: datetime
+        self, owner_id: str, target: BrokerAccountRef, now: datetime,
+        target_id: str | None = None,
     ) -> CanaryArmSession | None: ...
 
     def disarm(self, owner_id: str, target: BrokerAccountRef, *, reason: str) -> bool: ...
@@ -108,6 +110,7 @@ class CanaryOrderAdmissionGate:
     kill_switch_blocks: Callable[[str, bool], bool]
     now: Callable[[], datetime]
     broker_position: Callable[[str], int | None] | None = None
+    execution_target_id: str | None = None
 
     def assert_ordering_allowed(self) -> None:
         if not self.config.enabled:
@@ -158,7 +161,11 @@ class CanaryOrderAdmissionGate:
             raise RuntimeError("live_canary_kill_switch_blocked")
         if guardian_exit:
             return
-        arm = self.arms.active(request.owner_id, target, self.now())
+        arm = (
+            self.arms.active(request.owner_id, target, self.now(), self.execution_target_id)
+            if self.execution_target_id is not None
+            else self.arms.active(request.owner_id, target, self.now())
+        )
         if arm is None:
             raise RuntimeError("live_canary_arm_inactive")
         if request.arm_id != arm.arm_id:

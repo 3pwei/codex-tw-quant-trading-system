@@ -11,6 +11,11 @@
 > `LIVE_AUTO_ENABLED=false`，必須另行完成 server preflight 與限時人工 ARM；一般部署、
 > 重啟與 read-only 模式仍拒絕所有 broker write。
 
+Production execution 的 canonical routing 已改為
+`owner_user_id → ExecutionTarget → BrokerAccountRef → per-target secret → BrokerRegistry`。
+`execution.env` 不再保存 broker account 或 `SJ_*` credentials；首次 migration 後必須先以
+read-only 驗證 Recovery READY、對帳完成、零 broker write，且 ARM 維持 OFF。
+
 ## 核心能力
 
 | 領域 | 已完成 |

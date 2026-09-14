@@ -102,6 +102,7 @@ class ManualLiveCanaryService:
             armed_at=armed_at,
             expires_at=armed_at + timedelta(seconds=self.config.arm_ttl_seconds),
             created_by=created_by,
+            target_id=getattr(self.context, "target_id", None),
         )
         self.arms.arm(session)
         return session
@@ -111,7 +112,8 @@ class ManualLiveCanaryService:
         return self.arms.disarm(owner_id, target, reason="operator_disarm")
 
     def _session(self, owner_id: str, target: BrokerAccountRef) -> CanaryArmSession:
-        session = self.arms.active(owner_id, target, self.now())
+        target_id = getattr(self.context, "target_id", None)
+        session = self.arms.active(owner_id, target, self.now(), target_id)
         if session is None:
             raise RuntimeError("live_canary_arm_inactive")
         return session

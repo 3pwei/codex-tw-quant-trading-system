@@ -18,6 +18,8 @@ class ExecutionServiceSettings:
     """Non-secret settings owned only by the dedicated execution process."""
 
     broker_name: str = "disabled"
+    owner_user_id: str = ""
+    target_id: str = ""
     connection_id: str = "primary"
     account_id: str = ""
     secret_ref: str = "environment:primary"
@@ -69,6 +71,8 @@ class ExecutionServiceSettings:
         )
         return cls(
             broker_name=values.get("BROKER_PROVIDER", "disabled").strip().lower(),
+            owner_user_id=values.get("LIVE_EXECUTION_OWNER_USER_ID", "").strip(),
+            target_id=values.get("LIVE_EXECUTION_TARGET_ID", "").strip(),
             connection_id=values.get(
                 "LIVE_BROKER_CONNECTION_ID", "primary"
             ).strip(),
@@ -205,16 +209,12 @@ class ExecutionServiceSettings:
         connection_enabled = (
             self.live_trading_enabled or self.production_read_only_enabled
         )
-        if connection_enabled and not self.account_id:
-            issues.append("missing_account_id")
-        if connection_enabled and not self.allowed_account_ids:
-            issues.append("missing_account_allowlist")
-        if (
-            connection_enabled
-            and self.account_id
-            and self.account_id not in self.allowed_account_ids
-        ):
-            issues.append("account_not_allowlisted")
+        if connection_enabled and not self.owner_user_id:
+            issues.append("missing_execution_owner_user_id")
+        if connection_enabled and not self.target_id:
+            issues.append("missing_execution_target_id")
+        # Production routing identity is loaded from ExecutionTarget. Legacy
+        # account settings are deliberately ignored by the canonical path.
         if self.live_trading_enabled and self.production_read_only_enabled:
             issues.append("read_only_conflicts_with_live_trading")
         if self.live_canary_enabled:
@@ -222,15 +222,15 @@ class ExecutionServiceSettings:
                 issues.append("live_canary_requires_live_trading_enabled")
             if self.production_read_only_enabled:
                 issues.append("live_canary_conflicts_with_read_only")
-            if self.broker_name != "shioaji":
-                issues.append("unsupported_live_canary_broker")
             if self.live_canary_confirmation != LIVE_CANARY_CONFIRMATION:
                 issues.append("invalid_live_canary_confirmation")
             if not self.instrument_map_json:
                 issues.append("missing_broker_instrument_map")
-            try:
-                self.canary_config
-            except ValueError:
+            if self.live_canary_allowed_owner_ids and self.live_canary_allowed_owner_ids != frozenset({self.owner_user_id}):
+                issues.append("live_canary_owner_target_mismatch")
+            if len(self.live_canary_allowed_symbols) != 1 or len(self.live_canary_allowed_contracts) != 1:
+                issues.append("invalid_live_canary_config")
+            if self.live_canary_max_quantity != 1 or not 300 <= self.live_canary_arm_ttl_seconds <= 900:
                 issues.append("invalid_live_canary_config")
         if self.live_auto_enabled and not self.live_canary_enabled:
             issues.append("live_auto_requires_live_canary")
@@ -247,8 +247,6 @@ class ExecutionServiceSettings:
                 issues.append("invalid_guardian_poll_seconds")
             if self.live_guardian_tick_size <= 0 or self.live_guardian_multiplier <= 0:
                 issues.append("invalid_guardian_instrument_spec")
-        if self.production_read_only_enabled and self.broker_name != "shioaji":
-            issues.append("unsupported_read_only_broker")
         if (
             self.production_read_only_enabled
             and self.read_only_confirmation != "I_UNDERSTAND_PRODUCTION_READ_ONLY"

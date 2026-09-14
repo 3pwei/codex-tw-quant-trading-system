@@ -1,5 +1,11 @@
 # Production Manual Live Canary acceptance
 
+## Target migration gate
+
+驗收證據必須包含 opaque target ID 與 owner、exact account reconciliation、
+target-scoped Kill Switch，以及每次 restart 後 `ARM OFF`。Migration、deployment 與
+read-only 驗證不得 submit、cancel、flatten，亦不得重送 `UNKNOWN`。
+
 ## Strategy Auto prerequisite
 
 Auto preflight requires recorded passing acceptance; deployment alone is not

@@ -235,3 +235,29 @@ class OwnedExecutionTargetResolver:
         if registration.state is not BrokerRuntimeState.READY:
             raise RuntimeError(f"broker execution target is {registration.state.value}")
         return target.account_ref
+
+
+class OwnedExecutionTargetCatalog:
+    """Application-facing exact owned-target lookup without legacy public IDs."""
+
+    def __init__(self, targets: ExecutionTargetRepository):
+        self.targets_repository = targets
+
+    def resolve(self, target_id: str, owner_user_id: str) -> BrokerAccountRef:
+        target = self.targets_repository.get_owned(owner_user_id, target_id)
+        if target is None or target.status is not ExecutionTargetStatus.ACTIVE:
+            raise KeyError("unknown owned execution target")
+        return target.account_ref
+
+    def targets(self, owner_user_id: str) -> tuple[BrokerAccountRef, ...]:
+        return tuple(
+            target.account_ref for target in self.targets_repository.list_for_owner(owner_user_id)
+            if target.status is ExecutionTargetStatus.ACTIVE
+        )
+
+    def public_targets(self, owner_user_id: str) -> list[dict[str, str]]:
+        return [
+            target.to_public_dict()
+            for target in self.targets_repository.list_for_owner(owner_user_id)
+            if target.status is ExecutionTargetStatus.ACTIVE
+        ]
