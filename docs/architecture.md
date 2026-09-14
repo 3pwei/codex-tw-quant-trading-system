@@ -383,3 +383,24 @@ contextual admission。重啟會清除 ARM、封鎖尚未送出的 pending work�
 Live positions 與 Paper ledger 分離，而且只由 deterministic reconciled broker fills
 推導；broker accepted 或 HTTP success 都不能改變 position。External order/position
 仍使 Recovery LOCKED。
+
+# Live Position Guardian
+
+The Guardian is an account-scoped execution application service, not part of Strategy
+Runtime. Reconciliation is the only source that rebuilds its managed-position state:
+
+```text
+Broker Fill -> Live Position Ledger -> Position Guardian
+            -> durable reduce-only outbox -> execution-worker -> Broker Adapter
+            -> reconciliation -> verified broker position
+```
+
+The market process writes only canonical BidAsk snapshots to the shared SQLite/WAL
+boundary; it never calls the broker or creates an exit. Each Guardian resolves exactly
+one `BrokerAccountRef`, owns one durable per-position exit reservation, and cannot
+fall back to another broker/account. The execution-worker continues protection after
+the originating strategy runtime pauses, stops, or crashes.
+
+Protection is platform-managed and therefore depends on platform and broker
+connectivity. It must not be described as a broker-native stop, OCO, or guaranteed
+protection.

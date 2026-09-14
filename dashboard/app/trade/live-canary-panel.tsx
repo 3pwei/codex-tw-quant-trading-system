@@ -15,6 +15,7 @@ type CanaryStatus = {
   recovery_status: string; broker_connected: boolean; ca_ready: boolean;
   position: "flat" | "long" | "short" | "unknown"; position_quantity: number | null;
   max_quantity: 1; allowed_symbol: string; allowed_contract: string; orders: LiveOrder[];
+  position_guardian?: { enabled: boolean; platform_managed?: boolean; managed_positions?: number; protected_quantity?: number; active_exits?: number; locked_positions?: number };
 };
 
 export default function LiveCanaryPanel() {
@@ -50,6 +51,8 @@ export default function LiveCanaryPanel() {
   return <section className="live-canary-panel" aria-label="Manual Live Order Canary">
     <div className="panel-head"><div><span>REAL MONEY · MANUAL ONLY</span><h2>Live Canary</h2></div><strong>{status.arm === "active" ? "ARM ACTIVE" : "ARM OFF"}</strong></div>
     <p>Broker {status.broker_name} · {status.masked_account_id} · {status.allowed_contract} · Max Qty 1 · Recovery {status.recovery_status.toUpperCase()} · Position {status.position.toUpperCase()} {status.position_quantity ?? "—"}</p>
+    <p className="live-canary-warning">POSITION PROTECTION IS PLATFORM-MANAGED — it depends on the execution worker, market data, network, and broker connectivity. It is not a broker-native stop/OCO.</p>
+    <p>Guardian {status.position_guardian?.enabled ? "ACTIVE" : "DISABLED"} · Managed {status.position_guardian?.managed_positions ?? 0} · Protected Qty {status.position_guardian?.protected_quantity ?? 0} · Active Exits {status.position_guardian?.active_exits ?? 0}</p>
     <div className="canary-arm-row">
       <input aria-label="Live Canary ARM confirmation" value={armText} onChange={event => setArmText(event.target.value)} placeholder="I_UNDERSTAND_MANUAL_LIVE_CANARY" />
       <button disabled={busy || status.arm === "active"} onClick={() => void action(() => apiRequest("/api/live/canary/arm", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirmation: armText }) }, "ARM rejected"))}>ARM LIVE CANARY</button>
@@ -64,6 +67,7 @@ export default function LiveCanaryPanel() {
     <div className="canary-kill-actions">
       <button disabled={busy || status.arm !== "active"} onClick={() => void action(() => apiRequest("/api/live/canary/kill-switch", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "halt_entry", reason: "manual operator halt", confirmation: "REAL ORDER" }) }, "HALT rejected"))}>HALT ENTRY</button>
       <button disabled={busy || status.arm !== "active"} onClick={() => void action(() => apiRequest("/api/live/canary/kill-switch", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "cancel_working", reason: "manual operator cancel", confirmation: "REAL ORDER" }) }, "Cancel working rejected"))}>CANCEL WORKING</button>
+      <button className="kill" disabled={busy || !status.position_guardian?.enabled} onClick={() => void action(() => apiRequest("/api/live/canary/kill-switch", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "flatten", reason: "manual emergency flatten", confirmation: "REAL ORDER" }) }, "Emergency flatten rejected"))}>EMERGENCY FLATTEN · REDUCE ONLY</button>
     </div>
     {message && <div className="live-canary-message">{message}</div>}
     <div className="live-canary-orders">{status.orders.map(item => <article key={item.platform_order_id} className={item.status === "unknown" ? "unknown" : ""}>

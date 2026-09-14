@@ -318,10 +318,11 @@ class ManualLiveCanaryService:
             parsed = LiveKillSwitchAction(action)
         except ValueError as exc:
             raise RuntimeError("live_canary_kill_switch_invalid") from exc
-        if parsed is LiveKillSwitchAction.FLATTEN:
-            raise RuntimeError("live_canary_flatten_not_enabled")
         target = self.context.target(owner_id)
-        arm = self._session(owner_id, target)
+        if parsed is LiveKillSwitchAction.FLATTEN:
+            guardian = self.context.public_status(owner_id).get("position_guardian", {})
+            if not isinstance(guardian, dict) or guardian.get("enabled") is not True:
+                raise RuntimeError("live_position_guardian_disabled")
         now = self.now()
         self.context.activate_kill_switch(owner_id, target, parsed, reason, now)
         cancelled = 0
@@ -339,10 +340,15 @@ class ManualLiveCanaryService:
                     cancelled += int(created)
         self.arms.audit(
             f"kill_switch.{parsed.value}", owner_id, target,
-            arm_id=arm.arm_id, detail={"reason": reason, "cancel_reserved": cancelled},
+            arm_id=None, detail={"reason": reason, "cancel_reserved": cancelled},
             occurred_at=now,
         )
-        return {"action": parsed.value, "cancel_reserved": cancelled, "flatten_enabled": False}
+        return {
+            "action": parsed.value,
+            "cancel_reserved": cancelled,
+            "flatten_enabled": parsed is LiveKillSwitchAction.FLATTEN,
+            "guardian_managed": parsed is LiveKillSwitchAction.FLATTEN,
+        }
 
     def status(self, owner_id: str) -> dict[str, object]:
         target = self.context.target(owner_id)

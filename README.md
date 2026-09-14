@@ -340,3 +340,20 @@ commit 後才 claim，並在 SDK call 前重新檢查 ARM、Recovery、broker/CA
 kill switch。Ambiguous submit/cancel 進入 `UNKNOWN` 且永不自動 retry。合併或部署
 不代表 Canary 已啟用，也不得取代第一次人工 readiness review。操作方式見
 `docs/live-canary-runbook.md`。
+
+## Live Position Guardian
+
+`LIVE_POSITION_GUARDIAN_ENABLED=false` is the production default. When explicitly
+enabled together with Manual Live Canary, the dedicated execution process rebuilds
+durable managed positions only from reconciled broker fills and positions. Stop-loss
+and take-profit levels use the actual average fill price; partial fills protect only
+the broker-confirmed filled quantity. Strategy pause or process loss does not transfer
+this responsibility back to Strategy Runtime.
+
+All Guardian exits are platform-created, durable, reduce-only orders. Emergency
+`FLATTEN` first halts entry, cancels platform-owned working entry orders, reads
+reconciled broker truth, reserves a reduce-only close, reconciles, verifies flat, and
+remains locked for operator review. It never guesses while disconnected and never
+retries an `UNKNOWN` exit. This is **platform-managed protection**, not a broker-native
+stop/OCO: protection depends on the execution worker, market-data quote persistence,
+network connectivity, and broker availability.

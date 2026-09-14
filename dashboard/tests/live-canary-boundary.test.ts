@@ -12,8 +12,10 @@ test("manual live canary UI requires separate ARM and explicit real-order confir
   assert.match(panel, /REDUCE ONLY/);
 });
 
-test("manual live canary UI has no strategy auto or flatten action", () => {
+test("manual live canary UI has no strategy auto and flatten is guardian-only", () => {
   assert.doesNotMatch(panel, /LIVE AUTO/);
   assert.doesNotMatch(panel, /FLATTEN ALL/);
+  assert.match(panel, /EMERGENCY FLATTEN · REDUCE ONLY/);
+  assert.match(panel, /POSITION PROTECTION IS PLATFORM-MANAGED/);
   assert.match(panel, /DO NOT RETRY/);
 });

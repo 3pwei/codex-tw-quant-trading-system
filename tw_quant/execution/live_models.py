@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Literal
 
-from ..broker import BrokerAccountRef
+from ..broker.identity import BrokerAccountRef
 
 
 @dataclass(frozen=True)

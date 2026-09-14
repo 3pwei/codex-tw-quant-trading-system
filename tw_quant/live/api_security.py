@@ -37,7 +37,9 @@ def required_permission(method: str, path: str) -> str | None:
     if path == "/api/live/canary/arm":
         return "orders.live.arm"
     if path == "/api/live/canary/kill-switch" and method == "POST":
-        return "orders.live.cancel"
+        # This endpoint includes emergency FLATTEN, so the stronger close
+        # permission is required for every action on the shared route.
+        return "orders.live.close"
     if path == "/api/live/orders" and method == "POST":
         return "orders.live.manual"
     if path.startswith("/api/live/orders/") and path.endswith("/cancel"):

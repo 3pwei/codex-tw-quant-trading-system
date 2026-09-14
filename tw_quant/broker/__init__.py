@@ -21,6 +21,13 @@ from .disabled import DisabledBroker, LockedBroker
 from .events import BrokerEvent, broker_event_id
 from .factory import BrokerAdapterFactory, build_broker
 from .identity import BrokerAccountRef
+from .guardian_repository import SQLitePositionGuardianRepository
+from .guardian_models import (
+    GuardianExitReason,
+    ManagedLivePosition,
+    ManagedPositionState,
+    PositionGuardianStore,
+)
 from .instruments import (
     BrokerInstrumentMapper,
     CanonicalInstrument,
@@ -162,6 +169,10 @@ __all__ = [
     "ExecutionWorkerSettings",
     "ExternalOrderReport",
     "InvalidOrderTransition",
+    "GuardianExitReason",
+    "ManagedLivePosition",
+    "ManagedPositionState",
+    "PositionGuardianStore",
     "LiveTradingSafety",
     "LiveCanaryConfig",
     "LIVE_CANARY_CONFIRMATION",
@@ -202,6 +213,7 @@ __all__ = [
     "SQLiteBrokerEventAuditRepository",
     "SQLiteCanaryArmRepository",
     "SQLiteLiveOrderRepository",
+    "SQLitePositionGuardianRepository",
     "SQLiteRecoveryLockRepository",
     "canonical_paper_status",
     "normalize_callback",

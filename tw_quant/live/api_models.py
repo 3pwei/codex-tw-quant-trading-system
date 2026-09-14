@@ -107,6 +107,6 @@ class LiveCanaryActionConfirmation(BaseModel):
 
 class LiveCanaryKillSwitchRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    action: Literal["halt_entry", "cancel_working"]
+    action: Literal["halt_entry", "cancel_working", "flatten"]
     reason: Annotated[str, Field(min_length=3, max_length=500)]
     confirmation: Literal["REAL ORDER"]

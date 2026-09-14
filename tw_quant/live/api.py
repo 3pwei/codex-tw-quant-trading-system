@@ -15,7 +15,7 @@ from ..auth import (
     DisabledAccessValidator,
     SQLiteAuthRepository,
 )
-from ..market import TradingCalendar
+from ..market import TradingCalendar, SQLiteExecutionQuoteRepository
 from ..broker import (
     BrokerRegistration,
     BrokerRegistry,
@@ -170,11 +170,13 @@ def create_app(
     auth_service = AuthService(
         identity_repo, authorization_mode=config.authorization_mode
     )
+    execution_quotes = SQLiteExecutionQuoteRepository(config.db_path)
     service = LiveMarketService(
         market_feed, repo, config.symbol, config.heartbeat_seconds,
         TradingCalendar(config.holidays), config.history_limit,
         history_provider=history_provider,
         stale_after_seconds=config.stale_after_seconds,
+        execution_quote_sink=execution_quotes,
     )
     execution_worker = ExecutionHealthFileMonitor(config.execution_health_path)
     broker_truth = SQLiteBrokerTruthRepository(config.db_path)
@@ -403,6 +405,7 @@ def create_app(
             broker_truth.close()
             recovery.close()
             live_orders.close()
+            execution_quotes.close()
             repo.close()
             identity_repo.close()
 

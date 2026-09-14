@@ -4,7 +4,8 @@ from dataclasses import dataclass
 from hashlib import sha256
 from typing import Protocol
 
-from ..broker import BrokerCapabilities, BrokerOrderRequest, ExecutionMode
+from ..broker.capabilities import BrokerCapabilities
+from ..broker.models import BrokerOrderRequest, ExecutionMode
 from ..market import ExecutionQuote
 from ..risk.live import LiveRiskApproval
 from .live_models import InstrumentSpec, LiveExecutionCandidate
@@ -31,7 +32,7 @@ class ExecutionPolicy(Protocol):
     def evaluate(
         self,
         candidate: LiveExecutionCandidate,
-        quote: ExecutionQuote,
+        quote: ExecutionQuote | None,
         instrument: InstrumentSpec,
         capabilities: BrokerCapabilities,
         risk: LiveRiskApproval,
@@ -66,7 +67,7 @@ class MarketableLimitIOCPolicy:
         )
         if not risk.approved:
             return reject(risk.reason)
-        if not quote.complete:
+        if quote is None or not quote.complete:
             return reject("execution_quote_incomplete")
         try:
             capabilities.require("supports_limit_orders")
@@ -127,7 +128,7 @@ class MarketPriceIOCPolicy:
             capabilities.require("supports_ioc")
         except RuntimeError:
             return reject("execution_policy_unsupported")
-        if not quote.complete:
+        if quote is None or not quote.complete:
             return reject("execution_quote_incomplete")
         reference = quote.best_ask if candidate.side == "buy" else quote.best_bid
         request = BrokerOrderRequest(
@@ -165,4 +166,38 @@ class EmergencyExitPolicy(MarketPriceIOCPolicy):
             return ExecutionPolicyResult(
                 self.name, self.version, None, "emergency_exit_requires_reduce_only"
             )
-        return super().evaluate(candidate, quote, instrument, capabilities, risk)
+        if not risk.approved:
+            return ExecutionPolicyResult(
+                self.name, self.version, None, risk.reason
+            )
+        try:
+            capabilities.require("supports_market_orders")
+            capabilities.require("supports_ioc")
+        except RuntimeError:
+            return ExecutionPolicyResult(
+                self.name, self.version, None, "execution_policy_unsupported"
+            )
+        reference = None
+        if quote is not None:
+            reference = quote.best_ask if candidate.side == "buy" else quote.best_bid
+        request = BrokerOrderRequest(
+            client_order_id=_client_order_id(candidate, self.version),
+            owner_id=candidate.owner_id,
+            strategy_id=candidate.strategy_id,
+            strategy_version=candidate.strategy_version,
+            symbol=candidate.symbol,
+            contract=candidate.contract,
+            side=candidate.side,
+            quantity=candidate.quantity,
+            mode=ExecutionMode.LIVE,
+            order_type="market",
+            time_in_force="ioc",
+            reference_price=reference,
+            reduce_only=True,
+            purpose="liquidation",
+            reason=candidate.reason,
+            correlation_id=candidate.decision_id,
+        )
+        return ExecutionPolicyResult(
+            self.name, self.version, request, "would_submit", reference_price=reference
+        )

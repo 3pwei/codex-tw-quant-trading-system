@@ -44,6 +44,13 @@ class ExecutionServiceSettings:
     live_canary_arm_ttl_seconds: int = 600
     live_canary_protective_stop_ticks: int = 20
     live_canary_requests_per_minute: int = 4
+    live_position_guardian_enabled: bool = False
+    live_guardian_stop_loss_ticks: int = 20
+    live_guardian_take_profit_ticks: int = 40
+    live_guardian_quote_stale_seconds: float = 2.0
+    live_guardian_poll_seconds: float = 0.25
+    live_guardian_tick_size: float = 1.0
+    live_guardian_multiplier: float = 10.0
 
     @classmethod
     def from_env(
@@ -115,6 +122,27 @@ class ExecutionServiceSettings:
             live_canary_arm_ttl_seconds=int(values.get("LIVE_CANARY_ARM_TTL_SECONDS", "600")),
             live_canary_protective_stop_ticks=int(values.get("LIVE_CANARY_PROTECTIVE_STOP_TICKS", "20")),
             live_canary_requests_per_minute=int(values.get("LIVE_ORDER_REQUESTS_PER_MINUTE", "4")),
+            live_position_guardian_enabled=_enabled(
+                values.get("LIVE_POSITION_GUARDIAN_ENABLED")
+            ),
+            live_guardian_stop_loss_ticks=int(
+                values.get("LIVE_GUARDIAN_STOP_LOSS_TICKS", "20")
+            ),
+            live_guardian_take_profit_ticks=int(
+                values.get("LIVE_GUARDIAN_TAKE_PROFIT_TICKS", "40")
+            ),
+            live_guardian_quote_stale_seconds=float(
+                values.get("LIVE_GUARDIAN_QUOTE_STALE_SECONDS", "2")
+            ),
+            live_guardian_poll_seconds=float(
+                values.get("LIVE_GUARDIAN_POLL_SECONDS", "0.25")
+            ),
+            live_guardian_tick_size=float(
+                values.get("LIVE_GUARDIAN_TICK_SIZE", "1")
+            ),
+            live_guardian_multiplier=float(
+                values.get("LIVE_GUARDIAN_MULTIPLIER", "10")
+            ),
         )
 
     @property
@@ -198,6 +226,19 @@ class ExecutionServiceSettings:
                 self.canary_config
             except ValueError:
                 issues.append("invalid_live_canary_config")
+        if self.live_position_guardian_enabled:
+            if not self.live_canary_enabled:
+                issues.append("guardian_requires_live_canary")
+            if len(self.live_canary_allowed_symbols) != 1 or len(self.live_canary_allowed_contracts) != 1:
+                issues.append("guardian_requires_single_instrument")
+            if min(self.live_guardian_stop_loss_ticks, self.live_guardian_take_profit_ticks) < 1:
+                issues.append("invalid_guardian_protection_ticks")
+            if not 0.1 <= self.live_guardian_quote_stale_seconds <= 30:
+                issues.append("invalid_guardian_quote_stale_seconds")
+            if not 0.05 <= self.live_guardian_poll_seconds <= 5:
+                issues.append("invalid_guardian_poll_seconds")
+            if self.live_guardian_tick_size <= 0 or self.live_guardian_multiplier <= 0:
+                issues.append("invalid_guardian_instrument_spec")
         if self.production_read_only_enabled and self.broker_name != "shioaji":
             issues.append("unsupported_read_only_broker")
         if (

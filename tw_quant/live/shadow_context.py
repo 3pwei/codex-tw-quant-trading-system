@@ -299,6 +299,9 @@ class ConfiguredManualCanaryContext:
             "recovery_status": recovery.status.value,
             "recovery_issues": list(recovery.issue_codes),
             "ordering_enabled": False,
+            "position_guardian": health.get(
+                "position_guardian", {"enabled": False}
+            ),
         }
 
     def activate_kill_switch(self, owner_id, target, action, reason, now) -> None:

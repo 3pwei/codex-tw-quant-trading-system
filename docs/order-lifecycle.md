@@ -269,3 +269,25 @@ quantity 或近似時間猜測。
 
 只有 `source=manual_live_canary` 且 target-scoped ARM 仍有效的 request 可進入真實 sink。
 `live_shadow`、Paper 與 strategy decision 即使 request shape 合法也會被拒絕。
+
+# Managed live-position protection
+
+After successful reconciliation, broker fills are replayed deterministically into a
+durable managed position. Actual average fill price determines SL/TP levels. A partial
+fill increases protection only to the confirmed quantity; later fills increment the
+same managed position generation.
+
+Only one exit reservation may be active per managed position. Priority is emergency
+flatten, stop loss, take profit, strategy exit, then session end/contract roll.
+Every generated request has `source=live_position_guardian`, `reduce_only=true`, and
+purpose `exit` or `liquidation`. An `UNKNOWN` exit is locked and never automatically
+resent. Broker/local position mismatch, missing truth, recovery not ready, or broker
+disconnect also locks the path.
+
+Session end and contract roll only reduce risk; they never reopen a new contract.
+Strategy stop/pause does not cancel protection because the Guardian belongs to the
+isolated execution-worker lifecycle.
+
+Kill-switch `FLATTEN` is a sequence, not an optimistic position mutation: halt entry,
+cancel platform-owned working entries, confirm broker truth, reserve reduce-only close,
+reconcile, verify flat, then remain locked for operator review.
