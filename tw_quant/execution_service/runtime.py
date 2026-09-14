@@ -21,6 +21,7 @@ from ..broker import (
     BrokerRuntimeState,
     BrokerSecretMaterial,
     BrokerSecretProvider,
+    PerTargetSecretResolver,
     CompositeOrderAdmissionGate,
     DisabledExecutionWorker,
     ExecutionSupervisor,
@@ -33,7 +34,6 @@ from ..broker import (
     LockedOrderAdmissionGate,
     SQLiteCanaryArmRepository,
     SQLiteExecutionTargetRepository,
-    ExecutionTargetStatus,
     SQLiteLiveOrderRepository,
     SQLiteBrokerEventAuditRepository,
     SQLiteRecoveryLockRepository,
@@ -290,28 +290,75 @@ def build_execution_service(
     config = settings or ExecutionServiceSettings.from_env(env)
     issues = list(config.validation_issues())
     material: BrokerSecretMaterial | None = None
+    execution_targets = None
+    owned_target = None
     try:
         connection = config.connection
     except ValueError:
         connection = None
 
+    if config.database_path:
+        execution_targets = SQLiteExecutionTargetRepository(config.database_path)
+        if (
+            connection is not None
+            and connection.account_ref is not None
+            and config.live_canary_allowed_owner_ids
+        ):
+            try:
+                bootstrap_legacy_execution_target(
+                    execution_targets,
+                    owner_user_ids=config.live_canary_allowed_owner_ids,
+                    connection=connection,
+                )
+            except (PermissionError, ValueError):
+                issues.append("legacy_execution_target_bootstrap_rejected")
+                connection = None
+        eligible = execution_targets.list_active()
+        if len(eligible) > 1:
+            issues.append("active_execution_target_limit_exceeded")
+            connection = None
+        elif len(eligible) == 1:
+            owned_target = eligible[0]
+            if not config.account_id:
+                issues = [issue for issue in issues if issue != "missing_account_id"]
+            if config.account_id and owned_target.account_ref != connection.account_ref:
+                issues.append("execution_target_configuration_mismatch")
+                connection = None
+            else:
+                connection = BrokerConnectionSettings(
+                    connection_id=owned_target.connection_id or owned_target.target_id,
+                    broker_name=owned_target.broker_name,
+                    account_id=owned_target.account_id,
+                    enabled=(
+                        config.live_trading_enabled
+                        or config.production_read_only_enabled
+                    ),
+                    secret_ref=owned_target.secret_ref,
+                )
+        elif execution_targets.list_all():
+            issues.append("execution_target_not_active")
+            connection = None
+
     provider = secret_provider
     if config.broker_name == "disabled":
         issues.append("execution_disabled")
     elif connection is not None:
-        if provider is None:
-            try:
-                provider = build_broker_secret_provider(connection, env=env)
-            except SecretConfigurationError as exc:
-                issues.extend(exc.issue_codes)
         connection_enabled = (
             config.live_trading_enabled or config.production_read_only_enabled
         )
         if not connection_enabled:
             issues.append("live_trading_disabled")
-        elif provider is not None:
+        else:
             try:
-                material = provider.load(connection)
+                if provider is not None:
+                    material = provider.load(connection)
+                elif owned_target is None:
+                    provider = build_broker_secret_provider(connection, env=env)
+                    material = provider.load(connection)
+                else:
+                    material = PerTargetSecretResolver(
+                        Path(config.broker_secret_root), env
+                    ).resolve(owned_target, connection)
             except SecretConfigurationError as exc:
                 issues.extend(exc.issue_codes)
         if (
@@ -329,29 +376,12 @@ def build_execution_service(
     kill_switches = None
     guardian_store = None
     quote_store = None
-    execution_targets = None
     registry = None
     redactor = None
     read_only_client = None
     worker: ServiceWorker = DisabledExecutionWorker()
     account = connection.account_ref if connection is not None else None
-    if connection is not None and config.database_path:
-        execution_targets = SQLiteExecutionTargetRepository(config.database_path)
-        if account is not None and config.live_canary_allowed_owner_ids:
-            try:
-                owned_target = bootstrap_legacy_execution_target(
-                    execution_targets,
-                    owner_user_ids=config.live_canary_allowed_owner_ids,
-                    connection=connection,
-                )
-                account = owned_target.account_ref
-                if owned_target.status is not ExecutionTargetStatus.ACTIVE:
-                    issues.append("execution_target_not_active")
-                    material = None
-            except (PermissionError, ValueError):
-                issues.append("legacy_execution_target_bootstrap_rejected")
-                material = None
-    if material is not None and account is not None and not config.validation_issues():
+    if material is not None and account is not None and not issues:
         redactor = SecretRedactionFilter(
             material.redaction_values + (account.account_id,)
         )

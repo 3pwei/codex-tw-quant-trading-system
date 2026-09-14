@@ -20,7 +20,7 @@
 | 策略 | 14 套基本策略（含三種共用 Dow Channel 結構的進場邏輯）、多週期 Setup／Entry／Exit／Risk、ALL／ANY、三層組合策略引用 |
 | 版本 | 不可變版本、參數快照、名稱唯一、封存、引用保護及回測追溯 |
 | 執行 | Backtest／Replay／Paper 共用事件語意；Live foundation 提供 durable outbox、callback audit、Recovery Lock、三方對帳、Execution Worker 與 Live Shadow |
-| 執行目標 | `owner_user_id → ExecutionTarget → BrokerAccountRef` durable ownership；opaque target ID、exact lookup、無 fallback |
+| 執行目標 | `owner_user_id → ExecutionTarget → per-target secret → BrokerAccountRef` durable ownership；exact lookup、無 fallback |
 | 風控 | Paper 與 Live policy 分離；Live Shadow 依 broker truth 做 account／owner portfolio limits、quote／session／expiry／capability gates |
 | 平台 | Cloudflare OTP、FastAPI RBAC、申請與審核、Rate Limit、Request Size Limit、稽核紀錄 |
 | 穩定性 | 重啟復原、SQLite verified backup、Queue／WebSocket／DB／主機監控、五種服務狀態 |
@@ -42,11 +42,12 @@ flowchart TD
     G --> H["Next.js 交易工作台"]
     E --> I["Durable Live Persistence Boundary"]
     I --> J["Execution Target<br/>BrokerAccountRef"]
-    J --> K["Broker Registry"]
-    K --> L["Broker Account Runtime"]
-    L --> M["BrokerPort · Registry Locked"]
-    M --> N["Shioaji Production Read-Only<br/>Login · CA · Broker Truth"]
-    M -.-> O["Future Adapter"]
+    J --> K["Exact Secret Resolver"]
+    K --> L["Broker Registry"]
+    L --> M["Broker Account Runtime"]
+    M --> N["BrokerPort · Registry Locked"]
+    N --> O["Shioaji Production Read-Only<br/>Login · CA · Broker Truth"]
+    N -.-> P["Future Adapter"]
 ```
 
 - 行情 Provider 與 Broker／Order Executor 是獨立邊界；production 行情只讀取
@@ -61,6 +62,9 @@ flowchart TD
 - `ExecutionTarget` 是 broker-neutral 的 durable ownership/routing metadata；只保存不透明
   `secret_ref`，不解析或持有任何 API key、密碼或 CA material。`active` 也不代表 ARMED
   或允許實盤。
+- execution service 只接受 `file:broker-secrets/<target_id>` 的 exact ref；遺失、權限過寬、
+  symlink、ref 不符或同時超過一個 active production target，均在 broker client 建立前
+  fail closed。
 - 每筆 Live order 與 outbox 都持久化 `BrokerAccountRef` target；restart 後依原 target
   精確解析，未知、locked 或 unavailable target 一律拒絕，不會 fallback 至其他券商。
 - `BrokerRegistry` 以 O(1) lookup 解析長生命週期 account runtime；每個 registration

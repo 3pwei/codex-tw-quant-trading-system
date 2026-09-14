@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
+from .execution_targets import ExecutionTarget
+
 from .settings import BrokerConnectionSettings
 
 
@@ -37,3 +39,11 @@ class BrokerSecretProvider(Protocol):
     """Resolve credentials for exactly one configured broker connection."""
 
     def load(self, connection: BrokerConnectionSettings) -> BrokerSecretMaterial: ...
+
+
+class SecretResolver(Protocol):
+    """Resolve material for one exact durable target inside the execution service."""
+
+    def resolve(
+        self, target: ExecutionTarget, connection: BrokerConnectionSettings
+    ) -> BrokerSecretMaterial: ...

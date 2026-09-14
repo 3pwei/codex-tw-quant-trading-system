@@ -29,6 +29,7 @@ class ExecutionServiceSettings:
     allowed_account_ids: frozenset[str] = frozenset()
     database_path: str = "/data/live_market.sqlite3"
     health_path: str = "/run/tw-quant-execution/health.json"
+    broker_secret_root: str = "/run/live-secrets/brokers"
     heartbeat_seconds: float = 5.0
     reconciliation_interval_seconds: float = 45.0
     reconciliation_timeout_seconds: float = 20.0
@@ -93,6 +94,9 @@ class ExecutionServiceSettings:
             health_path=values.get(
                 "LIVE_EXECUTION_HEALTH_PATH",
                 "/run/tw-quant-execution/health.json",
+            ).strip(),
+            broker_secret_root=values.get(
+                "LIVE_BROKER_SECRET_ROOT", "/run/live-secrets/brokers"
             ).strip(),
             heartbeat_seconds=float(
                 values.get("LIVE_EXECUTION_HEARTBEAT_SECONDS", "5")
@@ -256,6 +260,8 @@ class ExecutionServiceSettings:
             issues.append("missing_execution_database_path")
         if not self.health_path:
             issues.append("missing_execution_health_path")
+        if not self.broker_secret_root or not os.path.isabs(self.broker_secret_root):
+            issues.append("invalid_broker_secret_root")
         if self.heartbeat_seconds <= 0:
             issues.append("invalid_execution_heartbeat")
         if not 30 <= self.reconciliation_interval_seconds <= 3600:

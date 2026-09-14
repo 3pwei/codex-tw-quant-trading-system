@@ -23,6 +23,8 @@ class ExecutionTargetRepository(Protocol):
     def get(self, target_id: str) -> ExecutionTarget | None: ...
     def get_owned(self, owner_user_id: str, target_id: str) -> ExecutionTarget | None: ...
     def list_for_owner(self, owner_user_id: str) -> list[ExecutionTarget]: ...
+    def list_active(self) -> list[ExecutionTarget]: ...
+    def list_all(self) -> list[ExecutionTarget]: ...
     def find_by_account_ref(self, account_ref: BrokerAccountRef) -> ExecutionTarget | None: ...
     def update_status(self, target_id: str, status: ExecutionTargetStatus) -> ExecutionTarget: ...
     def exists(self, target_id: str) -> bool: ...
@@ -129,6 +131,20 @@ class SQLiteExecutionTargetRepository:
             rows = self.connection.execute(
                 "SELECT * FROM execution_targets WHERE owner_user_id = ? ORDER BY created_at, target_id",
                 (owner_user_id,),
+            ).fetchall()
+        return [target for row in rows if (target := self._from_row(row)) is not None]
+
+    def list_active(self) -> list[ExecutionTarget]:
+        with self.lock:
+            rows = self.connection.execute(
+                "SELECT * FROM execution_targets WHERE status = 'active' ORDER BY created_at, target_id"
+            ).fetchall()
+        return [target for row in rows if (target := self._from_row(row)) is not None]
+
+    def list_all(self) -> list[ExecutionTarget]:
+        with self.lock:
+            rows = self.connection.execute(
+                "SELECT * FROM execution_targets ORDER BY created_at, target_id"
             ).fetchall()
         return [target for row in rows if (target := self._from_row(row)) is not None]
 
