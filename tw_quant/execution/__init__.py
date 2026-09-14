@@ -1,6 +1,17 @@
 """Execution adapters and simulators."""
 
 from .liquidator import PositionLiquidator
+from .guardian import (
+    GuardianExecutionSink,
+    GuardianExitReason,
+    GuardianKillSwitchView,
+    LivePositionGuardian,
+    LivePositionGuardianConfig,
+    ManagedLivePosition,
+    ManagedPositionState,
+    PositionGuardianStore,
+    default_guardian_policies,
+)
 from .pipeline import SimulatedExecutionPipeline
 from .policy import SignalSimulationPolicy
 from .position_ledger import PositionKey, PositionLedger, PositionState, RealizedTrade
@@ -16,6 +27,15 @@ from .simulator import simulate_signals
 
 __all__ = [
     "OrderRecord",
+    "GuardianExecutionSink",
+    "GuardianExitReason",
+    "GuardianKillSwitchView",
+    "LivePositionGuardian",
+    "LivePositionGuardianConfig",
+    "ManagedLivePosition",
+    "ManagedPositionState",
+    "PositionGuardianStore",
+    "default_guardian_policies",
     "DisabledRiskGate",
     "PassThroughRiskGate",
     "PositionKey",

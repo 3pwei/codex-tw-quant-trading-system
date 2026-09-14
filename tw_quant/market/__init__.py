@@ -14,6 +14,7 @@ from .timeframes import (
     validate_timeframe,
 )
 from .quotes import ExecutionQuote, ExecutionQuoteCache, ExecutionQuoteView
+from .quote_store import ExecutionQuoteSink, SQLiteExecutionQuoteRepository
 
 __all__ = [
     "BarStatus",
@@ -22,6 +23,8 @@ __all__ = [
     "ExecutionQuote",
     "ExecutionQuoteCache",
     "ExecutionQuoteView",
+    "ExecutionQuoteSink",
+    "SQLiteExecutionQuoteRepository",
     "KBar",
     "TAIPEI",
     "SUPPORTED_TIMEFRAMES",

@@ -49,3 +49,26 @@ latency, callback audit, reconciliation generations, fills, position, cancel/clo
 outcome, restart behavior and issue codes. Never record credentials or full account
 IDs. Production fault injection for UNKNOWN uses Fake Broker/staging; do not create
 an intentional ambiguous real order.
+# Position Guardian and emergency FLATTEN
+
+`LIVE_POSITION_GUARDIAN_ENABLED` remains `false` after ordinary deploys. Before
+enabling it, verify the same single owner/account/contract Canary allowlists, actual
+broker position truth, a fresh canonical BidAsk stream, and Recovery `READY`.
+
+The displayed SL/TP is **platform-managed protection**, not a broker-native stop/OCO.
+It depends on the execution worker, persisted market quotes, network, and broker
+connectivity. If the broker is disconnected or position truth mismatches, Guardian
+locks and does not guess or submit a flatten.
+
+Emergency `FLATTEN` is asynchronous and reduce-only:
+
+1. Activate account-scoped FLATTEN; new entry is halted immediately.
+2. Confirm platform-owned working entry orders are cancelled through broker truth.
+3. Confirm the reconciled broker position and no unknown orders.
+4. Guardian durably reserves one reduce-only liquidation order.
+5. Wait for callback/periodic reconciliation; do not infer flat from API success.
+6. Verify broker and local position are flat.
+7. Keep Recovery locked for operator review; do not re-arm automatically.
+
+An `UNKNOWN` exit is never retried. Preserve the order/audit evidence and follow the
+manual reconciliation procedure before any further live action.

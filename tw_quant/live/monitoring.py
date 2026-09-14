@@ -29,6 +29,7 @@ _ACCOUNT_HEALTH_FIELDS = frozenset({
     "max_reconciliation_ms", "last_error_code", "dispatches",
     "external_order_calls", "external_cancel_calls", "cancel_requests_total",
     "average_broker_response_ms", "max_broker_response_ms",
+    "position_guardian",
 })
 
 

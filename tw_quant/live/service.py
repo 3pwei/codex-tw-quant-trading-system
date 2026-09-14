@@ -9,7 +9,9 @@ from ..market import (
     DEFAULT_CALENDAR,
     TAIPEI,
     ConnectionStatus,
+    ExecutionQuote,
     ExecutionQuoteCache,
+    ExecutionQuoteSink,
     KBar,
     TickEvent,
     TradingCalendar,
@@ -32,6 +34,7 @@ class LiveMarketService:
         history_limit: int = 500,
         history_provider: HistoricalMarketDataProvider | None = None,
         stale_after_seconds: float = 120.0,
+        execution_quote_sink: ExecutionQuoteSink | None = None,
     ):
         # ``feed`` remains the constructor name for compatibility. Internally
         # the service depends on provider-neutral ports.
@@ -44,6 +47,10 @@ class LiveMarketService:
         self.stale_after_seconds = stale_after_seconds
         self.queue: asyncio.Queue[TickEvent] = asyncio.Queue(maxsize=20_000)
         self.execution_quotes = ExecutionQuoteCache()
+        self.execution_quote_sink = execution_quote_sink
+        self.execution_quote_queue: asyncio.Queue[ExecutionQuote] = asyncio.Queue(
+            maxsize=2_048
+        )
         self.hub = BroadcastHub()
         self.aggregator = MinuteBarAggregator(symbol, calendar=calendar)
         self.connection_status: ConnectionStatus = "connecting"
@@ -68,13 +75,31 @@ class LiveMarketService:
         self.history_error: str | None = None
         self._worker: asyncio.Task | None = None
         self._heartbeat: asyncio.Task | None = None
+        self._quote_worker: asyncio.Task | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
         self._running = False
         self._bar_listeners: list[Callable[[KBar], None]] = []
         quote_registration = getattr(
             self.market_data_provider, "set_execution_quote_callback", None
         )
         if callable(quote_registration):
-            quote_registration(self.execution_quotes.update)
+            quote_registration(self._receive_execution_quote)
+
+    def _receive_execution_quote(self, quote: ExecutionQuote) -> None:
+        """Callback hot path: update memory and enqueue; never write SQLite."""
+
+        self.execution_quotes.update(quote)
+        loop = self._loop
+        if loop is not None and loop.is_running():
+            loop.call_soon_threadsafe(self._enqueue_execution_quote, quote)
+
+    def _enqueue_execution_quote(self, quote: ExecutionQuote) -> None:
+        try:
+            self.execution_quote_queue.put_nowait(quote)
+        except asyncio.QueueFull:
+            # The cache still has the newest quote. Protection fails closed on
+            # stale persistence instead of blocking the provider callback.
+            pass
 
     def add_bar_listener(self, listener: Callable[[KBar], None]) -> None:
         if listener not in self._bar_listeners:
@@ -99,6 +124,7 @@ class LiveMarketService:
 
     async def start(self) -> None:
         self._running = True
+        self._loop = asyncio.get_running_loop()
         restored = self.repository.latest_forming(self.symbol)
         self.aggregator.restore(restored)
         latest = self.repository.latest(self.symbol, 1)
@@ -108,6 +134,10 @@ class LiveMarketService:
         self._heartbeat = asyncio.create_task(
             self._run_heartbeat(), name="tmf-feed-heartbeat"
         )
+        if self.execution_quote_sink is not None:
+            self._quote_worker = asyncio.create_task(
+                self._run_execution_quote_writer(), name="execution-quote-writer"
+            )
         await self.market_data_provider.start(
             self.enqueue_tick, self.set_connection_status
         )
@@ -131,13 +161,14 @@ class LiveMarketService:
     async def stop(self) -> None:
         self._running = False
         await self.market_data_provider.stop()
-        for task in (self._worker, self._heartbeat):
+        for task in (self._worker, self._heartbeat, self._quote_worker):
             if task:
                 task.cancel()
         await asyncio.gather(
-            *(task for task in (self._worker, self._heartbeat) if task),
+            *(task for task in (self._worker, self._heartbeat, self._quote_worker) if task),
             return_exceptions=True,
         )
+        self._loop = None
         current = self.aggregator.current
         if current:
             self._save_bar(current)
@@ -199,6 +230,27 @@ class LiveMarketService:
                     self.max_tick_processing_ms, elapsed_ms
                 )
                 self.queue.task_done()
+
+    async def _run_execution_quote_writer(self) -> None:
+        assert self.execution_quote_sink is not None
+        while self._running:
+            quote = await self.execution_quote_queue.get()
+            latest = {(quote.symbol, quote.contract): quote}
+            # Bound cross-process SQLite write amplification while preserving
+            # the newest BidAsk for protection decisions.
+            await asyncio.sleep(0.05)
+            try:
+                while True:
+                    item = self.execution_quote_queue.get_nowait()
+                    latest[(item.symbol, item.contract)] = item
+                    self.execution_quote_queue.task_done()
+            except asyncio.QueueEmpty:
+                pass
+            try:
+                for item in latest.values():
+                    await asyncio.to_thread(self.execution_quote_sink.save, item)
+            finally:
+                self.execution_quote_queue.task_done()
 
     async def _run_heartbeat(self) -> None:
         while self._running:

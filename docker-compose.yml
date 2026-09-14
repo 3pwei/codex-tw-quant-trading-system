@@ -19,6 +19,7 @@ services:
       BROKER_PROVIDER: disabled
       LIVE_TRADING_ENABLED: "false"
       LIVE_CANARY_ENABLED: "false"
+      LIVE_POSITION_GUARDIAN_ENABLED: "false"
       LIVE_EXECUTION_DB_PATH: /data/live_market.sqlite3
       LIVE_EXECUTION_HEALTH_PATH: /run/tw-quant-execution/health.json
     volumes:

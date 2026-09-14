@@ -47,6 +47,7 @@ SHIOAJI_READ_ONLY_CAPABILITIES = BrokerCapabilities(
 )
 
 SHIOAJI_CANARY_CAPABILITIES = BrokerCapabilities(
+    supports_market_orders=True,
     supports_limit_orders=True,
     supports_ioc=True,
     supports_cancel=True,
@@ -695,13 +696,25 @@ class ShioajiProductionExecutionClient:
     async def submit(self, request: BrokerOrderRequest) -> ExternalOrderReport:
         if self.effective_mode != "canary":
             raise RuntimeError(READ_ONLY_ERROR)
-        if request.source != "manual_live_canary" or not request.arm_id:
+        manual = request.source == "manual_live_canary" and bool(request.arm_id)
+        guardian = (
+            request.source == "live_position_guardian"
+            and request.reduce_only
+            and request.purpose in {"exit", "liquidation"}
+        )
+        if not (manual or guardian):
             raise ShioajiProductionError("live_canary_source_not_allowed")
         api, account = self._require_ready()
-        if request.order_type != "limit" or request.time_in_force != "ioc":
+        if request.time_in_force != "ioc" or request.order_type not in {"limit", "market"}:
             raise ShioajiProductionError("live_canary_policy_not_allowed")
-        if request.quantity != 1 or request.limit_price is None:
+        if request.quantity != 1 or (
+            request.order_type == "limit" and request.limit_price is None
+        ):
             raise ShioajiProductionError("live_canary_quantity_not_allowed")
+        if manual and request.order_type != "limit":
+            raise ShioajiProductionError("live_canary_policy_not_allowed")
+        if request.order_type == "market" and request.purpose != "liquidation":
+            raise ShioajiProductionError("guardian_market_requires_liquidation")
         broker_code = self.instrument_mapper.to_broker_contract(
             CanonicalInstrument(request.symbol, request.contract)
         )
@@ -712,11 +725,12 @@ class ShioajiProductionExecutionClient:
                 order_factory = getattr(getattr(self.sdk, "order", None), "Order", None)
             if not callable(order_factory):
                 raise ShioajiProductionError("broker_order_factory_unavailable")
+            is_market = request.order_type == "market"
             order = order_factory(
                 action=self._constant("Action", "Buy" if request.side == "buy" else "Sell"),
-                price=request.limit_price,
+                price=0 if is_market else request.limit_price,
                 quantity=request.quantity,
-                price_type=self._constant("FuturesPriceType", "LMT"),
+                price_type=self._constant("FuturesPriceType", "MKT" if is_market else "LMT"),
                 order_type=self._constant("OrderType", "IOC"),
                 octype=self._constant("FuturesOCType", "Auto"),
                 account=account,

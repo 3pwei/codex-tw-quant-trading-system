@@ -103,7 +103,8 @@ class FakeContext:
         if not self.connected: raise RuntimeError("live_canary_broker_disconnected")
     def public_status(self, owner_id):
         return {"enabled": True, "broker_name": TARGET.broker_name,
-                "masked_account_id": "****nt-1", "recovery_status": "ready"}
+                "masked_account_id": "****nt-1", "recovery_status": "ready",
+                "position_guardian": {"enabled": True}}
 
     def activate_kill_switch(self, owner_id, target, action, reason, now):
         self.kill_switches.append((owner_id, target, action.value, reason, now))
@@ -244,8 +245,11 @@ class LiveCanaryTests(unittest.IsolatedAsyncioTestCase):
         cancelled = await self.manager.dispatch_cancel_once(TARGET)
         self.assertEqual(cancelled.request.client_order_id, accepted.request.client_order_id)
         self.assertEqual(self.broker.cancel_calls, 1)
-        with self.assertRaisesRegex(RuntimeError, "flatten_not_enabled"):
-            self.service.activate_kill_switch("owner-1", "flatten", "not rolled out")
+        flatten = self.service.activate_kill_switch(
+            "owner-1", "flatten", "guardian emergency"
+        )
+        self.assertTrue(flatten["flatten_enabled"])
+        self.assertTrue(flatten["guardian_managed"])
 
     def test_non_manual_source_cannot_reach_real_sink(self):
         session = self.arm()
@@ -308,6 +312,10 @@ class LiveCanaryTests(unittest.IsolatedAsyncioTestCase):
             "orders.live.cancel",
         )
         self.assertEqual(rate_limit_scope("POST", "/api/live/orders"), "live_orders")
+        self.assertEqual(
+            required_permission("POST", "/api/live/canary/kill-switch"),
+            "orders.live.close",
+        )
 
     def test_canary_configuration_is_explicit_and_default_disabled(self):
         self.assertFalse(ExecutionServiceSettings().live_canary_enabled)

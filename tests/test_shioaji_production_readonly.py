@@ -135,7 +135,7 @@ class FakeSdk:
         self.simulation_values: list[bool] = []
         self.constant = SimpleNamespace(
             Action=SimpleNamespace(Buy="Buy", Sell="Sell"),
-            FuturesPriceType=SimpleNamespace(LMT="LMT"),
+            FuturesPriceType=SimpleNamespace(LMT="LMT", MKT="MKT"),
             OrderType=SimpleNamespace(IOC="IOC"),
             FuturesOCType=SimpleNamespace(Auto="Auto"),
         )
@@ -412,6 +412,23 @@ class ProductionReadOnlyTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ShioajiProductionError):
             await client.submit(replace(request, quantity=2))
         self.assertEqual(client.health_state()["external_order_calls"], 1)
+
+        guardian = replace(
+            request,
+            client_order_id="guardian:1",
+            source="live_position_guardian",
+            arm_id=None,
+            side="sell",
+            reduce_only=True,
+            purpose="liquidation",
+            order_type="market",
+            limit_price=None,
+        )
+        guardian_report = await client.submit(guardian)
+        self.assertEqual(guardian_report.broker_order_id, "broker-canary-1")
+        self.assertEqual(self.api.placed_orders[-1].price_type, "MKT")
+        with self.assertRaisesRegex(ShioajiProductionError, "requires_liquidation"):
+            await client.submit(replace(guardian, purpose="exit"))
 
     async def test_execution_composition_registers_read_only_and_ordering_stays_locked(self):
         env = {

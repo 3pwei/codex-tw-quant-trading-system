@@ -107,6 +107,7 @@ class CanaryOrderAdmissionGate:
     readiness: Callable[[], dict[str, object]]
     kill_switch_blocks: Callable[[str, bool], bool]
     now: Callable[[], datetime]
+    broker_position: Callable[[str], int | None] | None = None
 
     def assert_ordering_allowed(self) -> None:
         if not self.config.enabled:
@@ -126,8 +127,13 @@ class CanaryOrderAdmissionGate:
             raise RuntimeError("live_canary_invalid_order_context")
         if target != self.target:
             raise RuntimeError("live_canary_target_mismatch")
-        if request.source != "manual_live_canary":
+        if request.source not in {"manual_live_canary", "live_position_guardian"}:
             raise RuntimeError("live_canary_source_not_allowed")
+        guardian_exit = request.source == "live_position_guardian"
+        if guardian_exit and (
+            not request.reduce_only or request.purpose not in {"exit", "liquidation"}
+        ):
+            raise RuntimeError("guardian_reduce_only_required")
         self.config.assert_request_allowed(
             request.owner_id, target, request.symbol, request.contract, request.quantity
         )
@@ -139,8 +145,18 @@ class CanaryOrderAdmissionGate:
             raise RuntimeError("live_canary_ca_not_ready")
         if int(state.get("unknown_orders", 0) or 0) > 0:
             raise RuntimeError("live_canary_unknown_order_block")
-        if self.kill_switch_blocks(request.owner_id, request.reduce_only):
+        if request.reduce_only and self.broker_position is not None:
+            position = self.broker_position(request.contract)
+            closes_long = position is not None and position > 0 and request.side == "sell"
+            closes_short = position is not None and position < 0 and request.side == "buy"
+            if not (closes_long or closes_short):
+                raise RuntimeError("reduce_only_position_direction_mismatch")
+            if request.quantity > abs(position):
+                raise RuntimeError("reduce_only_quantity_exceeds_broker_truth")
+        if not guardian_exit and self.kill_switch_blocks(request.owner_id, request.reduce_only):
             raise RuntimeError("live_canary_kill_switch_blocked")
+        if guardian_exit:
+            return
         arm = self.arms.active(request.owner_id, target, self.now())
         if arm is None:
             raise RuntimeError("live_canary_arm_inactive")
@@ -155,7 +171,7 @@ class CanaryOrderAdmissionGate:
         request = routed_order.order.request
         if routed_order.target != self.target:
             raise RuntimeError("live_canary_target_mismatch")
-        if request.source != "manual_live_canary":
+        if request.source not in {"manual_live_canary", "live_position_guardian"}:
             raise RuntimeError("live_canary_source_not_allowed")
         self.config.assert_request_allowed(
             request.owner_id,
@@ -168,9 +184,8 @@ class CanaryOrderAdmissionGate:
         state = self.readiness()
         if state.get("connected") is not True or state.get("ca_ready") is not True:
             raise RuntimeError("live_canary_broker_unavailable")
-        arm = self.arms.active(request.owner_id, routed_order.target, self.now())
-        if arm is None:
-            raise RuntimeError("live_canary_arm_inactive")
+        # Cancelling a platform-owned working order is risk reduction. It must
+        # remain available after ARM expiry and never applies to external orders.
 
 
 def arm_expiry(config: LiveCanaryConfig, armed_at: datetime) -> datetime:

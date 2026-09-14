@@ -35,6 +35,7 @@ from ..broker import (
     SQLiteLiveOrderRepository,
     SQLiteBrokerEventAuditRepository,
     SQLiteRecoveryLockRepository,
+    SQLitePositionGuardianRepository,
     SQLiteBrokerTruthRepository,
     SHIOAJI_READ_ONLY_CAPABILITIES,
     SHIOAJI_CANARY_CAPABILITIES,
@@ -51,9 +52,31 @@ from .redaction import SecretRedactionFilter, mask_account
 from .secrets import SecretConfigurationError
 from ..live.shadow_store import SQLiteShadowExecutionRepository
 from ..risk.live import LiveKillSwitchAction, LiveKillSwitchScope
+from ..execution.guardian import (
+    GuardianExecutionSink,
+    LivePositionGuardian,
+    LivePositionGuardianConfig,
+    default_guardian_policies,
+)
+from ..execution.live_models import InstrumentSpec
+from ..market import SQLiteExecutionQuoteRepository
 
 
 LOGGER = logging.getLogger("tw_quant.execution_service")
+
+
+class _GuardianKillSwitchView:
+    def __init__(self, repository: SQLiteShadowExecutionRepository) -> None:
+        self.repository = repository
+
+    def actions(self, owner_id, target):
+        account_scope = f"{target.broker_name}:{target.account_id}"
+        states = self.repository.kill_switches({
+            (LiveKillSwitchScope.GLOBAL.value, "global"),
+            (LiveKillSwitchScope.OWNER.value, owner_id),
+            (LiveKillSwitchScope.BROKER_ACCOUNT.value, account_scope),
+        })
+        return tuple(state.action for state in states)
 
 
 class ServiceWorker(Protocol):
@@ -83,6 +106,8 @@ class ExecutionServiceRuntime:
     )
     canary_arm_repository: SQLiteCanaryArmRepository | None = field(default=None, repr=False)
     kill_switch_repository: SQLiteShadowExecutionRepository | None = field(default=None, repr=False)
+    guardian_repository: SQLitePositionGuardianRepository | None = field(default=None, repr=False)
+    quote_repository: SQLiteExecutionQuoteRepository | None = field(default=None, repr=False)
     broker_registry: BrokerRegistry | None = field(default=None, repr=False)
     redaction_filter: SecretRedactionFilter | None = field(default=None, repr=False)
     read_only_client: ShioajiProductionExecutionClient | None = field(
@@ -235,6 +260,10 @@ class ExecutionServiceRuntime:
             self.canary_arm_repository.close()
         if self.kill_switch_repository is not None:
             self.kill_switch_repository.close()
+        if self.guardian_repository is not None:
+            self.guardian_repository.close()
+        if self.quote_repository is not None:
+            self.quote_repository.close()
         if self.redaction_filter is not None:
             LOGGER.removeFilter(self.redaction_filter)
 
@@ -290,6 +319,8 @@ def build_execution_service(
     truth = None
     canary_arms = None
     kill_switches = None
+    guardian_store = None
+    quote_store = None
     registry = None
     redactor = None
     read_only_client = None
@@ -397,6 +428,15 @@ def build_execution_service(
                 },
                 kill_switch_blocks=kill_switch_blocks,
                 now=lambda: datetime.now(timezone.utc),
+                broker_position=lambda contract: (
+                    sum(
+                        item.quantity
+                        for item in snapshot.positions
+                        if item.contract == contract
+                    )
+                    if (snapshot := truth.get(account)) is not None
+                    else None
+                ),
             ))
             orders.block_pending_dispatches(
                 account, "restart_requires_operator_rearm_and_new_request"
@@ -423,6 +463,43 @@ def build_execution_service(
             worker_kwargs = (
                 {"order_manager": manager} if config.live_canary_enabled else {}
             )
+            if config.live_position_guardian_enabled:
+                guardian_store = SQLitePositionGuardianRepository(config.database_path)
+                quote_store = SQLiteExecutionQuoteRepository(config.database_path)
+                guardian_config = LivePositionGuardianConfig(
+                    enabled=True,
+                    stop_loss_ticks=config.live_guardian_stop_loss_ticks,
+                    take_profit_ticks=config.live_guardian_take_profit_ticks,
+                    quote_stale_seconds=config.live_guardian_quote_stale_seconds,
+                    poll_seconds=config.live_guardian_poll_seconds,
+                )
+                normal_policy, emergency_policy = default_guardian_policies(guardian_config)
+                guardian = LivePositionGuardian(
+                    account_ref=account,
+                    config=guardian_config,
+                    store=guardian_store,
+                    order_store=orders,
+                    truth_store=truth,
+                    recovery=recovery,
+                    registry=registry,
+                    sink=GuardianExecutionSink(manager),
+                    quotes=quote_store,
+                    instrument=InstrumentSpec(
+                        symbol=next(iter(config.live_canary_allowed_symbols)),
+                        contract=next(iter(config.live_canary_allowed_contracts)),
+                        tick_size=config.live_guardian_tick_size,
+                        multiplier=config.live_guardian_multiplier,
+                    ),
+                    normal_policy=normal_policy,
+                    emergency_policy=emergency_policy,
+                    readiness=lambda: dict(read_only_client.health_state()),
+                    kill_switches=_GuardianKillSwitchView(kill_switches),
+                    owner_ids=config.live_canary_allowed_owner_ids,
+                )
+                worker_kwargs.update({
+                    "position_guardian": guardian,
+                    "guardian_poll_seconds": config.live_guardian_poll_seconds,
+                })
             account_worker = worker_type(
                 account_ref=account,
                 client=read_only_client,
@@ -462,6 +539,8 @@ def build_execution_service(
         truth_repository=truth,
         canary_arm_repository=canary_arms,
         kill_switch_repository=kill_switches,
+        guardian_repository=guardian_store,
+        quote_repository=quote_store,
         broker_registry=registry,
         redaction_filter=redactor,
         read_only_client=read_only_client,

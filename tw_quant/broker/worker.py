@@ -64,6 +64,16 @@ class ExecutionWorkerMonitor(Protocol):
     def snapshot(self) -> dict[str, object]: ...
 
 
+class PositionGuardianRuntime(Protocol):
+    config: object
+
+    def synchronize(self) -> list[object]: ...
+    def evaluate_latest_quotes(self) -> list[BrokerOrder]: ...
+    def process_kill_switches(self) -> list[BrokerOrder]: ...
+    def mark_order_unknown(self, client_order_id: str) -> bool: ...
+    def public_state(self) -> dict[str, object]: ...
+
+
 class ReadOnlyBrokerClient(Protocol):
     """Lifecycle and cached-state seam owned by one broker account worker."""
 
@@ -572,12 +582,32 @@ class ExecutionSupervisor:
 class CanaryBrokerAccountWorker(BrokerAccountWorker):
     """Opt-in manual canary dispatch layered on the read/recovery worker."""
 
-    def __init__(self, *, order_manager: LiveOrderManager, **kwargs) -> None:
+    def __init__(
+        self,
+        *,
+        order_manager: LiveOrderManager,
+        position_guardian: PositionGuardianRuntime | None = None,
+        guardian_poll_seconds: float = 0.25,
+        **kwargs,
+    ) -> None:
         super().__init__(**kwargs)
         self.order_manager = order_manager
+        self.position_guardian = position_guardian
+        self.guardian_poll_seconds = guardian_poll_seconds
         self.live_order_dispatched_total = 0
         self.cancel_requests_total = 0
         self._dispatch_task: asyncio.Task[None] | None = None
+        self._guardian_task: asyncio.Task[None] | None = None
+
+    async def reconcile_now(self) -> bool:
+        ready = await super().reconcile_now()
+        if ready and self.position_guardian is not None:
+            try:
+                await asyncio.to_thread(self.position_guardian.synchronize)
+            except Exception as exc:
+                self._persist_lock(_operational_code(exc, str(exc) or "guardian_recovery_failed"))
+                return False
+        return ready
 
     async def start(self) -> None:
         await super().start()
@@ -585,13 +615,36 @@ class CanaryBrokerAccountWorker(BrokerAccountWorker):
             self._dispatch_task = asyncio.create_task(
                 self._run_canary_dispatch(), name=f"{self._task_prefix}-canary-dispatch"
             )
+        if self.position_guardian is not None and self._guardian_task is None:
+            self._guardian_task = asyncio.create_task(
+                self._run_position_guardian(), name=f"{self._task_prefix}-position-guardian"
+            )
 
     async def stop(self) -> None:
-        if self._dispatch_task is not None:
-            self._dispatch_task.cancel()
-            await asyncio.gather(self._dispatch_task, return_exceptions=True)
-            self._dispatch_task = None
+        for task in (self._guardian_task, self._dispatch_task):
+            if task is not None:
+                task.cancel()
+        await asyncio.gather(
+            *(task for task in (self._guardian_task, self._dispatch_task) if task),
+            return_exceptions=True,
+        )
+        self._guardian_task = self._dispatch_task = None
         await super().stop()
+
+    async def _run_position_guardian(self) -> None:
+        assert self.position_guardian is not None
+        while not self._stop_event.is_set():
+            recovery = self.recovery_lock.state(
+                self.account_ref.broker_name, self.account_ref.account_id
+            )
+            if recovery.ready and self._client_ready():
+                try:
+                    await asyncio.to_thread(self.position_guardian.process_kill_switches)
+                    await asyncio.to_thread(self.position_guardian.evaluate_latest_quotes)
+                except Exception as exc:
+                    self._persist_lock(_operational_code(exc, str(exc) or "position_guardian_failed"))
+            if await self._wait(self.guardian_poll_seconds):
+                return
 
     async def _run_canary_dispatch(self) -> None:
         while not self._stop_event.is_set():
@@ -610,6 +663,11 @@ class CanaryBrokerAccountWorker(BrokerAccountWorker):
                     if order is not None:
                         self.live_order_dispatched_total += 1
                         if order.status is BrokerOrderStatus.UNKNOWN:
+                            if self.position_guardian is not None:
+                                await asyncio.to_thread(
+                                    self.position_guardian.mark_order_unknown,
+                                    order.request.client_order_id,
+                                )
                             self._persist_lock("unknown_order_requires_reconciliation")
                         continue
                 except Exception as exc:
@@ -628,6 +686,11 @@ class CanaryBrokerAccountWorker(BrokerAccountWorker):
             "external_cancel_calls": int(health.get("external_cancel_calls", 0) or 0),
             "average_broker_response_ms": health.get("average_broker_response_ms"),
             "max_broker_response_ms": health.get("max_broker_response_ms"),
+            "position_guardian": (
+                self.position_guardian.public_state()
+                if self.position_guardian is not None
+                else {"enabled": False}
+            ),
         })
         return value
 
