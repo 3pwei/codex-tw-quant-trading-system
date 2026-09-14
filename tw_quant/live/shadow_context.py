@@ -285,6 +285,72 @@ class ConfiguredManualCanaryContext:
         if health.get("ca_ready") is not True:
             raise RuntimeError("live_canary_ca_not_ready")
 
+    def preflight(
+        self, owner_id: str, canary_enabled: bool, allowed_contracts: frozenset[str]
+    ) -> dict[str, object]:
+        """Return a sanitized, fail-closed readiness decision from durable/cached truth."""
+        target = self.target(owner_id)
+        recovery = self.recovery.state(target.broker_name, target.account_id)
+        health = self._account_health(target) or {}
+        snapshot = self.truth.get(target)
+        orders = self.risk_provider.orders.orders(owner_id, target=target)
+        guardian = health.get("position_guardian", {})
+        guardian = guardian if isinstance(guardian, Mapping) else {}
+        market_status = str(
+            self.risk_provider.market.status_message().get("service_status") or "unknown"
+        )
+        recovery_issues = set(recovery.issue_codes)
+        broker_position = None if snapshot is None else sum(
+            position.quantity for position in snapshot.positions
+        )
+        only_allowed_positions = snapshot is not None and all(
+            position.contract in allowed_contracts for position in snapshot.positions
+        )
+        protected = int(guardian.get("protected_quantity", 0) or 0)
+        checks = {
+            "canary_config_enabled": canary_enabled,
+            "broker_connected": health.get("broker_connected") is True,
+            "ca_ready": health.get("ca_ready") is True,
+            "callback_registered": health.get("callback_registered") is True,
+            "recovery_ready": recovery.ready,
+            "broker_truth_reconciled": snapshot is not None and snapshot.account_ref == target,
+            "no_unknown_orders": not any(
+                order.status is BrokerOrderStatus.UNKNOWN for order in orders
+            ),
+            "no_unknown_external_orders": "unknown_broker_order" not in recovery_issues,
+            "no_unmanaged_external_positions": (
+                only_allowed_positions and broker_position == 0
+                or (
+                    only_allowed_positions
+                    and broker_position is not None
+                    and guardian.get("enabled") is True
+                    and protected == abs(broker_position)
+                )
+            ),
+            "market_healthy": market_status == "healthy",
+            "guardian_healthy": guardian.get("enabled") is True
+            and int(guardian.get("locked_positions", 0) or 0) == 0,
+            "kill_switch_ready": not self.shadow_store.kill_switches({
+                (LiveKillSwitchScope.GLOBAL.value, "global"),
+                (LiveKillSwitchScope.OWNER.value, owner_id),
+                (LiveKillSwitchScope.BROKER_ACCOUNT.value,
+                 f"{target.broker_name}:{target.account_id}"),
+            }),
+            "callback_delivery_healthy": int(
+                health.get("callbacks_dropped_total", 0) or 0
+            ) == 0 and int(health.get("callbacks_failed_total", 0) or 0) == 0,
+        }
+        blockers = [name for name, passed in checks.items() if not passed]
+        return {
+            "ready": not blockers,
+            "checks": checks,
+            "blockers": blockers,
+            "broker_name": target.broker_name,
+            "masked_account_id": "****" + target.account_id[-4:],
+            "market_status": market_status,
+            "recovery_issues": list(recovery.issue_codes),
+        }
+
     def public_status(self, owner_id: str) -> dict[str, object]:
         target = self.target(owner_id)
         recovery = self.recovery.state(target.broker_name, target.account_id)

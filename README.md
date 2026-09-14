@@ -106,6 +106,10 @@ outbox。結果依 decision、broker/account 與 policy version 冪等保存；U
 
 人工驗收見 [Live Shadow Acceptance](docs/live-shadow-acceptance.md)。
 
+Manual Live Canary 上線前必須逐項通過
+[Production Canary Acceptance](docs/live-production-canary-acceptance.md)；異常停機與回退依
+[Canary Rollback](docs/live-canary-rollback.md)。部署與 CI 不會自動完成這項人工授權。
+
 Dow Channel 策略共用同一套 confirmed pivot、ATR、HH／HL、LH／LL 與平行軌道偵測；`Dow Channel Pullback` 在邊界測試後收回時順勢進場，`Dow Channel Reversal` 在反向突破趨勢軌道時反向進場，`Dow Channel Momentum` 則沿既有趨勢突破外側軌道。既有 key `linear_channel_breakout` 保留為 Momentum 的 canonical key，確保歷史回測、參數快照及組合策略引用持續有效。
 
 主要程式位置：

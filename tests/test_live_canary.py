@@ -185,6 +185,16 @@ class LiveCanaryTests(unittest.IsolatedAsyncioTestCase):
         self.arms = SQLiteCanaryArmRepository(self.path)
         self.assertIsNone(self.arms.active("owner-1", TARGET, NOW))
 
+    def test_status_exposes_fail_closed_readiness_summary(self):
+        status = self.service.status("owner-1")
+        self.assertFalse(status["ordering_enabled"])
+        self.assertTrue(status["readiness"]["ready"])
+        self.assertNotIn(TARGET.account_id, str(status))
+
+        self.context.connected = False
+        with self.assertRaisesRegex(RuntimeError, "broker_disconnected"):
+            self.arm()
+
     def test_durable_before_broker_and_idempotent(self):
         self.arm()
         first, created = self.reserve()

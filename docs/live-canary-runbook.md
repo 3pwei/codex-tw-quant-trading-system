@@ -5,6 +5,10 @@ it. The default is `LIVE_CANARY_ENABLED=false`; first enablement requires a
 separate human readiness review with an operator present. This is an operational
 safety procedure, not trading advice.
 
+The authoritative release checklist and evidence matrix are in
+[Production Canary Acceptance](live-production-canary-acceptance.md). Emergency
+rollback is in [Canary Rollback](live-canary-rollback.md).
+
 ## Readiness review
 
 1. Complete one day and one night read-only/shadow acceptance session.
@@ -18,6 +22,8 @@ safety procedure, not trading advice.
    secret; Strategy Auto Live remains absent.
 6. Set matching canary metadata in the two process environments. Deployment and
    restart must leave ARM OFF.
+7. Open `GET /api/live/canary`; do not ARM unless `readiness.ready=true` and every
+   named check is true. Verify the returned account remains masked.
 
 ## Operator sequence
 
@@ -31,6 +37,8 @@ safety procedure, not trading advice.
 7. Cancel only a platform-owned working order and wait for broker truth.
 8. Close via the server-derived reduce-only action; verify broker and Live ledger
    are flat, then DISARM.
+9. Save sanitized acceptance evidence and keep `LIVE_CANARY_ENABLED=false` after
+   the exercise unless a separate operational approval explicitly says otherwise.
 
 ## Outcomes and fault handling
 

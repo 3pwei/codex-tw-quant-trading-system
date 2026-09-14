@@ -38,6 +38,9 @@ class ManualCanaryContext(Protocol):
     def broker_position(self, target: BrokerAccountRef, contract: str) -> int | None: ...
     def assert_arm_ready(self, target: BrokerAccountRef) -> None: ...
     def public_status(self, owner_id: str) -> dict[str, object]: ...
+    def preflight(
+        self, owner_id: str, canary_enabled: bool, allowed_contracts: frozenset[str]
+    ) -> dict[str, object]: ...
     def activate_kill_switch(
         self, owner_id: str, target: BrokerAccountRef,
         action: LiveKillSwitchAction, reason: str, now: datetime,
@@ -85,6 +88,11 @@ class ManualLiveCanaryService:
             1,
         )
         self.context.assert_arm_ready(target)
+        readiness = self._preflight(owner_id)
+        if readiness.get("ready") is not True:
+            blockers = readiness.get("blockers", [])
+            code = str(blockers[0]) if isinstance(blockers, list) and blockers else "unknown"
+            raise RuntimeError(f"live_canary_preflight_failed:{code}")
         armed_at = self.now()
         identity = f"{owner_id}|{target.broker_name}|{target.account_id}|{armed_at.isoformat()}"
         session = CanaryArmSession(
@@ -354,11 +362,10 @@ class ManualLiveCanaryService:
         target = self.context.target(owner_id)
         arm = self.arms.active(owner_id, target, self.now())
         operational = self.context.public_status(owner_id)
+        readiness = self._preflight(owner_id)
         ordering_enabled = bool(
             arm
-            and operational.get("recovery_status") == "ready"
-            and operational.get("broker_connected") is True
-            and operational.get("ca_ready") is True
+            and readiness.get("ready") is True
         )
         orders = [
             item for item in self.sink.manager.repository.orders(owner_id, target=target)
@@ -373,6 +380,7 @@ class ManualLiveCanaryService:
             "arm": "active" if arm else "off",
             "arm_expires_at": arm.expires_at.isoformat() if arm else None,
             "ordering_enabled": ordering_enabled,
+            "readiness": readiness,
             "max_quantity": self.config.max_quantity,
             "allowed_symbol": next(iter(self.config.allowed_symbols)),
             "allowed_contract": contract,
@@ -400,3 +408,23 @@ class ManualLiveCanaryService:
                 ),
             },
         }
+
+    def _preflight(self, owner_id: str) -> dict[str, object]:
+        evaluator = getattr(self.context, "preflight", None)
+        if callable(evaluator):
+            return evaluator(
+                owner_id, self.config.enabled, self.config.allowed_contracts
+            )
+        operational = self.context.public_status(owner_id)
+        checks = {
+            "canary_config_enabled": self.config.enabled,
+            # Compatibility for narrow test/adapter contexts that already enforce
+            # these two gates in assert_arm_ready but predate structured preflight.
+            "broker_connected": operational.get("broker_connected", True) is True,
+            "ca_ready": operational.get("ca_ready", True) is True,
+            "recovery_ready": operational.get("recovery_status") == "ready",
+            "guardian_healthy": isinstance(operational.get("position_guardian"), dict)
+            and operational["position_guardian"].get("enabled") is True,
+        }
+        blockers = [name for name, passed in checks.items() if not passed]
+        return {"ready": not blockers, "checks": checks, "blockers": blockers}
