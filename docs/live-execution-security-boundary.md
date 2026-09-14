@@ -33,15 +33,18 @@ its SDK I/O.
 | connection ID, broker, account / allowlist | no | no | live-only env file |
 | `SJ_CA_CERT_PATH` / `SJ_CA_PASSWORD` | no | no | Shioaji provider + read-only mount |
 
-Real values stay under `/opt/tw-quant/config/execution.env` (mode `0600`) and
-`/opt/tw-quant/secrets` on the host. They are excluded from Git and Docker build
+Legacy environment values stay under `/opt/tw-quant/config/execution.env` (mode `0600`).
+Per-target values stay under `/opt/tw-quant/secrets/brokers/<target_id>` on the host.
+They are excluded from Git and Docker build
 contexts. The CA file must be a non-symlink regular file with no group or other
 permission bits. Missing values, an unavailable CA, open CA permissions, or an
 account outside `LIVE_ALLOWED_ACCOUNT_IDS` keeps the service locked.
 
 `ExecutionTarget.secret_ref` is routing metadata, not secret material. The target model and
-public representation never contain API keys, secret keys, CA passwords, or CA binary data;
-this PR does not resolve `secret_ref` or change `ShioajiEnvironmentSecretProvider`. Full account
+public representation never contain API keys, secret keys, CA passwords, or CA binary data.
+The execution service resolves `file:broker-secrets/<target_id>` only when the opaque ID exactly
+matches the selected target. Missing files, symlinks, traversal, insecure modes and identity
+mismatch fail closed without consulting environment credentials. Full account
 IDs remain internal to persistence and execution routing. Browser payloads, normal health, and
 logs use only the masked account ID.
 
@@ -75,7 +78,8 @@ application does not. The temporary `CA_CERT_PATH` / `CA_PASSWORD` names from
 the first local revision remain accepted as compatibility aliases, while new
 configuration uses `SJ_CA_CERT_PATH` / `SJ_CA_PASSWORD`.
 
-This release composes one connection in production. `ExecutionSupervisor`, the
+This release composes at most one eligible active target in production; more than one fails before
+secret resolution or client construction. `ExecutionSupervisor`, the
 health collection model and BrokerRegistry can represent isolated account workers;
 a second production adapter and multi-account production soak remain deferred.
 
@@ -145,8 +149,9 @@ enabled.
 
 1. Copy `execution.env.example` to
    `/opt/tw-quant/config/execution.env`, mode `0600`.
-2. Create `/opt/tw-quant/secrets`, owned by the deployment administrator. Keep
-   the CA file mode at `0600`; only the execution container mounts it read-only.
+2. Create `/opt/tw-quant/secrets/brokers/<target_id>`, owned by the deployment administrator.
+   Keep `credentials.env` and `shioaji-ca.pfx` at mode `0600`; only the execution container mounts
+   the secret root read-only. Use `file:broker-secrets/<target_id>` as the target ref.
 3. Migrate quote credentials in `market.env` from legacy `SJ_API_KEY` /
    `SJ_SEC_KEY` to `MARKET_SJ_API_KEY` / `MARKET_SJ_SECRET_KEY`.
 4. Keep `LIVE_TRADING_ENABLED=false`. Default remains `BROKER_PROVIDER=disabled`.

@@ -343,6 +343,10 @@ overflow／處理失敗需出現在監控。
 worker。Read-only 健康資訊顯示 disabled/locked/ready_read_only/degraded，ordering 固定
 disabled；只有 canary config 才顯示可 ARM 的受限 write capability。
 
+Execution service 先從 repository 選出唯一 active `ExecutionTarget`，再 exact resolve 該
+target 的 secret，建立 adapter registration 與 account worker。任何 secret、target 或
+broker/account identity mismatch 都不會註冊 runtime；file backend 失敗不會 fallback。
+
 Paper HTTP handler 使用 `BrokerOrderRequest` 呼叫 `PaperTradingService.submit_request()`；
 service 保留帳戶風控與事件持久化責任，`PaperBrokerAdapter` 則提供相同的 `BrokerPort`
 給非 HTTP 呼叫端。相容用的 `PaperOrderCommand` 在 Replay 完成遷移前不得移除。

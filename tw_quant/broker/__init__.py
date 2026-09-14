@@ -90,7 +90,9 @@ from .secrets import (
     BrokerSecretMaterial,
     BrokerSecretProvider,
     SecretConfigurationError,
+    SecretResolver,
 )
+from .secret_resolver import PerTargetSecretResolver
 from .settings import BrokerConnectionSettings, BrokerSettings
 from .safety import BrokerAccountSafety, LIVE_TRADING_CONFIRMATION
 from .shioaji import (
@@ -166,6 +168,8 @@ __all__ = [
     "BrokerSettings",
     "BrokerSecretMaterial",
     "BrokerSecretProvider",
+    "SecretResolver",
+    "PerTargetSecretResolver",
     "CanonicalInstrument",
     "DisabledBroker",
     "DisabledExecutionWorker",

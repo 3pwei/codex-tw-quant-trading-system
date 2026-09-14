@@ -14,7 +14,7 @@ flowchart TD
 | Component | Owns | Does not own |
 |---|---|---|
 | `ExecutionTarget` | identity, owner, routing metadata, status, opaque `secret_ref` | credentials, strategies, PnL, orders, positions, Recovery, Guardian |
-| Secret Resolver (future PR) | resolve per-target credential material inside execution service | target authorization or broker routing |
+| Secret Resolver | resolve exact per-target credential material inside execution service | target authorization or broker routing |
 | `BrokerRegistry` | active in-process broker runtime and capabilities | durable ownership or credentials |
 | Live Order | durable exact `BrokerAccountRef` truth | target ownership metadata |
 
@@ -52,7 +52,8 @@ never resolves credentials, enables broker writes, changes acceptance, or arms a
 
 ## Current rollout boundary
 
-Production may still restrict active targets to one. Per-target secret resolution, multiple live
-broker clients, account onboarding UI, Canary activation, and Strategy Auto activation are later
-work. The defaults remain `LIVE_CANARY_ENABLED=false`, `LIVE_AUTO_ENABLED=false`, and
+Production restricts eligible active targets to one. Each active target resolves either its exact
+`file:broker-secrets/<target_id>` directory or explicit legacy `environment:primary`; a missing file
+ref never falls back to environment. Multiple live broker clients, onboarding UI, Canary activation,
+and Strategy Auto activation remain later work. The defaults remain `LIVE_CANARY_ENABLED=false`, `LIVE_AUTO_ENABLED=false`, and
 `LIVE_AUTO_PRODUCTION_ACCEPTANCE_PASSED=false`.
