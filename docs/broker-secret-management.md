@@ -1,5 +1,17 @@
 # Broker Secret Management
 
+## Production migration
+
+Run `deploy/lightsail/migrate-production-target.py` once with explicit `--apply`.
+It copies the legacy credential file and CA into
+`/opt/tw-quant/secrets/brokers/<target_id>/`, applies directory mode `0700` and
+file mode `0600`, and creates the target idempotently. Failure leaves the target
+absent or locked. Rollback locks the target and renames its secret directory;
+legacy sources remain available for operator-controlled recovery.
+
+Afterward, `execution.env` must not contain `LIVE_BROKER_ACCOUNT_ID`,
+`LIVE_ALLOWED_ACCOUNT_IDS`, `LIVE_BROKER_SECRET_REF`, or `SJ_*` credentials.
+
 `ExecutionTarget` stores ownership and routing metadata only. The isolated execution service uses
 the server-controlled `LIVE_BROKER_SECRET_ROOT` to resolve one exact target:
 
@@ -36,7 +48,7 @@ APIs, health documents, logs, screenshots, tests or PR descriptions.
 - Paths are joined below the configured root and checked after canonical resolution.
 - Missing, malformed, non-regular, symlinked or group/other-readable sensitive files fail closed.
 - A file-backed target never falls back to `environment:primary`.
-- `environment:primary` remains an explicit legacy backend only.
+- `environment:primary` is migration input only and is rejected by production target startup.
 
 ## Provision and rotate
 

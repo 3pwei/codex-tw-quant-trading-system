@@ -25,6 +25,7 @@ from .execution_targets import ExecutionTarget, ExecutionTargetStatus, mask_acco
 from .execution_target_repository import (
     ExecutionTargetRepository,
     OwnedExecutionTargetResolver,
+    OwnedExecutionTargetCatalog,
     SQLiteExecutionTargetRepository,
     bootstrap_legacy_execution_target,
     legacy_target_id,
@@ -236,6 +237,7 @@ __all__ = [
     "legacy_target_id",
     "mask_account_id",
     "OwnedExecutionTargetResolver",
+    "OwnedExecutionTargetCatalog",
     "normalize_callback",
     "normalize_production_callback",
     "normalize_trade",

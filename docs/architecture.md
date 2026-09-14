@@ -1,5 +1,13 @@
 # 程式架構與依賴規則
 
+## Owned production execution
+
+Manual Canary、Strategy Auto Live、Guardian、Recovery、Reconciliation 與 Kill
+Switch 共用：authenticated owner → target ID → owned `ExecutionTarget` → exact
+`BrokerAccountRef` → per-target secret → `BrokerRegistry`。Guardian 與 reconciliation
+維持 account-exact；target Kill Switch 使用 `owner_user_id:target_id` scope。
+任何元件都不得從預設 account environment variable 推導 production target。
+
 ## Strategy Auto Live boundary
 
 `live_auto` extends the existing core: Strategy Runtime → Decision → Live Risk

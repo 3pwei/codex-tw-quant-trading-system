@@ -73,6 +73,7 @@ class FakeBroker:
 
 class FakeContext:
     def __init__(self):
+        self.target_id = "exec_0123456789abcdef"
         self.position = 0
         self.connected = True
         self.kill_switches = []
@@ -136,6 +137,7 @@ class LiveCanaryTests(unittest.IsolatedAsyncioTestCase):
             self.config, self.arms, TARGET, lambda: None,
             lambda: {"connected": True, "ca_ready": True},
             lambda owner, reduce: False, lambda: self.clock[0],
+            execution_target_id="exec_0123456789abcdef",
         )
         self.manager = LiveOrderManager(
             self.orders, self.registry,
@@ -177,6 +179,10 @@ class LiveCanaryTests(unittest.IsolatedAsyncioTestCase):
             self.service.arm("owner-1", "owner-1", "yes")
         session = self.arm()
         self.assertEqual(session.account_ref, TARGET)
+        self.assertEqual(session.target_id, "exec_0123456789abcdef")
+        self.assertIsNone(self.arms.active(
+            "owner-1", TARGET, self.clock[0], "exec_fedcba9876543210"
+        ))
         self.clock[0] += timedelta(seconds=self.config.arm_ttl_seconds)
         self.assertIsNone(self.arms.active("owner-1", TARGET, self.clock[0]))
 

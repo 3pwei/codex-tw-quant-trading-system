@@ -18,6 +18,10 @@ from tw_quant.broker import (
     CompositeOrderAdmissionGate,
     ExecutionMode,
     ExecutionTargetStatus,
+    ExecutionTarget,
+    SQLiteExecutionTargetRepository,
+    legacy_target_id,
+    mask_account_id,
     LockedOrderAdmissionGate,
     RecoveryStatus,
     RoutedBrokerOrderRequest,
@@ -62,18 +66,46 @@ class ExecutionSecurityBoundaryTests(unittest.IsolatedAsyncioTestCase):
         self.temp.cleanup()
 
     def environment(self, **changes: str) -> dict[str, str]:
+        owner = changes.pop("LIVE_EXECUTION_OWNER_USER_ID", "owner-1")
+        account = BrokerAccountRef("shioaji", "account-1234")
+        target_id = legacy_target_id(owner, account)
+        database = self.root / "live.sqlite3"
+        repository = SQLiteExecutionTargetRepository(database)
+        if not repository.exists(target_id) and not repository.list_all():
+            repository.create(ExecutionTarget(
+                target_id, owner, account.broker_name, account.account_id,
+                mask_account_id(account.account_id),
+                f"file:broker-secrets/{target_id}",
+            ))
+        repository.close()
+        secret_dir = self.root / "brokers" / target_id
+        secret_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        api_key = changes.pop("SJ_API_KEY", "api-test-value")
+        secret_key = changes.pop("SJ_SECRET_KEY", "secret-test-value")
+        ca_password = changes.pop("SJ_CA_PASSWORD", "ca-test-value")
+        credentials = secret_dir / "credentials.env"
+        credentials.write_text(
+            f"SJ_API_KEY={api_key}\nSJ_SECRET_KEY={secret_key}\nSJ_CA_PASSWORD={ca_password}\n"
+        )
+        credentials.chmod(0o600)
+        ca_target = secret_dir / "shioaji-ca.pfx"
+        if ca_target.exists():
+            ca_target.unlink()
+        source_ca = Path(changes.pop("SJ_CA_CERT_PATH", self.ca))
+        if source_ca.exists():
+            ca_target.write_bytes(source_ca.read_bytes())
+            ca_target.chmod(source_ca.stat().st_mode & 0o777)
         values = {
             "BROKER_PROVIDER": "shioaji",
+            "LIVE_EXECUTION_OWNER_USER_ID": owner,
+            "LIVE_EXECUTION_TARGET_ID": target_id,
             "LIVE_TRADING_ENABLED": "true",
             "LIVE_TRADING_CONFIRMATION": CONFIRMATION,
             "LIVE_BROKER_ACCOUNT_ID": "account-1234",
             "LIVE_ALLOWED_ACCOUNT_IDS": "account-1234",
             "LIVE_EXECUTION_DB_PATH": str(self.root / "live.sqlite3"),
+            "LIVE_BROKER_SECRET_ROOT": str(self.root / "brokers"),
             "LIVE_EXECUTION_HEALTH_PATH": str(self.root / "health.json"),
-            "SJ_API_KEY": "api-test-value",
-            "SJ_SECRET_KEY": "secret-test-value",
-            "SJ_CA_CERT_PATH": str(self.ca),
-            "SJ_CA_PASSWORD": "ca-test-value",
         }
         values.update(changes)
         return values
@@ -92,7 +124,7 @@ class ExecutionSecurityBoundaryTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await runtime.close()
 
-    async def test_legacy_account_bootstraps_owned_target_without_enabling_orders(self):
+    async def test_owned_target_loads_without_enabling_orders(self):
         runtime = build_execution_service(env=self.environment(
             LIVE_CANARY_ALLOWED_OWNER_IDS="owner-1",
         ))
@@ -105,19 +137,18 @@ class ExecutionSecurityBoundaryTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await runtime.close()
 
-    async def test_ambiguous_legacy_owner_does_not_bootstrap_or_unlock(self):
-        runtime = build_execution_service(env=self.environment(
-            LIVE_CANARY_ALLOWED_OWNER_IDS="owner-1,owner-2",
-        ))
+    async def test_missing_canonical_owner_does_not_route_or_unlock(self):
+        env = self.environment()
+        env["LIVE_EXECUTION_OWNER_USER_ID"] = ""
+        runtime = build_execution_service(env=env)
         try:
-            self.assertIn("legacy_execution_target_bootstrap_rejected", runtime.issues)
-            self.assertEqual(runtime.execution_target_repository.list_for_owner("owner-1"), [])
+            self.assertIn("missing_execution_owner_user_id", runtime.issues)
             self.assertIsNone(runtime.manager)
             self.assertTrue(runtime.public_health()["locked"])
         finally:
             await runtime.close()
 
-    async def test_disabled_owned_target_blocks_legacy_execution_composition(self):
+    async def test_disabled_owned_target_blocks_execution_composition(self):
         env = self.environment(LIVE_CANARY_ALLOWED_OWNER_IDS="owner-1")
         first = build_execution_service(env=env)
         first.execution_target_repository.update_status(
@@ -154,19 +185,17 @@ class ExecutionSecurityBoundaryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_every_invalid_configuration_is_locked(self):
         cases = {
-            "missing_api_key": {"SJ_API_KEY": ""},
-            "missing_secret_key": {"SJ_SECRET_KEY": ""},
-            "missing_account_id": {"LIVE_BROKER_ACCOUNT_ID": ""},
+            "invalid_credentials_file": {"SJ_API_KEY": ""},
+            "invalid_credentials_file": {"SJ_SECRET_KEY": ""},
             "ca_certificate_unavailable": {
                 "SJ_CA_CERT_PATH": str(self.root / "missing.pfx")
             },
             "invalid_live_trading_confirmation": {
                 "LIVE_TRADING_CONFIRMATION": "wrong"
             },
-            "account_not_allowlisted": {
-                "LIVE_ALLOWED_ACCOUNT_IDS": "another"
+            "execution_target_owner_or_id_mismatch": {
+                "LIVE_EXECUTION_TARGET_ID": "exec_9999999999999999"
             },
-            "unknown_broker_provider": {"BROKER_PROVIDER": "unknown"},
         }
         for expected_issue, changes in cases.items():
             with self.subTest(case=expected_issue):
@@ -210,10 +239,8 @@ class ExecutionSecurityBoundaryTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await runtime.close()
 
-    async def test_first_revision_ca_environment_names_remain_compatible(self):
+    async def test_legacy_credential_environment_is_not_required(self):
         env = self.environment()
-        env["CA_CERT_PATH"] = env.pop("SJ_CA_CERT_PATH")
-        env["CA_PASSWORD"] = env.pop("SJ_CA_PASSWORD")
         runtime = build_execution_service(env=env)
         try:
             self.assertIsNotNone(runtime.manager)
@@ -310,8 +337,8 @@ class ExecutionSecurityBoundaryTests(unittest.IsolatedAsyncioTestCase):
             for key in ("SJ_API_KEY", "SJ_SECRET_KEY", "CA_PASSWORD"):
                 self.assertNotIn(key, payload)
             for value in (
-                env["SJ_API_KEY"], env["SJ_SECRET_KEY"], env["SJ_CA_PASSWORD"],
-                env["LIVE_BROKER_ACCOUNT_ID"], env["SJ_CA_CERT_PATH"],
+                "api-test-value", "secret-test-value", "ca-test-value",
+                "account-1234", str(self.ca),
             ):
                 self.assertNotIn(value, payload)
         finally:

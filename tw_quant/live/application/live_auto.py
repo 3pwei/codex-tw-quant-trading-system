@@ -34,6 +34,7 @@ class LiveAutoArm:
 
 
 class LiveAutoContext(Protocol):
+    def resolve_target(self, runtime: Mapping[str, object]) -> BrokerAccountRef: ...
     def preflight(self, runtime: Mapping[str, object]) -> Mapping[str, object]: ...
     def risk_context(self, candidate: LiveExecutionCandidate): ...
     def instrument(self, symbol: str, contract: str) -> InstrumentSpec: ...
@@ -82,7 +83,7 @@ class LiveAutoService:
         failed = sorted(key for key, value in checks.items() if value is not True)
         if failed:
             raise InvalidInputError("live_auto preflight failed: " + ",".join(failed))
-        target = BrokerAccountRef(str(runtime["broker_name"]), str(runtime["account_id"]))
+        target = self.context.resolve_target(runtime)
         now = self.now()
         with self._lock:
             active = [arm for arm in self._arms.values() if arm.active(now)]
@@ -98,6 +99,7 @@ class LiveAutoService:
                 self.shared_arms.arm(CanaryArmSession(
                     arm.arm_id, owner_id, target, arm.armed_at, arm.expires_at,
                     f"live_auto:{runtime_id}",
+                    str(runtime.get("execution_target_id") or "") or None,
                 ))
         updated = self.runtimes.set_trading_runtime_status(runtime_id, owner_id, "armed")
         assert updated is not None
@@ -176,7 +178,7 @@ class LiveAutoService:
             raise RuntimeError("live_auto_arm_inactive")
         if int(runtime["quantity"]) != 1:
             raise RuntimeError("live_auto_quantity_must_equal_one")
-        target = BrokerAccountRef(str(runtime["broker_name"]), str(runtime["account_id"]))
+        target = self.context.resolve_target(runtime)
         if target != arm.target:
             raise RuntimeError("live_auto_target_mismatch")
         contract = str(decision["contract"])
@@ -249,7 +251,9 @@ class LiveAutoService:
                 self._arms.pop(runtime_id, None)
                 arm = None
             if arm is not None and self.shared_arms is not None:
-                shared = self.shared_arms.active(arm.owner_id, arm.target, self.now())
+                runtime = self.runtimes.trading_runtime(arm.runtime_id, arm.owner_id)
+                target_id = str(runtime.get("execution_target_id") or "") if runtime else None
+                shared = self.shared_arms.active(arm.owner_id, arm.target, self.now(), target_id)
                 if shared is None or shared.arm_id != arm.arm_id or shared.created_by != f"live_auto:{runtime_id}":
                     self._arms.pop(runtime_id, None)
                     arm = None

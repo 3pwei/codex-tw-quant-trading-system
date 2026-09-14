@@ -1,5 +1,13 @@
 # Manual Live Canary runbook
 
+## Post-migration first boot
+
+首次啟動必須使用 production read-only，並維持 `LIVE_CANARY_ENABLED=false`、
+`LIVE_AUTO_ENABLED=false` 與 ARM OFF。證據必須確認 owned target loaded、per-target
+secret resolved、Shioaji exact account、CA ready、callbacks registered、orders/fills/
+positions readable、reconciliation PASS、Recovery READY、zero external writes。
+完成審查後才可進入獨立的人工一口 Canary 流程。
+
 > Manual Canary and Strategy Auto have separate permissions, attribution, and
 > ARM lifecycles. Passing this runbook does not enable or ARM Strategy Auto; use
 > `strategy-auto-live-runbook.md` for that rollout.

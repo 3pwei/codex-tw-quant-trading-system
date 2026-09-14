@@ -210,6 +210,7 @@ class TradingRuntimeApplicationService:
             "mode": mode,
             "broker_name": target.broker_name if target else None,
             "account_id": target.account_id if target else None,
+            "execution_target_id": target_id if target else None,
             "last_evaluated_bar": initial_cursor,
         })
         return self._public_runtime(stored)
@@ -221,7 +222,7 @@ class TradingRuntimeApplicationService:
         broker = result.get("broker_name")
         if account and broker:
             target = BrokerAccountRef(str(broker), str(account))
-            result["execution_target_id"] = target.public_id
+            result["execution_target_id"] = result.get("execution_target_id") or target.public_id
             result["masked_account_id"] = "****" + target.account_id[-4:]
         return result
 

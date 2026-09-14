@@ -33,12 +33,12 @@ its SDK I/O.
 | connection ID, broker, account / allowlist | no | no | live-only env file |
 | `SJ_CA_CERT_PATH` / `SJ_CA_PASSWORD` | no | no | Shioaji provider + read-only mount |
 
-Legacy environment values stay under `/opt/tw-quant/config/execution.env` (mode `0600`).
+Legacy environment values are retained only as rollback input during the controlled migration.
 Per-target values stay under `/opt/tw-quant/secrets/brokers/<target_id>` on the host.
 They are excluded from Git and Docker build
 contexts. The CA file must be a non-symlink regular file with no group or other
 permission bits. Missing values, an unavailable CA, open CA permissions, or an
-account outside `LIVE_ALLOWED_ACCOUNT_IDS` keeps the service locked.
+account identity mismatch against the owned target keeps the service locked.
 
 `ExecutionTarget.secret_ref` is routing metadata, not secret material. The target model and
 public representation never contain API keys, secret keys, CA passwords, or CA binary data.

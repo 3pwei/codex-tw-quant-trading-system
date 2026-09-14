@@ -45,10 +45,8 @@ from ..broker import (
     ShioajiInstrumentMapper,
     ShioajiProductionExecutionClient,
     LiveTradingSafety,
-    bootstrap_legacy_execution_target,
 )
 from ..broker.recovery import RecoveryOrderGate
-from ..broker.secret_factory import build_broker_secret_provider
 from .config import ExecutionServiceSettings
 from .health import BrokerConnectionHealth
 from .redaction import SecretRedactionFilter, mask_account
@@ -69,8 +67,9 @@ LOGGER = logging.getLogger("tw_quant.execution_service")
 
 
 class _GuardianKillSwitchView:
-    def __init__(self, repository: SQLiteShadowExecutionRepository) -> None:
+    def __init__(self, repository: SQLiteShadowExecutionRepository, target_id: str) -> None:
         self.repository = repository
+        self.target_id = target_id
 
     def actions(self, owner_id, target):
         account_scope = f"{target.broker_name}:{target.account_id}"
@@ -78,6 +77,7 @@ class _GuardianKillSwitchView:
             (LiveKillSwitchScope.GLOBAL.value, "global"),
             (LiveKillSwitchScope.OWNER.value, owner_id),
             (LiveKillSwitchScope.BROKER_ACCOUNT.value, account_scope),
+            (LiveKillSwitchScope.EXECUTION_TARGET.value, f"{owner_id}:{self.target_id}"),
         })
         return tuple(state.action for state in states)
 
@@ -150,11 +150,11 @@ class ExecutionServiceRuntime:
             self.settings.live_canary_enabled
             and self.canary_arm_repository is not None
             and account is not None
-            and len(self.settings.live_canary_allowed_owner_ids) == 1
+            and bool(self.settings.owner_user_id)
         ):
-            owner_id = next(iter(self.settings.live_canary_allowed_owner_ids))
+            owner_id = self.settings.owner_user_id
             arm_active = self.canary_arm_repository.active(
-                owner_id, account, datetime.now(timezone.utc)
+                owner_id, account, datetime.now(timezone.utc), self.settings.target_id
             ) is not None
         ordering_enabled = bool(
             self.settings.live_canary_enabled
@@ -299,40 +299,31 @@ def build_execution_service(
 
     if config.database_path:
         execution_targets = SQLiteExecutionTargetRepository(config.database_path)
-        if (
-            connection is not None
-            and connection.account_ref is not None
-            and config.live_canary_allowed_owner_ids
-        ):
-            try:
-                bootstrap_legacy_execution_target(
-                    execution_targets,
-                    owner_user_ids=config.live_canary_allowed_owner_ids,
-                    connection=connection,
-                )
-            except (PermissionError, ValueError):
-                issues.append("legacy_execution_target_bootstrap_rejected")
-                connection = None
         eligible = execution_targets.list_active()
         if len(eligible) > 1:
             issues.append("active_execution_target_limit_exceeded")
             connection = None
         elif len(eligible) == 1:
-            owned_target = eligible[0]
-            if not config.account_id:
-                issues = [issue for issue in issues if issue != "missing_account_id"]
-            if config.account_id and owned_target.account_ref != connection.account_ref:
-                issues.append("execution_target_configuration_mismatch")
+            owned_target = execution_targets.get_owned(
+                config.owner_user_id, config.target_id
+            )
+            if owned_target is None or owned_target != eligible[0]:
+                issues.append("execution_target_owner_or_id_mismatch")
                 connection = None
             else:
+                if not owned_target.secret_ref.startswith("file:broker-secrets/"):
+                    issues.append("production_target_requires_per_target_secret")
+                # Broker identity and secret location come exclusively from the
+                # durable owned target. Service env contains no account secret.
+                issues = [issue for issue in issues if issue not in {
+                    "missing_account_id", "missing_account_allowlist",
+                    "missing_broker_secret_ref", "account_not_allowlisted",
+                }]
                 connection = BrokerConnectionSettings(
                     connection_id=owned_target.connection_id or owned_target.target_id,
                     broker_name=owned_target.broker_name,
                     account_id=owned_target.account_id,
-                    enabled=(
-                        config.live_trading_enabled
-                        or config.production_read_only_enabled
-                    ),
+                    enabled=(config.live_trading_enabled or config.production_read_only_enabled),
                     secret_ref=owned_target.secret_ref,
                 )
         elif execution_targets.list_all():
@@ -340,7 +331,7 @@ def build_execution_service(
             connection = None
 
     provider = secret_provider
-    if config.broker_name == "disabled":
+    if owned_target is None:
         issues.append("execution_disabled")
     elif connection is not None:
         connection_enabled = (
@@ -352,13 +343,12 @@ def build_execution_service(
             try:
                 if provider is not None:
                     material = provider.load(connection)
-                elif owned_target is None:
-                    provider = build_broker_secret_provider(connection, env=env)
-                    material = provider.load(connection)
-                else:
+                elif owned_target is not None:
                     material = PerTargetSecretResolver(
                         Path(config.broker_secret_root), env
                     ).resolve(owned_target, connection)
+                else:
+                    raise SecretConfigurationError(("execution_target_required",))
             except SecretConfigurationError as exc:
                 issues.extend(exc.issue_codes)
         if (
@@ -407,7 +397,7 @@ def build_execution_service(
         if (config.production_read_only_enabled or config.live_canary_enabled) and material is not None:
             read_only_client = production_client_factory(
                 account_ref=account,
-                allowed_accounts=config.allowed_accounts,
+                allowed_accounts=frozenset({account}),
                 secret_material=material,
                 instrument_mapper=mapper,
                 callback_queue_size=config.callback_queue_size,
@@ -419,7 +409,7 @@ def build_execution_service(
                     account_id=account.account_id,
                     enabled=config.live_canary_enabled,
                     confirmation=config.confirmation,
-                    allowed_account_ids=config.allowed_account_ids,
+                    allowed_account_ids=frozenset({account.account_id}),
                 ),
             )
             capabilities = (
@@ -448,13 +438,24 @@ def build_execution_service(
                 account=account,
                 enabled=config.live_trading_enabled,
                 confirmation=config.confirmation,
-                allowed_accounts=config.allowed_accounts,
+                allowed_accounts=frozenset({account}),
             ),
         ]
         if config.live_canary_enabled and read_only_client is not None:
             canary_arms = SQLiteCanaryArmRepository(config.database_path)
             kill_switches = SQLiteShadowExecutionRepository(config.database_path)
-            canary_config = config.canary_config
+            from ..broker.canary import LiveCanaryConfig
+            canary_config = LiveCanaryConfig(
+                enabled=True,
+                allowed_owner_ids=frozenset({config.owner_user_id}),
+                allowed_broker_accounts=frozenset({account}),
+                allowed_symbols=config.live_canary_allowed_symbols,
+                allowed_contracts=config.live_canary_allowed_contracts,
+                max_quantity=config.live_canary_max_quantity,
+                arm_ttl_seconds=config.live_canary_arm_ttl_seconds,
+                protective_stop_ticks=config.live_canary_protective_stop_ticks,
+                requests_per_minute=config.live_canary_requests_per_minute,
+            )
             def kill_switch_blocks(owner_id: str, reduce_only: bool) -> bool:
                 account_scope = f"{account.broker_name}:{account.account_id}"
                 states = kill_switches.kill_switches({
@@ -492,6 +493,7 @@ def build_execution_service(
                     if (snapshot := truth.get(account)) is not None
                     else None
                 ),
+                execution_target_id=config.target_id,
             ))
             orders.block_pending_dispatches(
                 account, "restart_requires_operator_rearm_and_new_request"
@@ -548,8 +550,8 @@ def build_execution_service(
                     normal_policy=normal_policy,
                     emergency_policy=emergency_policy,
                     readiness=lambda: dict(read_only_client.health_state()),
-                    kill_switches=_GuardianKillSwitchView(kill_switches),
-                    owner_ids=config.live_canary_allowed_owner_ids,
+                    kill_switches=_GuardianKillSwitchView(kill_switches, config.target_id),
+                    owner_ids=frozenset({config.owner_user_id}),
                 )
                 worker_kwargs.update({
                     "position_guardian": guardian,

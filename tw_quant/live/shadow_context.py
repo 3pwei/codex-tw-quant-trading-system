@@ -335,6 +335,8 @@ class ConfiguredManualCanaryContext:
                 (LiveKillSwitchScope.OWNER.value, owner_id),
                 (LiveKillSwitchScope.BROKER_ACCOUNT.value,
                  f"{target.broker_name}:{target.account_id}"),
+                (LiveKillSwitchScope.EXECUTION_TARGET.value,
+                 f"{owner_id}:{self.target_id}"),
             }),
             "callback_delivery_healthy": int(
                 health.get("callbacks_dropped_total", 0) or 0
@@ -359,7 +361,7 @@ class ConfiguredManualCanaryContext:
             "enabled": True,
             "broker_name": target.broker_name,
             "masked_account_id": "****" + target.account_id[-4:],
-            "target_id": target.public_id,
+            "target_id": self.target_id,
             "broker_connected": health.get("broker_connected", False),
             "ca_ready": health.get("ca_ready", False),
             "recovery_status": recovery.status.value,
@@ -373,8 +375,8 @@ class ConfiguredManualCanaryContext:
     def activate_kill_switch(self, owner_id, target, action, reason, now) -> None:
         self.shadow_store.activate_kill_switch(LiveKillSwitchState(
             action=action,
-            scope=LiveKillSwitchScope.BROKER_ACCOUNT,
-            scope_key=f"{target.broker_name}:{target.account_id}",
+            scope=LiveKillSwitchScope.EXECUTION_TARGET,
+            scope_key=f"{owner_id}:{self.target_id}",
             reason=reason,
             activated_at=now,
         ))
@@ -399,7 +401,7 @@ class ConfiguredLiveAutoContext:
         checks = dict(raw["checks"])
         checks.update({
             "permission": True,
-            "account_allowlist": runtime.get("account_id") == self.canary.target(owner).account_id,
+            "account_allowlist": self._target_binding_matches(runtime, owner),
             "quote_fresh": self.canary.risk_provider.market.status_message().get("service_status") == "healthy",
             "position_reconciled": checks.get("broker_truth_reconciled", False),
             "kill_switch_allows_entry": checks.get("kill_switch_ready", False),
@@ -407,6 +409,20 @@ class ConfiguredLiveAutoContext:
             "production_acceptance_passed": self.acceptance_passed,
         })
         return checks
+
+    def _target_binding_matches(self, runtime, owner):
+        target = self.canary.target(owner)
+        return (
+            runtime.get("execution_target_id") == self.canary.target_id
+            and runtime.get("broker_name") == target.broker_name
+            and runtime.get("account_id") == target.account_id
+        )
+
+    def resolve_target(self, runtime):
+        owner = str(runtime["owner_user_id"])
+        if not self._target_binding_matches(runtime, owner):
+            raise RuntimeError("live_auto_target_mismatch")
+        return self.canary.target(owner)
 
     def risk_context(self, candidate): return self.canary.risk_context(candidate)
     def instrument(self, symbol, contract): return self.canary.instrument(symbol, contract)
@@ -417,7 +433,7 @@ class ConfiguredLiveAutoContext:
                    for order in self.orders.orders(owner_id, target=target)
                    if order.request.contract == contract)
     def request_strategy_exit(self, runtime):
-        target = BrokerAccountRef(str(runtime["broker_name"]), str(runtime["account_id"]))
+        target = self.resolve_target(runtime)
         positions = [p for p in self.guardian.store.positions(target)
                      if p.owner_id == runtime["owner_user_id"] and p.state.value != "flat"]
         if len(positions) != 1:
@@ -425,7 +441,7 @@ class ConfiguredLiveAutoContext:
         order, _created = self.guardian.request_strategy_exit(positions[0].position_id)
         return order.request.client_order_id
     def audit(self, event, runtime, detail):
-        target = BrokerAccountRef(str(runtime["broker_name"]), str(runtime["account_id"]))
+        target = self.resolve_target(runtime)
         self.arms.audit(event, str(runtime["owner_user_id"]), target,
                         request_id=str(runtime["runtime_id"]), detail=dict(detail),
                         occurred_at=datetime.now(timezone.utc))

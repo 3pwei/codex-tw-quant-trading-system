@@ -26,6 +26,10 @@ from tw_quant.broker import (
     ShioajiProductionError,
     ShioajiProductionExecutionClient,
     normalize_production_callback,
+    ExecutionTarget,
+    SQLiteExecutionTargetRepository,
+    legacy_target_id,
+    mask_account_id,
 )
 from tw_quant.execution_service import build_execution_service
 
@@ -431,6 +435,22 @@ class ProductionReadOnlyTests(unittest.IsolatedAsyncioTestCase):
             await client.submit(replace(guardian, purpose="exit"))
 
     async def test_execution_composition_registers_read_only_and_ordering_stays_locked(self):
+        database = Path(self.temp.name) / "live.sqlite3"
+        target_id = legacy_target_id("owner-1", self.target)
+        repository = SQLiteExecutionTargetRepository(database)
+        repository.create(ExecutionTarget(
+            target_id, "owner-1", self.target.broker_name, self.target.account_id,
+            mask_account_id(self.target.account_id), f"file:broker-secrets/{target_id}",
+        ))
+        repository.close()
+        secret_dir = Path(self.temp.name) / "brokers" / target_id
+        secret_dir.mkdir(parents=True, mode=0o700)
+        credentials = secret_dir / "credentials.env"
+        credentials.write_text("SJ_API_KEY=x\nSJ_SECRET_KEY=y\nSJ_CA_PASSWORD=z\n")
+        credentials.chmod(0o600)
+        target_ca = secret_dir / "shioaji-ca.pfx"
+        target_ca.write_bytes(self.ca.read_bytes())
+        target_ca.chmod(0o600)
         env = {
             "BROKER_PROVIDER": "shioaji",
             "LIVE_TRADING_ENABLED": "false",
@@ -442,7 +462,10 @@ class ProductionReadOnlyTests(unittest.IsolatedAsyncioTestCase):
             ),
             "LIVE_BROKER_ACCOUNT_ID": "account-1",
             "LIVE_ALLOWED_ACCOUNT_IDS": "account-1",
-            "LIVE_EXECUTION_DB_PATH": str(Path(self.temp.name) / "live.sqlite3"),
+            "LIVE_EXECUTION_DB_PATH": str(database),
+            "LIVE_EXECUTION_OWNER_USER_ID": "owner-1",
+            "LIVE_EXECUTION_TARGET_ID": target_id,
+            "LIVE_BROKER_SECRET_ROOT": str(Path(self.temp.name) / "brokers"),
             "LIVE_EXECUTION_HEALTH_PATH": str(Path(self.temp.name) / "health.json"),
             "SJ_API_KEY": "API_KEY_TEST_SECRET",
             "SJ_SECRET_KEY": "SECRET_KEY_TEST_SECRET",
